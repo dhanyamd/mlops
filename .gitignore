@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# Data & artifacts
+data/
+artifacts/
+*.parquet
+*.joblib
+
+# Feast
+fraud_detection/feature_repo/data/
+
+# MLflow
+mlruns/
+
+# IDE
+.idea/
+.vscode/
+.DS_Store
+
+# Test
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Ruff
+.ruff_cache/
