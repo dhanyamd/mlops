@@ -53,7 +53,9 @@ def promote_model(
         if alias:
             client.set_registered_model_alias(model_name, alias, version)
     except Exception as exc:
-        print(f"Model promotion skipped: {exc}")
+        from shared.observability.logging import get_logger
+        log = get_logger(__name__)
+        log.warning("model_promotion_skipped", error=str(exc))
 
 
 def load_production_model(model_name: str, alias: str = "champion"):

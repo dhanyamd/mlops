@@ -1,0 +1,40 @@
+global:
+  scrape_interval: 15s      # Poll every 15 seconds
+  evaluation_interval: 15s  # Evaluate alerting rules every 15s
+
+# Alerting rules (load from separate files in production)
+# rule_files:
+#   - "alert_rules.yml"
+
+scrape_configs:
+  # ── FastAPI Fraud Detection API ────────────────────────────────────────────
+  - job_name: "fraud-api"
+    static_configs:
+      - targets: ["host.docker.internal:8000"]
+    metrics_path: "/metrics"
+    # Why host.docker.internal: FastAPI runs on the host, not in Docker network.
+    # In production (ECS), replace with service discovery.
+
+  # ── Kafka Consumer (Inference Service) ────────────────────────────────────
+  # The Kafka consumer exposes metrics on port 8001 via start_metrics_server()
+  - job_name: "fraud-inference-consumer"
+    static_configs:
+      - targets: ["host.docker.internal:8001"]
+    metrics_path: "/metrics"
+
+  # ── MLflow (training metrics) ──────────────────────────────────────────────
+  - job_name: "mlflow"
+    static_configs:
+      - targets: ["mlflow:5000"]
+    metrics_path: "/metrics"
+
+  # ── Prometheus self-monitoring ─────────────────────────────────────────────
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # ── Redis exporter (if redis_exporter is running) ─────────────────────────
+  # Uncomment to monitor Redis memory, keyspace, connection count
+  # - job_name: "redis"
+  #   static_configs:
+  #     - targets: ["redis-exporter:9121"]

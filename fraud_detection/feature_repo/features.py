@@ -1,9 +1,9 @@
 """Feast feature definitions for fraud detection.
 
-Feature Store architecture (ML Academy Day 4):
-- Offline Store: historical features for training
-- Online Store: low-latency features for real-time inference
-- Feature Views: unified interface preventing training-serving skew
+Feature Store architecture:
+  - Entity: card_id (corresponds to card_id in streaming and online lookup)
+  - FileSource: Parquet files as offline store
+  - FeatureViews: Unified schema for training and serving.
 """
 
 from datetime import timedelta
@@ -11,26 +11,32 @@ from datetime import timedelta
 from feast import Entity, FeatureView, Field, FileSource, ValueType
 from feast.types import Float32, Float64, Int64
 
-user = Entity(name="user_id", value_type=ValueType.STRING, description="Transaction user")
+# Define the Card Entity (join key is card_id)
+card = Entity(
+    name="card_id",
+    value_type=ValueType.STRING,
+    description="Credit card identifier",
+)
 
+# S3 Data Lake is the source of truth for the offline store (Pillar 16/15)
 transaction_batch_source = FileSource(
     name="transaction_features_batch",
-    path="../../data/fraud_detection/offline/transaction_features.parquet",
+    path="s3://ml-data-lake/fraud_detection/offline/transaction_features.parquet",
     timestamp_field="event_timestamp",
     created_timestamp_column="created_timestamp",
 )
 
 user_profile_source = FileSource(
     name="user_profile_features",
-    path="../../data/fraud_detection/offline/user_profile_features.parquet",
+    path="s3://ml-data-lake/fraud_detection/offline/user_profile_features.parquet",
     timestamp_field="event_timestamp",
     created_timestamp_column="created_timestamp",
 )
 
-# Historical/batch features — written to Offline Store
+# Velocity features Feature View
 transaction_features = FeatureView(
     name="transaction_features",
-    entities=[user],
+    entities=[card],
     ttl=timedelta(days=90),
     schema=[
         Field(name="amount", dtype=Float64),
@@ -49,9 +55,10 @@ transaction_features = FeatureView(
     tags={"team": "fraud", "type": "velocity"},
 )
 
+# User profile features Feature View
 user_profile_features = FeatureView(
     name="user_profile_features",
-    entities=[user],
+    entities=[card],
     ttl=timedelta(days=365),
     schema=[
         Field(name="account_age_days", dtype=Int64),

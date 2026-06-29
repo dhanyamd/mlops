@@ -111,7 +111,9 @@ class RealtimeInferencePipeline:
         producer = Producer({"bootstrap.servers": KAFKA.bootstrap_servers})
         consumer.subscribe([KAFKA.transactions_topic])
 
-        print(f"Listening on {KAFKA.transactions_topic}...")
+        from shared.observability.logging import get_logger
+        log = get_logger(__name__)
+        log.info("consumer_listening", topic=KAFKA.transactions_topic)
         start = datetime.now()
 
         try:
@@ -120,7 +122,7 @@ class RealtimeInferencePipeline:
                 if msg is None:
                     continue
                 if msg.error():
-                    print(f"Consumer error: {msg.error()}")
+                    log.error("consumer_error", error=str(msg.error()))
                     continue
 
                 txn = json.loads(msg.value().decode())
@@ -134,9 +136,12 @@ class RealtimeInferencePipeline:
                 producer.poll(0)
 
                 label = "FRAUD" if prediction["fraud_label"] else "OK"
-                print(
-                    f"[{label}] {prediction['transaction_id']} "
-                    f"score={prediction['fraud_score']:.4f} amount=${prediction['amount']}"
+                log.info(
+                    "transaction_scored",
+                    label=label,
+                    transaction_id=prediction["transaction_id"],
+                    score=float(prediction["fraud_score"]),
+                    amount=float(prediction["amount"]),
                 )
 
                 self._action(prediction)
@@ -146,6 +151,8 @@ class RealtimeInferencePipeline:
 
     def _action(self, prediction: dict) -> None:
         """Downstream actioning: update DB + alert on fraud."""
+        from shared.observability.logging import get_logger
+        log = get_logger(__name__)
         try:
             import pandas as pd
 
@@ -166,10 +173,10 @@ class RealtimeInferencePipeline:
                 index=False,
             )
         except Exception as exc:
-            print(f"DB action skipped: {exc}")
+            log.warning("db_action_skipped", error=str(exc))
 
         if prediction["fraud_label"]:
-            print(f"  ALERT: Fraud detected for {prediction['user_id']} — blocking transaction")
+            log.error("fraud_alert", user_id=prediction["user_id"], message="Fraud detected — blocking transaction")
 
 
 if __name__ == "__main__":

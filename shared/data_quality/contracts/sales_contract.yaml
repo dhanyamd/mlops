@@ -1,0 +1,29 @@
+name: demand_sales_contract
+description: Schema contract for ClickHouse sales table demand.sales.
+columns:
+  sale_date:
+    type: datetime
+    required: true
+    allow_null: false
+  store_id:
+    type: integer
+    required: true
+    allow_null: false
+  item_id:
+    type: integer
+    required: true
+    allow_null: false
+  product_id:
+    type: string
+    required: true
+    allow_null: false
+  quantity_sold:
+    type: float
+    required: true
+    allow_null: false
+    min: 0.0
+  revenue:
+    type: float
+    required: true
+    allow_null: false
+    min: 0.0

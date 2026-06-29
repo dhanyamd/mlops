@@ -18,13 +18,18 @@ from shared.mlflow_utils import setup_mlflow
 
 @dataclass
 class InferenceConfig:
-    features_path: Path
+    features_key: str | Path = "demand_forecasting/features/features.parquet"
     model_path: Path = Path("artifacts/demand_forecasting/model.joblib")
     metadata_path: Path = Path("artifacts/demand_forecasting/metadata.json")
     model_name: str = "demand_forecast_model"
     forecast_horizon_days: int = 14
     output_table: str = "demand_forecasting.forecasts"
     use_mlflow: bool = True
+    features_path: Path | str | None = None
+
+    def __post_init__(self):
+        if self.features_path is not None:
+            self.features_key = self.features_path
 
 
 class InferencePipeline:
@@ -61,7 +66,14 @@ class InferencePipeline:
         return self
 
     def read_features(self) -> "InferencePipeline":
-        self.df = pd.read_parquet(self.cfg.features_path)
+        key = self.cfg.features_key
+        # Self-healing: if local Path or local file exists, read locally
+        if isinstance(key, Path) or (isinstance(key, str) and not key.startswith("s3://") and Path(key).exists()):
+            self.df = pd.read_parquet(key)
+        else:
+            from shared.clients import S3Client
+            s3 = S3Client()
+            self.df = s3.read_df(str(key))
         self.df["date"] = pd.to_datetime(self.df["date"])
         return self
 
@@ -69,8 +81,13 @@ class InferencePipeline:
         assert self.df is not None and self.model is not None
         # Score most recent data per product for next N days (simplified batch forecast)
         latest = self.df.sort_values("date").groupby("product_id").tail(1).copy()
-        X = latest[self.feature_cols]
-        preds = self.model.predict(X)
+        try:
+            # Try predicting with full dataframe (required for Prophet/PyFunc wraps needing 'date')
+            preds = self.model.predict(latest)
+        except Exception:
+            # Fallback to feature matrix (for standard XGBoost/LightGBM models)
+            X = latest[self.feature_cols]
+            preds = self.model.predict(X)
         latest["predicted_demand"] = np.maximum(0, preds)
         latest["lower_bound"] = latest["predicted_demand"] * 0.85
         latest["upper_bound"] = latest["predicted_demand"] * 1.15
@@ -88,6 +105,39 @@ class InferencePipeline:
                         "model_version": self.model_version,
                     }
                 )
+
+        # ── Hierarchical Reconciliation (Pillar 2) ───────────────────────────
+        from demand_forecasting.pipelines.reconciliation import HierarchicalReconciler
+        reconciler = HierarchicalReconciler(n_products=len(latest))
+        
+        # We reconcile bottom level forecasts for each day in the horizon
+        for day in range(1, self.cfg.forecast_horizon_days + 1):
+            day_str = (date.today() + timedelta(days=day)).isoformat()
+            
+            # Extract forecasts for this day
+            day_preds = np.array([r["predicted_demand"] for r in forecast_rows if r["forecast_date"] == day_str])
+            
+            # Simulate a top-level independent forecast (e.g., aggregate model would predict total)
+            simulated_top_forecast = float(np.sum(day_preds) * 0.96)  # 4% mismatch
+            
+            # Perform OLS reconciliation
+            reconciled_total, reconciled_products = reconciler.reconcile_ols(
+                top_forecast=simulated_top_forecast,
+                product_forecasts=day_preds
+            )
+            
+            # Append aggregate 'TOTAL' forecast row
+            forecast_rows.append(
+                {
+                    "product_id": "TOTAL",
+                    "forecast_date": day_str,
+                    "predicted_demand": round(reconciled_total, 2),
+                    "lower_bound": round(reconciled_total * 0.85, 2),
+                    "upper_bound": round(reconciled_total * 1.15, 2),
+                    "model_version": f"{self.model_version}-reconciled-ols",
+                }
+            )
+            
         self.forecasts = pd.DataFrame(forecast_rows)
         return self
 

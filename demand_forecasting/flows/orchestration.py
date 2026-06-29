@@ -1,9 +1,14 @@
-"""Prefect orchestration — demand forecasting production pipeline."""
+"""Prefect orchestration — demand forecasting production pipeline.
+
+Flow order:
+  ingest → ETL → quality gate → preprocess → features → quality gate → train → drift check → inference
+"""
 
 from __future__ import annotations
 
 from pathlib import Path
 
+import pandas as pd
 from prefect import flow, task
 
 from demand_forecasting.data.ingest import main as ingest_demand
@@ -16,6 +21,12 @@ from demand_forecasting.pipelines.inference import InferenceConfig, InferencePip
 from demand_forecasting.pipelines.preprocessing import PreprocessingConfig, PreprocessingPipeline
 from demand_forecasting.pipelines.training import TrainingConfig, TrainingPipeline
 from shared.config import DATA_LAKE
+from shared.data_quality.quality import DataQualityError, validate_demand_features
+from shared.monitoring.drift import detect_dataset_drift, should_retrain
+from shared.observability.logging import get_logger
+from shared.observability.metrics import FEATURE_DRIFT_SCORE, PIPELINE_RUNS_TOTAL
+
+log = get_logger(__name__)
 
 BASE = DATA_LAKE / "demand_forecasting"
 
@@ -26,47 +37,91 @@ def task_ingest_demand() -> dict:
 
 
 @task(name="etl-clickhouse-postgres")
-def task_etl() -> Path:
-    out = BASE / "processed" / "unified.parquet"
-    ETLPipeline(ETLConfig(output_path=out)).run()
-    return out
+def task_etl() -> str:
+    out_key = "demand_forecasting/processed/unified.parquet"
+    ETLPipeline(ETLConfig(output_key=out_key)).run()
+    return out_key
 
 
 @task(name="preprocess")
-def task_preprocess(unified: Path) -> Path:
-    out = BASE / "processed" / "cleaned.parquet"
-    PreprocessingPipeline(PreprocessingConfig(input_path=unified, output_path=out)).run()
-    return out
+def task_preprocess(unified_key: str) -> str:
+    out_key = "demand_forecasting/processed/cleaned.parquet"
+    PreprocessingPipeline(PreprocessingConfig(input_key=unified_key, output_key=out_key)).run()
+    return out_key
 
 
 @task(name="feature-engineering")
-def task_features(cleaned: Path) -> Path:
-    out = BASE / "features" / "features.parquet"
-    FeatureEngineeringPipeline(FeatureEngineeringConfig(input_path=cleaned, output_path=out)).run()
-    return out
+def task_features(cleaned_key: str) -> str:
+    out_key = "demand_forecasting/features/features.parquet"
+    FeatureEngineeringPipeline(FeatureEngineeringConfig(input_key=cleaned_key, output_key=out_key)).run()
+    return out_key
+
+
+@task(name="quality-gate-demand-features")
+def task_quality_gate(features_key: str) -> bool:
+    """Validate engineered features before training."""
+    from shared.clients import S3Client
+    s3 = S3Client()
+    df = s3.read_df(features_key)
+    result = validate_demand_features(df)
+    if not result.passed:
+        raise DataQualityError(
+            f"Demand training blocked — feature quality failed:\n{result.summary}"
+        )
+    log.info("quality_gate_passed", checkpoint="demand_features", rows=len(df))
+    return True
 
 
 @task(name="train-demand-model")
-def task_train(features: Path) -> dict:
-    return TrainingPipeline(TrainingConfig(input_path=features)).run()
+def task_train(features_key: str) -> dict:
+    return TrainingPipeline(TrainingConfig(input_key=features_key)).run()
+
+
+@task(name="drift-check-demand")
+def task_drift_check(features_key: str) -> dict:
+    """Check feature drift between training reference and recent data."""
+    from shared.clients import S3Client
+    s3 = S3Client()
+    df = s3.read_df(features_key)
+    cutoff = int(len(df) * 0.8)
+    reference = df.iloc[:cutoff]
+    current = df.iloc[cutoff:]
+
+    numeric_cols = [c for c in df.select_dtypes(include="number").columns
+                    if c not in {"quantity_sold", "revenue"}]
+    reports = detect_dataset_drift(reference, current, numeric_columns=numeric_cols[:10])
+
+    for r in reports:
+        FEATURE_DRIFT_SCORE.labels(feature_name=r.feature, project="demand").set(r.statistic)
+        if r.drifted:
+            log.warning("feature_drift_detected", feature=r.feature, ks_stat=r.statistic)
+
+    drifted = should_retrain(reports, min_drifted=2)
+    return {"drifted": drifted, "features_checked": len(reports)}
 
 
 @task(name="batch-inference-clickhouse")
-def task_inference(features: Path) -> int:
-    forecasts = InferencePipeline(InferenceConfig(features_path=features)).run()
+def task_inference(features_key: str) -> int:
+    forecasts = InferencePipeline(InferenceConfig(features_key=features_key)).run()
     return len(forecasts)
 
 
 @flow(name="demand-forecasting-pipeline", log_prints=True)
 def demand_pipeline() -> dict:
     task_ingest_demand()
-    unified = task_etl()
-    cleaned = task_preprocess(unified)
-    features = task_features(cleaned)
-    metrics = task_train(features)
-    n = task_inference(features)
-    return {"metrics": metrics, "forecasts": n}
+    unified_key = task_etl()
+    cleaned_key = task_preprocess(unified_key)
+    features_key = task_features(cleaned_key)
+    task_quality_gate(features_key)
+    metrics = task_train(features_key)
+    drift = task_drift_check(features_key)
+    n = task_inference(features_key)
+
+    PIPELINE_RUNS_TOTAL.labels(pipeline="demand_forecasting_flow", status="success").inc()
+
+    return {"metrics": metrics, "forecasts": n, "drift": drift}
 
 
 if __name__ == "__main__":
     demand_pipeline()
+

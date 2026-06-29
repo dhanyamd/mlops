@@ -1,0 +1,130 @@
+name: fraud_transactions_contract
+description: Schema contract for raw credit card fraud transactions (Kaggle format).
+columns:
+  Time:
+    type: float
+    required: true
+    allow_null: false
+    min: 0.0
+  Amount:
+    type: float
+    required: true
+    allow_null: false
+    min: 0.0
+  Class:
+    type: integer
+    required: true
+    allow_null: false
+    allowed_values: [0, 1]
+  V1:
+    type: float
+    required: true
+    allow_null: false
+  V2:
+    type: float
+    required: true
+    allow_null: false
+  V3:
+    type: float
+    required: true
+    allow_null: false
+  V4:
+    type: float
+    required: true
+    allow_null: false
+  V5:
+    type: float
+    required: true
+    allow_null: false
+  V6:
+    type: float
+    required: true
+    allow_null: false
+  V7:
+    type: float
+    required: true
+    allow_null: false
+  V8:
+    type: float
+    required: true
+    allow_null: false
+  V9:
+    type: float
+    required: true
+    allow_null: false
+  V10:
+    type: float
+    required: true
+    allow_null: false
+  V11:
+    type: float
+    required: true
+    allow_null: false
+  V12:
+    type: float
+    required: true
+    allow_null: false
+  V13:
+    type: float
+    required: true
+    allow_null: false
+  V14:
+    type: float
+    required: true
+    allow_null: false
+  V15:
+    type: float
+    required: true
+    allow_null: false
+  V16:
+    type: float
+    required: true
+    allow_null: false
+  V17:
+    type: float
+    required: true
+    allow_null: false
+  V18:
+    type: float
+    required: true
+    allow_null: false
+  V19:
+    type: float
+    required: true
+    allow_null: false
+  V20:
+    type: float
+    required: true
+    allow_null: false
+  V21:
+    type: float
+    required: true
+    allow_null: false
+  V22:
+    type: float
+    required: true
+    allow_null: false
+  V23:
+    type: float
+    required: true
+    allow_null: false
+  V24:
+    type: float
+    required: true
+    allow_null: false
+  V25:
+    type: float
+    required: true
+    allow_null: false
+  V26:
+    type: float
+    required: true
+    allow_null: false
+  V27:
+    type: float
+    required: true
+    allow_null: false
+  V28:
+    type: float
+    required: true
+    allow_null: false

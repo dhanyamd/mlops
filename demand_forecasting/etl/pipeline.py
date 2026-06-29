@@ -1,4 +1,10 @@
-"""ETL: ClickHouse (warehouse) + PostgreSQL (catalog) → unified training dataset."""
+"""ETL: ClickHouse (warehouse) + PostgreSQL (catalog) → unified training dataset.
+
+Quality gates wired in:
+  1. After extract_sales: validate raw sales data
+  2. After transform: validate merged/unified data
+  If either gate fails → DataQualityError → pipeline halts
+"""
 
 from __future__ import annotations
 
@@ -9,13 +15,17 @@ import pandas as pd
 from sqlalchemy.orm import Session
 
 from shared.clients import ClickHouseClient
+from shared.data_quality.quality import DataQualityError, validate_demand_raw
 from shared.db.models import ExternalDaily, Product, Promotion
 from shared.db.session import get_session
+from shared.observability.logging import get_logger
+
+log = get_logger(__name__)
 
 
 @dataclass
 class ETLConfig:
-    output_path: Path
+    output_key: str = "demand_forecasting/processed/unified.parquet"
 
 
 class ETLPipeline:
@@ -77,13 +87,26 @@ class ETLPipeline:
 
     def load(self) -> pd.DataFrame:
         assert self.unified is not None
-        self.cfg.output_path.parent.mkdir(parents=True, exist_ok=True)
-        self.unified.to_parquet(self.cfg.output_path, index=False)
+        from shared.clients import S3Client
+        s3 = S3Client()
+        log.info("uploading_unified_dataset_to_s3", key=self.cfg.output_key, rows=len(self.unified))
+        s3.write_df(self.unified, self.cfg.output_key)
         return self.unified
 
     def run(self) -> pd.DataFrame:
         session = get_session()
         try:
-            return self.extract_sales().extract_catalog(session).transform().load()
+            self.extract_sales()
+
+            # ── Quality Gate: validate raw sales from warehouse ─────────────
+            raw_result = validate_demand_raw(self.sales)
+            if not raw_result.passed:
+                raise DataQualityError(
+                    f"Demand ETL halted — raw data quality check failed:\n{raw_result.summary}"
+                )
+
+            self.extract_catalog(session).transform()
+            log.info("demand_etl_complete", rows=len(self.unified))
+            return self.load()
         finally:
             session.close()

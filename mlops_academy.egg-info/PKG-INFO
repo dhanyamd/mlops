@@ -8,6 +8,7 @@ Requires-Dist: pandas>=2.2.0
 Requires-Dist: numpy>=1.26.0
 Requires-Dist: scikit-learn>=1.4.0
 Requires-Dist: xgboost>=2.0.0
+Requires-Dist: lightgbm>=4.3.0
 Requires-Dist: mlflow>=2.14.0
 Requires-Dist: prefect>=2.19.0
 Requires-Dist: feast>=0.38.0
@@ -28,6 +29,20 @@ Requires-Dist: scipy>=1.12.0
 Requires-Dist: clickhouse-connect>=0.7.0
 Requires-Dist: qdrant-client>=1.9.0
 Requires-Dist: holidays>=0.40
+Requires-Dist: fastapi>=0.111.0
+Requires-Dist: uvicorn[standard]>=0.30.0
+Requires-Dist: prometheus-client>=0.20.0
+Requires-Dist: prometheus-fastapi-instrumentator>=7.0.0
+Requires-Dist: shap>=0.45.0
+Requires-Dist: numba>=0.59.0
+Requires-Dist: jinja2>=3.1.0
+Requires-Dist: structlog>=24.1.0
+Requires-Dist: opentelemetry-api>=1.25.0
+Requires-Dist: opentelemetry-sdk>=1.25.0
+Requires-Dist: opentelemetry-exporter-otlp>=1.25.0
+Requires-Dist: opentelemetry-instrumentation-fastapi>=0.46b0
+Requires-Dist: great-expectations>=1.0.0
+Requires-Dist: dvc[s3]>=3.50.0
 Provides-Extra: dev
 Requires-Dist: pytest>=8.2.0; extra == "dev"
 Requires-Dist: pytest-cov>=5.0.0; extra == "dev"

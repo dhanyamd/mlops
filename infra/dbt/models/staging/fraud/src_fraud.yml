@@ -1,0 +1,9 @@
+version: 2
+
+sources:
+  - name: clickhouse_warehouse
+    database: default
+    schema: fraud
+    tables:
+      - name: transactions
+      - name: scored_transactions

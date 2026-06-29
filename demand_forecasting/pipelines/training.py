@@ -19,7 +19,7 @@ from shared.mlflow_utils import promote_model, setup_mlflow
 
 @dataclass
 class TrainingConfig:
-    input_path: Path
+    input_key: str | Path = "demand_forecasting/features/features.parquet"
     target_col: str = "quantity_sold"
     test_days: int = 60
     model_name: str = "demand_forecast_model"
@@ -32,6 +32,11 @@ class TrainingConfig:
             "learning_rate": [0.05, 0.1],
         }
     )
+    input_path: Path | str | None = None
+
+    def __post_init__(self):
+        if self.input_path is not None:
+            self.input_key = self.input_path
 
 
 class TrainingPipeline:
@@ -48,7 +53,14 @@ class TrainingPipeline:
         self.best_params: dict = {}
 
     def read_data(self) -> "TrainingPipeline":
-        self.df = pd.read_parquet(self.cfg.input_path)
+        key = self.cfg.input_key
+        # Self-healing: if local Path or local file exists, read locally
+        if isinstance(key, Path) or (isinstance(key, str) and not key.startswith("s3://") and Path(key).exists()):
+            self.df = pd.read_parquet(key)
+        else:
+            from shared.clients import S3Client
+            s3 = S3Client()
+            self.df = s3.read_df(str(key))
         self.df["date"] = pd.to_datetime(self.df["date"])
         return self
 
@@ -65,93 +77,59 @@ class TrainingPipeline:
         ]
         return self
 
-    def train_and_tune(self) -> "TrainingPipeline":
+    def train_and_select(self) -> "TrainingPipeline":
         assert self.train_df is not None
-        X_train = self.train_df[self.feature_cols]
-        y_train = self.train_df[self.cfg.target_col]
-
-        best_rmse = float("inf")
-        best_model = None
-        best_params = {}
-
-        for n_est in self.cfg.param_grid["n_estimators"]:
-            for depth in self.cfg.param_grid["max_depth"]:
-                for lr in self.cfg.param_grid["learning_rate"]:
-                    model = xgb.XGBRegressor(
-                        n_estimators=n_est,
-                        max_depth=depth,
-                        learning_rate=lr,
-                        random_state=42,
-                        n_jobs=-1,
-                    )
-                    model.fit(X_train, y_train)
-                    preds = model.predict(self.test_df[self.feature_cols])
-                    y_test = self.test_df[self.cfg.target_col]
-                    rmse = float(np.sqrt(mean_squared_error(y_test, preds)))
-                    if rmse < best_rmse:
-                        best_rmse = rmse
-                        best_model = model
-                        best_params = {
-                            "n_estimators": n_est,
-                            "max_depth": depth,
-                            "learning_rate": lr,
-                        }
-
-        self.model = best_model
-        self.best_params = best_params
-        return self
-
-    def evaluate(self) -> "TrainingPipeline":
-        assert self.model is not None and self.test_df is not None
-        preds = self.model.predict(self.test_df[self.feature_cols])
-        y_true = self.test_df[self.cfg.target_col]
-        self.metrics = {
-            "rmse": float(np.sqrt(mean_squared_error(y_true, preds))),
-            "mae": float(mean_absolute_error(y_true, preds)),
-            "r2": float(r2_score(y_true, preds)),
-        }
+        assert self.test_df is not None
+        from demand_forecasting.pipelines.model_selection import ModelSelector
+        
+        selector = ModelSelector(experiment_name=self.cfg.experiment_name)
+        best_forecaster, best_metrics = selector.select_best_model(
+            train_df=self.train_df,
+            test_df=self.test_df,
+            feature_cols=self.feature_cols,
+            target_col=self.cfg.target_col,
+            model_name=self.cfg.model_name
+        )
+        
+        self.model = best_forecaster
+        self.metrics = best_metrics
+        self.best_params = {"model_type": best_forecaster.name}
         return self
 
     def save_artifacts(self) -> "TrainingPipeline":
         assert self.model is not None
         self.cfg.artifact_dir.mkdir(parents=True, exist_ok=True)
-        joblib.dump(self.model, self.cfg.artifact_dir / "model.joblib")
+        # For sklearn-compatible wrappers, save the inner model. Otherwise save wrapper.
+        if hasattr(self.model, "model"):
+            joblib.dump(self.model.model, self.cfg.artifact_dir / "model.joblib")
+        else:
+            joblib.dump(self.model, self.cfg.artifact_dir / "model.joblib")
+            
         meta = {"feature_cols": self.feature_cols, "best_params": self.best_params}
         (self.cfg.artifact_dir / "metadata.json").write_text(json.dumps(meta, indent=2))
         return self
 
-    def log_and_register(self) -> "TrainingPipeline":
-        assert self.model is not None
-        setup_mlflow()
-        try:
-            mlflow.set_experiment(self.cfg.experiment_name)
-            with mlflow.start_run(run_name="demand_forecast_training"):
-                mlflow.log_params(self.best_params)
-                mlflow.log_metrics(self.metrics)
-                mlflow.log_param("feature_count", len(self.feature_cols))
-                mlflow.xgboost.log_model(
-                    self.model,
-                    "model",
-                    registered_model_name=self.cfg.model_name,
-                )
-                result = mlflow.register_model(
-                    f"runs:/{mlflow.active_run().info.run_id}/model",
-                    self.cfg.model_name,
-                )
-                promote_model(
-                    self.cfg.model_name, result.version, stage="Production", alias="champion"
-                )
-        except Exception as exc:
-            print(f"MLflow logging skipped (using local artifacts): {exc}")
-        return self
-
     def run(self) -> dict[str, float]:
-        return (
+        import time
+        from shared.observability.metrics import TRAINING_DURATION, TRAINING_RUNS_TOTAL, MODEL_AUC_GAUGE
+        
+        start = time.monotonic()
+        try:
             self.read_data()
-            .time_based_split()
-            .train_and_tune()
-            .evaluate()
-            .save_artifacts()
-            .log_and_register()
-            .metrics
-        )
+            self.time_based_split()
+            self.train_select_result = self.train_and_select()
+            self.save_artifacts()
+            
+            # Emit Prometheus training metrics
+            TRAINING_RUNS_TOTAL.labels(project="demand_forecasting", status="success").inc()
+            # Set the MAE metric as a gauge indicator of final performance
+            MODEL_AUC_GAUGE.labels(project="demand_forecasting", model_version=self.cfg.model_name).set(self.metrics.get("mae", 0.0))
+            
+            return self.metrics
+        except Exception as exc:
+            TRAINING_RUNS_TOTAL.labels(project="demand_forecasting", status="failed").inc()
+            raise exc
+        finally:
+            duration = time.monotonic() - start
+            TRAINING_DURATION.labels(project="demand_forecasting").observe(duration)
+

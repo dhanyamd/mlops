@@ -4,8 +4,3 @@ provider: local
 online_store:
   type: redis
   connection_string: "redis://localhost:6379/0"
-offline_store:
-  type: clickhouse
-  host: localhost
-  port: 8123
-  database: fraud

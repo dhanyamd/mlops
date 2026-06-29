@@ -11,6 +11,13 @@
 #   MLflow + MinIO        — experiment tracking + S3 artifact store
 #   Prefect               — batch orchestration
 #   Kafka UI              — stream observability
+#   ── Observability stack (Pillar 6) ──
+#   Prometheus            — metrics scraping + storage
+#   Grafana               — dashboards (auto-provisioned from infra/grafana/)
+#   Loki                  — log aggregation (structlog JSON → Loki)
+#   Jaeger                — distributed tracing (OTel spans)
+#   LocalStack            — AWS emulation (S3, SQS, ECR, Secrets Manager)
+
 
 services:
   # ── OLTP ──────────────────────────────────────────────────────────────────
@@ -234,6 +241,81 @@ services:
     volumes:
       - prefect_data:/root/.prefect
 
+  # ── Observability: Metrics ─────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+      - "--web.enable-lifecycle"       # allows hot-reload: curl -X POST localhost:9090/-/reload
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # lets Prometheus reach services on host
+
+  grafana:
+    image: grafana/grafana:10.4.2
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/dashboards/ml_model_health.json
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/etc/grafana/dashboards:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ── Observability: Logs ────────────────────────────────────────────────────
+  loki:
+    image: grafana/loki:2.9.7
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - loki_data:/loki
+
+  # ── Observability: Tracing ─────────────────────────────────────────────────
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "4317:4317"     # OTLP gRPC (OpenTelemetry sends spans here)
+      - "4318:4318"     # OTLP HTTP
+      - "6831:6831/udp" # Jaeger agent (legacy)
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:16686"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ── AWS Emulation (LocalStack) ─────────────────────────────────────────────
+  localstack:
+    image: localstack/localstack:3.5
+    ports:
+      - "4566:4566"         # All AWS service APIs (S3, SQS, ECR, Secrets Manager)
+    environment:
+      SERVICES: s3,sqs,secretsmanager,iam,cloudwatch
+      DEBUG: "0"
+      PERSISTENCE: "1"      # State survives container restart
+    volumes:
+      - localstack_data:/var/lib/localstack
+      - /var/run/docker.sock:/var/run/docker.sock
+
 volumes:
   postgres_data:
   clickhouse_data:
@@ -241,3 +323,7 @@ volumes:
   redis_data:
   minio_data:
   prefect_data:
+  prometheus_data:
+  grafana_data:
+  loki_data:
+  localstack_data:

@@ -10,11 +10,19 @@ import pandas as pd
 
 @dataclass
 class PreprocessingConfig:
-    input_path: Path
-    output_path: Path
+    input_key: str | Path = "demand_forecasting/processed/unified.parquet"
+    output_key: str | Path = "demand_forecasting/processed/cleaned.parquet"
     merge_on: str = "date"
     nan_strategy: str = "median"
     iqr_multiplier: float = 1.5
+    input_path: Path | str | None = None
+    output_path: Path | str | None = None
+
+    def __post_init__(self):
+        if self.input_path is not None:
+            self.input_key = self.input_path
+        if self.output_path is not None:
+            self.output_key = self.output_path
 
 
 class PreprocessingPipeline:
@@ -25,7 +33,14 @@ class PreprocessingPipeline:
         self.df: pd.DataFrame | None = None
 
     def read_data(self) -> "PreprocessingPipeline":
-        self.df = pd.read_parquet(self.cfg.input_path)
+        key = self.cfg.input_key
+        # Self-healing: if local Path or local file exists, read locally (for testing/dev parity)
+        if isinstance(key, Path) or (isinstance(key, str) and not key.startswith("s3://") and Path(key).exists()):
+            self.df = pd.read_parquet(key)
+        else:
+            from shared.clients import S3Client
+            s3 = S3Client()
+            self.df = s3.read_df(str(key))
         self.df["date"] = pd.to_datetime(self.df["date"])
         return self
 
@@ -58,8 +73,14 @@ class PreprocessingPipeline:
 
     def save(self) -> pd.DataFrame:
         assert self.df is not None
-        self.cfg.output_path.parent.mkdir(parents=True, exist_ok=True)
-        self.df.to_parquet(self.cfg.output_path, index=False)
+        key = self.cfg.output_key
+        if isinstance(key, Path) or (isinstance(key, str) and not key.startswith("s3://") and not "/" in key):
+            Path(key).parent.mkdir(parents=True, exist_ok=True)
+            self.df.to_parquet(key, index=False)
+        else:
+            from shared.clients import S3Client
+            s3 = S3Client()
+            s3.write_df(self.df, str(key))
         return self.df
 
     def run(self) -> pd.DataFrame:

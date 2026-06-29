@@ -81,6 +81,15 @@ class MLflowConfig:
     s3_endpoint: str = os.getenv("MLFLOW_S3_ENDPOINT_URL", "http://localhost:9000")
 
 
+@dataclass(frozen=True)
+class S3Config:
+    endpoint_url: str = os.getenv("AWS_S3_ENDPOINT_URL", os.getenv("MLFLOW_S3_ENDPOINT_URL", "http://localhost:9000"))
+    aws_access_key_id: str = os.getenv("AWS_ACCESS_KEY_ID", "minioadmin")
+    aws_secret_access_key: str = os.getenv("AWS_SECRET_ACCESS_KEY", "minioadmin")
+    region_name: str = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
+    bucket_name: str = os.getenv("DATA_LAKE_BUCKET", "ml-data-lake")
+
+
 POSTGRES = PostgresConfig()
 CLICKHOUSE = ClickHouseConfig()
 REDIS = RedisConfig()
@@ -88,6 +97,7 @@ QDRANT = QdrantConfig()
 KAFKA = KafkaConfig()
 SPARK = SparkConfig()
 MLFLOW_CFG = MLflowConfig()
+S3_CFG = S3Config()
 
 # Public dataset URLs (real data — not synthetic)
 DATASETS = {

@@ -115,3 +115,46 @@ class QdrantPatternStore:
         if not hits:
             return 0.0
         return float(hits[0]["score"]) if hits[0]["score"] >= threshold else 0.0
+
+
+class S3Client:
+    """Production S3 / MinIO client for data lake persistence."""
+
+    def __init__(self):
+        from shared.config import S3_CFG
+        self.cfg = S3_CFG
+        self.storage_options = {
+            "key": self.cfg.aws_access_key_id,
+            "secret": self.cfg.aws_secret_access_key,
+            "client_kwargs": {
+                "endpoint_url": self.cfg.endpoint_url,
+                "region_name": self.cfg.region_name,
+            }
+        }
+
+    def write_df(self, df: pd.DataFrame, key: str) -> str:
+        """Write a pandas DataFrame as a parquet file to S3 data lake.
+        
+        Args:
+            df: The pandas DataFrame.
+            key: S3 object key (e.g. 'fraud_detection/offline/transaction_features.parquet')
+            
+        Returns:
+            The full S3 URI.
+        """
+        s3_url = f"s3://{self.cfg.bucket_name}/{key}"
+        df.to_parquet(s3_url, index=False, storage_options=self.storage_options)
+        return s3_url
+
+    def read_df(self, key: str) -> pd.DataFrame:
+        """Read a parquet file from S3 data lake into a pandas DataFrame.
+        
+        Args:
+            key: S3 object key.
+            
+        Returns:
+            The loaded pandas DataFrame.
+        """
+        s3_url = f"s3://{self.cfg.bucket_name}/{key}"
+        return pd.read_parquet(s3_url, storage_options=self.storage_options)
+

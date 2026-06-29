@@ -48,7 +48,9 @@ def produce_from_clickhouse(n_messages: int = 100, delay_sec: float = 0.1) -> No
         time.sleep(delay_sec)
 
     producer.flush()
-    print(f"Produced {len(df)} transactions to {KAFKA.transactions_topic}")
+    from shared.observability.logging import get_logger
+    log = get_logger(__name__)
+    log.info("produced_transactions", count=len(df), topic=KAFKA.transactions_topic)
 
 
 if __name__ == "__main__":

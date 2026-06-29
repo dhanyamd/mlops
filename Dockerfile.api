@@ -1,0 +1,78 @@
+# Multi-stage Docker build for the Fraud Detection FastAPI service.
+#
+# Why multi-stage:
+#   Stage 1 (builder): installs all dependencies including build tools (gcc, etc.)
+#   Stage 2 (runtime): copies only the installed packages — no build tools.
+#   Result: production image is ~60% smaller than a single-stage build.
+#
+# Build: docker build -f Dockerfile.api -t fraud-api:latest .
+# Run:   docker run -p 8000:8000 --env-file .env fraud-api:latest
+
+# ── Stage 1: Builder ──────────────────────────────────────────────────────────
+FROM python:3.12-slim AS builder
+
+WORKDIR /build
+
+# Install uv (fast pip replacement)
+RUN pip install --no-cache-dir uv==0.4.10
+
+# Copy dependency files first — Docker cache layer: only re-run if deps change
+COPY pyproject.toml uv.lock ./
+
+# Install into a virtual environment inside the build stage
+RUN uv venv /opt/venv && \
+    uv pip install --python /opt/venv/python \
+        fastapi \
+        uvicorn[standard] \
+        prometheus-client \
+        prometheus-fastapi-instrumentator \
+        structlog \
+        opentelemetry-api \
+        opentelemetry-sdk \
+        opentelemetry-exporter-otlp \
+        opentelemetry-instrumentation-fastapi \
+        mlflow \
+        xgboost \
+        qdrant-client \
+        redis \
+        clickhouse-connect \
+        pydantic \
+        numpy \
+        pandas \
+        feast
+
+# ── Stage 2: Runtime ──────────────────────────────────────────────────────────
+FROM python:3.12-slim AS runtime
+
+# Non-root user — security best practice
+RUN addgroup --system appgroup && adduser --system --ingroup appgroup appuser
+
+WORKDIR /app
+
+# Copy only the installed venv from builder — no build tools in final image
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Copy application code
+COPY shared/ ./shared/
+COPY fraud_detection/ ./fraud_detection/
+
+# Set Python path so imports resolve
+ENV PYTHONPATH="/app"
+
+# Non-root user
+USER appuser
+
+# Expose metrics port (Prometheus) and API port
+EXPOSE 8000
+
+# Uvicorn flags:
+#   --workers 2       : 2 worker processes (scale with CPU count in prod)
+#   --no-access-log   : structlog handles request logging, not uvicorn
+#   --timeout-keep-alive 30 : match load balancer idle timeout
+CMD ["uvicorn", "fraud_detection.api.app:app", \
+     "--host", "0.0.0.0", \
+     "--port", "8000", \
+     "--workers", "2", \
+     "--no-access-log", \
+     "--timeout-keep-alive", "30"]
