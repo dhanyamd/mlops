@@ -47,7 +47,7 @@ stream:
 	@echo "Starting Spark feature job (background)..."
 	docker compose exec -d spark-master spark-submit \
 		--master spark://spark-master:7077 \
-		--packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1 \
+		--packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1,io.delta:delta-spark_2.12:3.1.0,org.apache.hadoop:hadoop-aws:3.3.4 \
 		/opt/spark/jobs/feature_streaming.py kafka:29092 redis
 	sleep 5
 	$(UV) run python -m fraud_detection.streaming.producer --count 200 &
@@ -57,7 +57,7 @@ stream:
 spark:
 	docker compose exec spark-master spark-submit \
 		--master spark://spark-master:7077 \
-		--packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1 \
+		--packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1,io.delta:delta-spark_2.12:3.1.0,org.apache.hadoop:hadoop-aws:3.3.4 \
 		/opt/spark/jobs/feature_streaming.py kafka:29092 redis
 
 dashboard:

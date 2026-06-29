@@ -52,3 +52,31 @@ CREATE TABLE IF NOT EXISTS fraud.scored_transactions (
     scored_at       DateTime DEFAULT now()
 ) ENGINE = MergeTree()
 ORDER BY scored_at;
+
+-- PostgreSQL mapping tables for DBT Staging Models to read catalog data from PostgreSQL
+CREATE TABLE IF NOT EXISTS demand.products (
+    product_id   String,
+    store_id     Int32,
+    item_id      Int32,
+    product_name String,
+    category     String,
+    unit_price   Float64,
+    cost         Float64
+) ENGINE = PostgreSQL('postgres:5432', 'mlops', 'products', 'mlops', 'mlops', 'demand_forecasting');
+
+CREATE TABLE IF NOT EXISTS demand.promotions (
+    promotion_id String,
+    product_id   String,
+    discount_pct Float64,
+    start_date   Date,
+    end_date     Date,
+    channel      String
+) ENGINE = PostgreSQL('postgres:5432', 'mlops', 'promotions', 'mlops', 'mlops', 'demand_forecasting');
+
+CREATE TABLE IF NOT EXISTS demand.external_daily (
+    sale_date        Date,
+    is_holiday       UInt8,
+    temperature_c    Nullable(Float64),
+    precipitation_mm Nullable(Float64)
+) ENGINE = PostgreSQL('postgres:5432', 'mlops', 'external_daily', 'mlops', 'mlops', 'demand_forecasting');
+

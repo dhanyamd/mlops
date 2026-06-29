@@ -1,17 +1,14 @@
-# MLOps Academy — End-to-End Learning Projects
+# mlops 
 
-Two production-grade ML systems built from the [ML Academy MLOps course](https://www.mlacademy.ai/articles/free-mlops-course-ml-production-system-breakdown), covering all 10 components of a production ML system.
+Two production-grade ML systems built from the covering all 10 components of a production ML system.
 
 | Project | Pattern | Storage | Streaming | Model |
 |---------|---------|---------|-----------|-------|
-| **Demand Forecasting** | Batch ETL + Prefect | ClickHouse + PostgreSQL | — | XGBoost + lag features |
+| **Demand Forecasting** | Batch ETL + Prefect | ClickHouse + PostgreSQL | none | XGBoost + lag features |
 | **Fraud Detection** | Kafka + Spark Streaming | ClickHouse + Redis + **Qdrant** | Kafka | XGBoost + vector ensemble |
 
 ## What You'll Learn
 
-This repo is a **complete MLOps curriculum in code** — not toy notebooks. Every concept from the 5-day course is implemented:
-
-### The 10 Production ML Components
 
 | # | Component | Demand Forecasting | Fraud Detection |
 |---|-----------|-------------------|-----------------|
@@ -128,15 +125,7 @@ Experiment → Tracking Server → Staging → Production (@champion) → Archiv
 
 Implemented via MLflow with `@champion` alias for inference pipelines.
 
-## Course Reference Map
 
-| Course Day | Topic | Code Location |
-|------------|-------|---------------|
-| [Day 1](https://www.mlacademy.ai/articles/free-mlops-course-ml-production-system-breakdown) | 10 components overview | This README + `docs/ARCHITECTURE.md` |
-| [Day 2](https://www.mlacademy.ai/articles/free-mlops-course-databases-and-processing) | Databases & processing | `docker-compose.yml`, ETL pipelines |
-| [Day 3](https://www.mlacademy.ai/articles/free-mlops-course-machine-learning-pipelines) | ML pipelines | `*/pipelines/` |
-| [Day 4](https://www.mlacademy.ai/articles/free-mlops-course-feature-store-model-registry-and-experiment-tracking) | Feature store & registry | `fraud_detection/feature_repo/`, `shared/mlflow_utils.py` |
-| [Day 5](https://www.mlacademy.ai/articles/free-mlops-course-data-drift-and-model-monitoring-ci-cd-pipelines) | Monitoring & CI/CD | `shared/monitoring/`, `.github/workflows/` |
 
 ## Testing & CI
 
@@ -170,6 +159,3 @@ CI pipeline runs on every push: lint → unit tests → (Docker build ready).
 5. **Modify drift thresholds** — trigger retraining in `flows/orchestration.py`
 6. **Add a new feature** — practice the full FTI (Feature → Train → Infer) loop
 
-## License
-
-MIT — built for learning. Based on concepts from [ML Academy](https://www.mlacademy.ai).

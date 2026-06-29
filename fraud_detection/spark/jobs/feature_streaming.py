@@ -1,14 +1,15 @@
 """
-Spark Structured Streaming: Kafka → velocity features → Redis + Kafka.
+Spark Structured Streaming: Kafka → velocity features → Redis + Kafka + Delta Lake.
 
 Submit (prod):
-  docker compose exec spark-master spark-submit \\
-    --master spark://spark-master:7077 \\
-    --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1 \\
+  docker compose exec spark-master spark-submit \
+    --master spark://spark-master:7077 \
+    --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1,io.delta:delta-spark_2.12:3.1.0,org.apache.hadoop:hadoop-aws:3.3.4 \
     /opt/spark/jobs/feature_streaming.py
 """
 
 import json
+import os
 import sys
 
 from pyspark.sql import SparkSession
@@ -20,24 +21,37 @@ INPUT_TOPIC = "transactions"
 OUTPUT_TOPIC = "transaction_features"
 REDIS_HOST = sys.argv[2] if len(sys.argv) > 2 else "redis"
 
+# S3 Data Lake connection configuration (MinIO in Docker network)
+S3_ENDPOINT = os.getenv("AWS_S3_ENDPOINT_URL", "http://minio:9000")
+if "localhost" in S3_ENDPOINT or "127.0.0.1" in S3_ENDPOINT:
+    S3_ENDPOINT = S3_ENDPOINT.replace("localhost", "minio").replace("127.0.0.1", "minio")
+
+AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY_ID", "minioadmin")
+AWS_SECRET_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "minioadmin")
+
 spark = (
     SparkSession.builder.appName("fraud-feature-streaming")
+    .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+    .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
     .config("spark.sql.shuffle.partitions", "8")
+    .config("spark.hadoop.fs.s3a.endpoint", S3_ENDPOINT)
+    .config("spark.hadoop.fs.s3a.access.key", AWS_ACCESS_KEY)
+    .config("spark.hadoop.fs.s3a.secret.key", AWS_SECRET_KEY)
+    .config("spark.hadoop.fs.s3a.path.style.access", "true")
+    .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
     .getOrCreate()
 )
 
+# Parse all 28 PCA components + time metadata + timestamp
 schema = StructType(
     [
         StructField("transaction_id", StringType()),
         StructField("card_id", StringType()),
         StructField("amount", DoubleType()),
         StructField("time_seconds", DoubleType()),
-        StructField("v1", DoubleType()),
-        StructField("v2", DoubleType()),
-        StructField("v3", DoubleType()),
-        StructField("v4", DoubleType()),
-        StructField("v5", DoubleType()),
+        StructField("timestamp", StringType()),
     ]
+    + [StructField(f"v{i}", DoubleType()) for i in range(1, 29)]
 )
 
 raw = (
@@ -51,12 +65,16 @@ raw = (
 parsed = (
     raw.select(F.from_json(F.col("value").cast("string"), schema).alias("data"))
     .select("data.*")
+    .withColumn(
+        "timestamp_parsed",
+        F.coalesce(F.col("timestamp").cast("timestamp"), F.current_timestamp())
+    )
 )
 
 # Windowed velocity features (Spark — not in-memory Python)
 windowed = (
-    parsed.withWatermark("time_seconds", "1 hour")
-    .groupBy(F.col("card_id"), F.window(F.col("time_seconds").cast("timestamp"), "1 hour"))
+    parsed.withWatermark("timestamp_parsed", "1 hour")
+    .groupBy(F.col("card_id"), F.window(F.col("timestamp_parsed"), "1 hour"))
     .agg(
         F.count("*").alias("txn_count_1h"),
         F.sum("amount").alias("amount_sum_1h"),
@@ -102,7 +120,7 @@ def write_to_redis(batch_df, batch_id):
         r.setex(f"feat:card:{row['card_id']}", 86400, json.dumps(payload))
 
 
-# Kafka sink for downstream inference service
+# 1. Kafka sink for downstream inference service
 kafka_query = (
     features.select(F.col("card_id").alias("key"), F.col("value"))
     .writeStream.format("kafka")
@@ -113,6 +131,7 @@ kafka_query = (
     .start()
 )
 
+# 2. Redis sink for online serving
 redis_query = (
     features.writeStream.foreachBatch(write_to_redis)
     .option("checkpointLocation", "/tmp/spark-checkpoints/redis-features")
@@ -120,4 +139,15 @@ redis_query = (
     .start()
 )
 
+# 3. Delta Lake sink to S3 data lake partitioned by date
+delta_df = parsed.withColumn("date", F.to_date(F.col("timestamp_parsed")))
+delta_query = (
+    delta_df.writeStream.format("delta")
+    .partitionBy("date")
+    .option("checkpointLocation", "s3a://ml-data-lake/checkpoints/raw_transactions_delta")
+    .outputMode("append")
+    .start("s3a://ml-data-lake/delta/raw_transactions")
+)
+
 spark.streams.awaitAnyTermination()
+

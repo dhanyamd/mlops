@@ -1,0 +1,12 @@
+version: 2
+
+sources:
+  - name: clickhouse_warehouse_demand
+    database: default
+    schema: demand
+    tables:
+      - name: sales
+      - name: forecasts
+      - name: products
+      - name: promotions
+      - name: external_daily
