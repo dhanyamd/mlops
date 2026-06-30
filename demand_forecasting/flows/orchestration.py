@@ -96,6 +96,18 @@ def task_drift_check(features_key: str) -> dict:
         if r.drifted:
             log.warning("feature_drift_detected", feature=r.feature, ks_stat=r.statistic)
 
+    # Generate Evidently HTML report
+    try:
+        from shared.monitoring.evidently_reports import DriftDashboardGenerator
+        dashboard = DriftDashboardGenerator("demand_forecasting")
+        dashboard.generate_drift_report(
+            reference=reference[numeric_cols[:10]],
+            current=current[numeric_cols[:10]],
+            target_column=None
+        )
+    except Exception as e:
+        log.warning("failed_to_generate_evidently_drift_report", error=str(e))
+
     drifted = should_retrain(reports, min_drifted=2)
     return {"drifted": drifted, "features_checked": len(reports)}
 

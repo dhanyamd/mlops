@@ -1,0 +1,21 @@
+version: 2
+
+models:
+  - name: stg_fraud__transactions
+    description: "Staged raw transactions table from Clickhouse"
+    columns:
+      - name: transaction_id
+        tests:
+          - unique
+          - not_null
+      - name: time_seconds
+        tests:
+          - not_null
+      - name: amount
+        tests:
+          - not_null
+      - name: is_fraud
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]

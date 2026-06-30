@@ -209,6 +209,40 @@ class ModelSelector:
                     client.set_registered_model_alias(model_name, self.challenger_alias, runner_up_reg.version)
                     log.info("initial_challenger_registered", version=runner_up_reg.version)
 
+            # Generate and log SHAP and Model Card explainability artifacts
+            try:
+                from shared.monitoring.explainability import SHAPExplainer
+                from shared.monitoring.model_card import ModelCardGenerator
+
+                # If best_model has an underlying tree model, use it for SHAP
+                if winner["forecaster"].name in ["XGBoost", "LightGBM"]:
+                    explainer = SHAPExplainer(winner["forecaster"].model, train_df[feature_cols])
+                    shap_plot_path = "artifacts/demand_forecasting/shap_summary.png"
+                    explainer.generate_summary_plot(test_df[feature_cols], shap_plot_path)
+                    mlflow.log_artifact(shap_plot_path)
+                    top_features = list(explainer.explain_prediction(test_df[feature_cols].head(1)).keys())
+                else:
+                    top_features = ["date"] # Prophet is date-based
+
+                card_gen = ModelCardGenerator("demand_forecasting")
+                card_metadata = {
+                    "model_name": f"Demand Forecasting {winner['forecaster'].name} Model",
+                    "model_version": f"v{winner_reg.version}",
+                    "model_type": "Regression / Time-Series",
+                    "framework": winner["forecaster"].name,
+                    "intended_use": "Aggregate store-item demand forecasting.",
+                    "out_of_scope": "Individual user purchase recommendations, real-time transaction scoring.",
+                    "training_data_source": "ClickHouse demand.sales",
+                    "dataset_size": len(train_df) + len(test_df),
+                    "features": feature_cols,
+                    "metrics": winner["metrics"],
+                    "top_features": top_features,
+                }
+                card_path = card_gen.generate_card(card_metadata)
+                mlflow.log_artifact(card_path)
+            except Exception as e:
+                log.warning("failed_to_generate_explainability_artifacts", error=str(e))
+
             # Log champion selection metadata to parent run
             mlflow.log_params({
                 "champion_model_type": best_model.name,

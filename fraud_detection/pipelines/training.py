@@ -180,6 +180,36 @@ class FraudTrainingPipeline:
                 self.cfg.model_name,
             )
             promote_model(self.cfg.model_name, result.version, alias="champion")
+
+            # Generate and log SHAP and Model Card explainability artifacts
+            try:
+                from shared.monitoring.explainability import SHAPExplainer
+                from shared.monitoring.model_card import ModelCardGenerator
+                
+                explainer = SHAPExplainer(self.model, self.X_train)
+                shap_plot_path = "artifacts/fraud_detection/shap_summary.png"
+                explainer.generate_summary_plot(self.X_test, shap_plot_path)
+                mlflow.log_artifact(shap_plot_path)
+                
+                card_gen = ModelCardGenerator("fraud_detection")
+                card_metadata = {
+                    "model_name": "Fraud Detection XGBoost Classifier",
+                    "model_version": f"v{result.version}",
+                    "model_type": "Binary Classification (XGBoost)",
+                    "framework": f"xgboost=={xgb.__version__}",
+                    "intended_use": "Real-time fraud scoring for transactions.",
+                    "out_of_scope": "Credit scoring, purchase forecasting.",
+                    "training_data_source": f"S3: {self.cfg.raw_key}",
+                    "dataset_size": len(self.df),
+                    "features": self.feature_cols,
+                    "metrics": self.metrics,
+                    "top_features": list(explainer.explain_prediction(self.X_test.head(1)).keys()),
+                }
+                card_path = card_gen.generate_card(card_metadata)
+                mlflow.log_artifact(card_path)
+            except Exception as e:
+                log.warning("failed_to_generate_explainability_artifacts", error=str(e))
+                
         return self
 
     def run(self) -> dict:

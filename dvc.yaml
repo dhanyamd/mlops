@@ -1,0 +1,50 @@
+stages:
+  ingest_fraud:
+    cmd: python -m fraud_detection.data.ingest
+    deps:
+      - fraud_detection/data/ingest.py
+    outs:
+      - data/raw/fraud_transactions.parquet
+
+  train_fraud:
+    cmd: python -m fraud_detection.pipelines.training
+    deps:
+      - data/raw/fraud_transactions.parquet
+      - fraud_detection/pipelines/training.py
+      - fraud_detection/models/
+    outs:
+      - models/fraud_model.pkl
+    metrics:
+      - metrics.json:
+          cache: false
+
+  evaluate_fraud:
+    cmd: python -m fraud_detection.pipelines.evaluation
+    deps:
+      - models/fraud_model.pkl
+      - data/raw/fraud_transactions.parquet
+      - fraud_detection/pipelines/evaluation.py
+    plots:
+      - plots/pr_curve.json:
+          cache: false
+          x: recall
+          y: precision
+
+  ingest_demand:
+    cmd: python -m demand_forecasting.data.ingest
+    deps:
+      - demand_forecasting/data/ingest.py
+    outs:
+      - data/raw/demand_sales.csv
+
+  train_demand:
+    cmd: python -m demand_forecasting.pipelines.model_selection
+    deps:
+      - data/raw/demand_sales.csv
+      - demand_forecasting/pipelines/model_selection.py
+      - demand_forecasting/pipelines/model_zoo.py
+    outs:
+      - models/demand_champion.pkl
+    metrics:
+      - demand_metrics.json:
+          cache: false
