@@ -37,56 +37,23 @@ Two production-grade ML systems built from the covering all 10 components of a p
 │                                              PostgreSQL + Streamlit UI       │
 └─────────────────────────────────────────────────────────────────────────────┘
 
-╔═══════════════════════════════════════════════════════════════════════════════╗
-║                       FRAUD DETECTION (Real-Time System)                        ║
-╚═══════════════════════════════════════════════════════════════════════════════╝
-
-── OFFLINE: model training + online-store backfill ──────────────────────────────
-
-  generate_data.py
-     └─► S3: raw_transactions.parquet
-           └─► batch_pipeline.py   [ QA gate ▸ compute_velocity_features ▸ QA gate ]
-                 └─► S3: transaction_features.parquet
-                       ├─► training.py ─► XGBoost ─► MLflow registry (model @champion)
-                       └─► `feast materialize` ─────────────► Feast online store  (backfill)
-     └─► (also seeds Qdrant with known fraud-pattern vectors)
-
-── ONLINE: real-time streaming ──────────────────────────────────────────────────
-
-  ClickHouse fraud.transactions
-        │  producer.py            ▸ PRODUCES
-        ▼
-  ┌────────────────────────────┐
-  │  Kafka topic: transactions │   (keyed by card_id → per-card ordering)
-  └────────────────────────────┘
-        │                                   │
-     CONSUMES                            CONSUMES
-        ▼                                   ▼
-  feature_streaming.py                inference_service.py
-  (Spark Structured Streaming)        (Kafka consumer + producer)
-    • compute 10 velocity features      • get_online_features(card_id) ◄─┐
-      per card (1h/24h windows)         • fraud_score =                  │  reads
-    • push ─────────────────────┐         0.7·XGBoost@champion           │
-      to Feast online store     │         + 0.3·Qdrant vector score      │
-      (Redis · real-time)       │       • route by score:                │
-    • Delta Lake ─► S3          │           ≥ 0.5 ─► Kafka: fraud_alerts  │
-      (raw archive; no          │           < 0.5 ─► Kafka: fraud_predict.│
-       reader in repo yet)      │           every  ─► ClickHouse audit    │
-                                ▼                                         │
-                        ╔══════════════════════════╗                     │
-                        ║   FEAST ONLINE STORE      ║─────────────────────┘
-                        ║   Redis · key = card_id   ║   get_online_features
-                        ╚══════════════════════════╝
-             written by BOTH  feast materialize (batch)  +  feature_streaming.py (stream)
-             read by          inference_service.py       +  api/app.py
-
-  fraud_alerts / fraud_predictions ─► downstream actioning services  (NOT in this repo)
-
-── SYNC REST: request/response, no Kafka ────────────────────────────────────────
-
-  client ─► FastAPI  POST /score  (api/app.py)
-              └─► Feast/Redis features + XGBoost@champion + Qdrant ─► JSON {score, label}
-                  (served with an in-memory prediction cache)
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                        FRAUD DETECTION (Real-Time System)                        │
+├──────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  REAL-TIME (streaming)                                                           │
+│                              ┌─► Spark Streaming ─► Feast / Redis (features)     │
+│   transactions (Kafka) ──────┤                                                   │
+│                              └─► Inference ──reads──► Feast / Redis              │
+│                                     │                                            │
+│                                     ├─► Kafka: fraud_alerts / fraud_predictions  │
+│                                     └─► ClickHouse (audit log)                   │
+│                                                                                  │
+│  BATCH (offline)                                                                 │
+│   raw data ─► ETL ─► Training ─► MLflow (model @champion)                        │
+│                  └─► feast materialize ─► Feast / Redis  (backfill)              │
+│                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Quick Start
