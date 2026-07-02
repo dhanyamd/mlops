@@ -1,11 +1,13 @@
 """Production inference: Kafka + Redis(Feast) + Qdrant + MLflow → Kafka/ClickHouse.
 
-Feature contract — MUST match training.py:FEATURE_COLS and feature_computer.py keys.
+Feature contract — MUST match training.py:FEATURE_COLS and the features pushed by
+spark/jobs/feature_streaming.py:compute_features().
 Any change to feature names here must also update both of those files.
 """
 
 from __future__ import annotations
 
+import argparse
 import time
 from datetime import datetime, timezone
 import json
@@ -37,7 +39,7 @@ VECTOR_WEIGHT = 0.3
 FRAUD_THRESHOLD = 0.5
 
 # Feature contract — must exactly match training.py:FEATURE_COLS
-# and the dict keys returned by StreamingFeatureComputer.compute()
+# and the features pushed to Redis by spark/jobs/feature_streaming.py:compute_features()
 FEATURE_COLS: list[str] = [
     "amount",
     "txn_count_1h",

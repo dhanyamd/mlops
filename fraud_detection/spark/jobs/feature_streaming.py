@@ -1,5 +1,19 @@
 """
-Spark Structured Streaming: Kafka → velocity features → Redis + Kafka + Delta Lake.
+Spark Structured Streaming: Kafka → canonical velocity features → Feast online store + Delta Lake.
+
+This job is the real-time feature-freshness path. It computes the SAME 10-feature
+schema the model trains on (see fraud_detection/pipelines/training.py:FEATURE_COLS and
+feature_repo/features.py:transaction_features) and pushes it into the Feast online
+store (Redis) via `store.push()`. The inference service and the FastAPI app read those
+features back with `feature_store.get_online_features(...)`, so producing them here keeps
+online features fresh per-transaction instead of only as fresh as the last batch
+`feast materialize`. A parallel Delta Lake sink archives the raw transactions.
+
+Infra requirements (the Spark driver runs foreachBatch, so these apply to spark-master):
+  - `feast` and `pandas` installed on the Spark image.
+  - The Feast repo mounted at FEATURE_REPO_PATH (default /opt/feature_repo), including
+    its registry.db, so the driver can resolve the pushed feature definitions.
+  - Redis reachable at REDIS_HOST:6379 from inside the Spark network.
 
 Submit (prod):
   docker compose exec spark-master spark-submit \
@@ -8,18 +22,27 @@ Submit (prod):
     /opt/spark/jobs/feature_streaming.py
 """
 
-import json
 import os
 import sys
+from collections import defaultdict, deque
+from datetime import timedelta
 
+import pandas as pd
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import DoubleType, StringType, StructField, StructType
 
+from feast import FeatureStore
+from feast.data_source import PushMode
+from feast.repo_config import RepoConfig
+
 KAFKA_BOOTSTRAP = sys.argv[1] if len(sys.argv) > 1 else "kafka:29092"
 INPUT_TOPIC = "transactions"
-OUTPUT_TOPIC = "transaction_features"
-REDIS_HOST = sys.argv[2] if len(sys.argv) > 2 else "redis"
+REDIS_HOST = sys.argv[2] if len(sys.argv) > 2 else os.getenv("REDIS_HOST", "redis")
+
+# Feast repo (mounted into the Spark container) — used to push features to the online store.
+FEATURE_REPO = os.getenv("FEATURE_REPO_PATH", "/opt/feature_repo")
+PUSH_SOURCE_NAME = "transaction_features_stream"
 
 # S3 Data Lake connection configuration (MinIO in Docker network)
 S3_ENDPOINT = os.getenv("AWS_S3_ENDPOINT_URL", "http://minio:9000")
@@ -41,6 +64,19 @@ spark = (
     .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
     .getOrCreate()
 )
+
+# Feast client — built in code (not from feature_store.yaml) so the online store points
+# at the in-network Redis host regardless of the yaml's localhost connection string.
+# entity_key_serialization_version is pinned to match feature_store.yaml so keys written
+# here are readable by the API / inference service.
+_repo_config = RepoConfig(
+    project="fraud_detection",
+    provider="local",
+    registry=os.path.join(FEATURE_REPO, "data", "registry.db"),
+    online_store={"type": "redis", "connection_string": f"{REDIS_HOST}:6379"},
+    entity_key_serialization_version=2,
+)
+store = FeatureStore(config=_repo_config)
 
 # Parse all 28 PCA components + time metadata + timestamp
 schema = StructType(
@@ -67,79 +103,84 @@ parsed = (
     .select("data.*")
     .withColumn(
         "timestamp_parsed",
-        F.coalesce(F.col("timestamp").cast("timestamp"), F.current_timestamp())
+        F.coalesce(F.col("timestamp").cast("timestamp"), F.current_timestamp()),
     )
 )
 
-# Windowed velocity features (Spark — not in-memory Python)
-windowed = (
-    parsed.withWatermark("timestamp_parsed", "1 hour")
-    .groupBy(F.col("card_id"), F.window(F.col("timestamp_parsed"), "1 hour"))
-    .agg(
-        F.count("*").alias("txn_count_1h"),
-        F.sum("amount").alias("amount_sum_1h"),
-        F.avg("amount").alias("amount_mean_1h"),
-        F.stddev("amount").alias("amount_std_1h"),
-        F.max("amount").alias("amount_max_1h"),
-    )
-)
+# ── Canonical velocity features (must mirror generate_data.compute_velocity_features) ──
+# foreachBatch runs on the driver in a single process, so we maintain a bounded per-card
+# rolling history here and compute the exact 10-feature schema the model expects.
+WINDOW_1H = timedelta(hours=1)
+WINDOW_24H = timedelta(hours=24)
+_history: dict[str, deque] = defaultdict(deque)
 
-features = windowed.select(
-    F.col("card_id"),
-    F.col("txn_count_1h"),
-    F.col("amount_sum_1h"),
-    F.col("amount_mean_1h"),
-    F.coalesce(F.col("amount_std_1h"), F.lit(0.0)).alias("amount_std_1h"),
-    F.col("amount_max_1h"),
-    F.to_json(
-        F.struct(
-            F.col("card_id"),
-            F.col("txn_count_1h"),
-            F.col("amount_sum_1h"),
-            F.col("amount_mean_1h"),
-            F.col("amount_std_1h"),
-            F.col("amount_max_1h"),
+
+def compute_features(card_id: str, amount: float, ts) -> dict:
+    """Rolling 1h/24h velocity features for one transaction — matches the offline schema."""
+    history = _history[card_id]
+    history.append((ts, amount))
+
+    # Prune anything older than the 24h window
+    cutoff = ts - WINDOW_24H
+    while history and history[0][0] < cutoff:
+        history.popleft()
+
+    amounts_24h = [a for _, a in history]
+    amounts_1h = [a for t, a in history if t >= ts - WINDOW_1H]
+
+    txn_1h = len(amounts_1h)
+    txn_24h = len(amounts_24h)
+    amt_sum = sum(amounts_24h)
+    amt_mean = amt_sum / txn_24h if txn_24h else 0.0
+    # Sample std (ddof=1) to match pandas .std() used in the offline pipeline
+    amt_std = (
+        (sum((a - amt_mean) ** 2 for a in amounts_24h) / (txn_24h - 1)) ** 0.5
+        if txn_24h > 1
+        else 0.0
+    )
+
+    return {
+        "amount": float(amount),
+        "txn_count_1h": int(txn_1h),
+        "txn_count_24h": int(txn_24h),
+        "amount_sum_24h": float(amt_sum),
+        "amount_mean_24h": float(amt_mean),
+        "amount_std_24h": float(amt_std),
+        "velocity_ratio": float(txn_1h / max(txn_24h, 1)),
+        "amount_deviation": float(amount / max(amt_mean, 1.0)),
+        "hour_of_day": int(ts.hour),
+        "is_night": int(ts.hour < 6 or ts.hour > 22),
+    }
+
+
+def push_to_feast(batch_df, batch_id):
+    """foreachBatch sink: compute canonical features and push to the Feast online store."""
+    rows = batch_df.select("card_id", "amount", "timestamp_parsed").collect()
+    if not rows:
+        return
+
+    records = []
+    for row in sorted(rows, key=lambda r: r["timestamp_parsed"]):
+        feats = compute_features(row["card_id"], float(row["amount"]), row["timestamp_parsed"])
+        records.append(
+            {"card_id": row["card_id"], "event_timestamp": row["timestamp_parsed"], **feats}
         )
-    ).alias("value"),
-)
+
+    pdf = pd.DataFrame(records)
+    # Online store keeps only the latest row per entity — collapse to one row per card.
+    pdf = pdf.sort_values("event_timestamp").groupby("card_id", as_index=False).last()
+    store.push(PUSH_SOURCE_NAME, pdf, to=PushMode.ONLINE)
 
 
-def write_to_redis(batch_df, batch_id):
-    """foreachBatch sink: push features to Redis online store."""
-    import redis
-
-    r = redis.Redis(host=REDIS_HOST, port=6379, decode_responses=True)
-    for row in batch_df.collect():
-        payload = {
-            "txn_count_1h": row["txn_count_1h"],
-            "amount_sum_1h": float(row["amount_sum_1h"] or 0),
-            "amount_mean_1h": float(row["amount_mean_1h"] or 0),
-            "amount_std_1h": float(row["amount_std_1h"] or 0),
-            "amount_max_1h": float(row["amount_max_1h"] or 0),
-        }
-        r.setex(f"feat:card:{row['card_id']}", 86400, json.dumps(payload))
-
-
-# 1. Kafka sink for downstream inference service
-kafka_query = (
-    features.select(F.col("card_id").alias("key"), F.col("value"))
-    .writeStream.format("kafka")
-    .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP)
-    .option("topic", OUTPUT_TOPIC)
-    .option("checkpointLocation", "/tmp/spark-checkpoints/kafka-features")
-    .outputMode("update")
+# 1. Feast online-store sink (Redis) — keeps served features fresh in real time.
+feast_query = (
+    parsed.writeStream.foreachBatch(push_to_feast)
+    .option("checkpointLocation", "/tmp/spark-checkpoints/feast-features")
+    .outputMode("append")
     .start()
 )
 
-# 2. Redis sink for online serving
-redis_query = (
-    features.writeStream.foreachBatch(write_to_redis)
-    .option("checkpointLocation", "/tmp/spark-checkpoints/redis-features")
-    .outputMode("update")
-    .start()
-)
-
-# 3. Delta Lake sink to S3 data lake partitioned by date
+# 2. Delta Lake sink to S3 data lake partitioned by date — raw transaction archive.
 delta_df = parsed.withColumn("date", F.to_date(F.col("timestamp_parsed")))
 delta_query = (
     delta_df.writeStream.format("delta")
@@ -150,4 +191,3 @@ delta_query = (
 )
 
 spark.streams.awaitAnyTermination()
-

@@ -4,3 +4,6 @@ provider: local
 online_store:
   type: redis
   connection_string: "redis://localhost:6379/0"
+# Pinned so the streaming push (spark/jobs/feature_streaming.py, which builds its
+# RepoConfig in code) encodes online keys identically to this reader-side config.
+entity_key_serialization_version: 2

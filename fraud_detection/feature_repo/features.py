@@ -8,7 +8,7 @@ Feature Store architecture:
 
 from datetime import timedelta
 
-from feast import Entity, FeatureView, Field, FileSource, ValueType
+from feast import Entity, FeatureView, Field, FileSource, PushSource, ValueType
 from feast.types import Float32, Float64, Int64
 
 # Define the Card Entity (join key is card_id)
@@ -33,7 +33,16 @@ user_profile_source = FileSource(
     created_timestamp_column="created_timestamp",
 )
 
-# Velocity features Feature View
+# Stream push source — the Spark Structured Streaming job (spark/jobs/feature_streaming.py)
+# pushes freshly-computed velocity features to the online store via store.push().
+# batch_source is retained so `feast materialize` can still backfill from the offline parquet.
+transaction_push_source = PushSource(
+    name="transaction_features_stream",
+    batch_source=transaction_batch_source,
+)
+
+# Velocity features Feature View — served online from Redis. Kept fresh in real time
+# by the streaming push, and backfillable from the offline store via materialize.
 transaction_features = FeatureView(
     name="transaction_features",
     entities=[card],
@@ -51,7 +60,7 @@ transaction_features = FeatureView(
         Field(name="is_night", dtype=Int64),
     ],
     online=True,
-    source=transaction_batch_source,
+    source=transaction_push_source,
     tags={"team": "fraud", "type": "velocity"},
 )
 

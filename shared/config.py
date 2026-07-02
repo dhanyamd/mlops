@@ -64,7 +64,6 @@ class QdrantConfig:
 class KafkaConfig:
     bootstrap_servers: str = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
     transactions_topic: str = os.getenv("KAFKA_TRANSACTIONS_TOPIC", "transactions")
-    features_topic: str = os.getenv("KAFKA_FEATURES_TOPIC", "transaction_features")
     predictions_topic: str = os.getenv("KAFKA_PREDICTIONS_TOPIC", "fraud_predictions")
     alerts_topic: str = os.getenv("KAFKA_ALERTS_TOPIC", "fraud_alerts")
 

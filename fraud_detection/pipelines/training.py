@@ -2,9 +2,12 @@
 
 Feature alignment contract:
   Offline (training) : transaction_features.parquet  → compute_velocity_features()
-  Online  (inference): Redis                         → StreamingFeatureComputer.compute()
+  Online  (serving)  : Feast online store (Redis)    ← spark/jobs/feature_streaming.py
+                                                        computes the same schema and
+                                                        pushes it via store.push()
   Both must produce identical feature names. Any change here MUST be reflected in
-  inference_service.py:feature_cols and feature_computer.py return dict keys.
+  inference_service.py:FEATURE_COLS, feature_repo/features.py:transaction_features,
+  and spark/jobs/feature_streaming.py:compute_features().
 """
 
 from __future__ import annotations
@@ -36,15 +39,15 @@ from shared.observability.metrics import (
 log = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
-# Feature contract — must match inference_service.py:feature_cols AND
-# the keys returned by StreamingFeatureComputer.compute() written to Redis.
+# Feature contract — must match inference_service.py:FEATURE_COLS AND
+# the features pushed to Redis by spark/jobs/feature_streaming.py:compute_features().
 # ---------------------------------------------------------------------------
 FEATURE_COLS: list[str] = [
     "amount",
     "txn_count_1h",
     "txn_count_24h",
     "amount_sum_24h",
-    "amount_mean_24h",   # 24-hour rolling mean — NOT 1h (matches feature_computer.py)
+    "amount_mean_24h",   # 24-hour rolling mean — NOT 1h (matches feature_streaming.py)
     "amount_std_24h",
     "velocity_ratio",    # txn_count_1h / max(txn_count_24h, 1)
     "amount_deviation",  # current amount / rolling mean
