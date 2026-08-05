@@ -17,7 +17,10 @@ from config.settings import Settings
 from db.snowflake import SnowflakeClient
 from ingest.providers.binance import BinanceBarProvider
 from ingest.providers.fred import FredProvider
-from ingest.providers.sec_edgar import EdgarFundamentalsProvider, _extract_latest_annual
+from ingest.providers.sec_edgar import (
+    EdgarFundamentalsProvider,
+    _extract_annual_filings,
+)
 from ingest.providers.synthetic import SyntheticBarProvider
 from ingest.providers.yahoo import YahooBarProvider
 from ingest.quality import validate_bars, validate_facts, validate_macro
@@ -86,6 +89,7 @@ def test_company_fact_valid() -> None:
             "metric": "Revenues",
             "fiscal_year": 2024,
             "value": 391035000000.0,
+            "filed_at": dt.date(2024, 11, 1),
             "loaded_at": dt.datetime(2026, 1, 2),
         }
     )
@@ -119,6 +123,7 @@ def test_validate_facts_rejects_bad_metric() -> None:
                 "metric": "Revenues",
                 "fiscal_year": 2024,
                 "value": 1.0,
+                "filed_at": dt.date(2025, 1, 30),
                 "loaded_at": dt.datetime(2026, 1, 2),
             },
             {
@@ -127,6 +132,7 @@ def test_validate_facts_rejects_bad_metric() -> None:
                 "metric": "Revenues",
                 "fiscal_year": 2024,
                 "value": 1.0,
+                "filed_at": dt.date(2025, 1, 30),
                 "loaded_at": dt.datetime(2026, 1, 2),
             },
         ]
@@ -189,7 +195,52 @@ def test_synthetic_provider_ohlc_is_consistent() -> None:
 _SAMPLE_FACTS = {
     "facts": {
         "us-gaap": {
+            # AAPL FY2018: the top line is tagged "Revenues" that year. The 10-K
+            # also carries comparative prior-year rows (1.0 / 2.0) and a per-share
+            # duplicate (265.595) — all of which must be ignored; the fiscal-year
+            # figure is the max-`end` row (265,595M).
             "Revenues": {
+                "units": {
+                    "USD": [
+                        {
+                            "end": "2016-09-24",
+                            "val": 1.0,
+                            "fy": 2018,
+                            "fp": "FY",
+                            "form": "10-K",
+                            "filed": "2018-11-05",
+                        },
+                        {
+                            "end": "2017-09-30",
+                            "val": 2.0,
+                            "fy": 2018,
+                            "fp": "FY",
+                            "form": "10-K",
+                            "filed": "2018-11-05",
+                        },
+                        {
+                            "end": "2018-09-29",
+                            "val": 265595000000.0,
+                            "fy": 2018,
+                            "fp": "FY",
+                            "form": "10-K",
+                            "filed": "2018-11-05",
+                        },
+                    ],
+                    "USD_per_Share": [
+                        {
+                            "end": "2018-09-29",
+                            "val": 265.595,
+                            "fy": 2018,
+                            "fp": "FY",
+                            "form": "10-K",
+                            "filed": "2018-11-05",
+                        },
+                    ],
+                }
+            },
+            # Post-2018 AAPL tags revenue under the ASC 606 concept.
+            "RevenueFromContractWithCustomerExcludingAssessedTax": {
                 "units": {
                     "USD": [
                         {
@@ -198,6 +249,7 @@ _SAMPLE_FACTS = {
                             "fy": 2019,
                             "fp": "FY",
                             "form": "10-K",
+                            "filed": "2019-10-31",
                         },
                         {
                             "end": "2020-09-26",
@@ -205,13 +257,43 @@ _SAMPLE_FACTS = {
                             "fy": 2020,
                             "fp": "FY",
                             "form": "10-K",
+                            "filed": "2020-10-30",
                         },
-                        # quarterly — must be ignored
-                        {"end": "2020-06-27", "val": 123.0, "fp": "Q2", "form": "10-Q"},
                     ]
                 }
             },
-            "us-gaap:NetIncomeLoss": {
+            # Pre-2018 AAPL tagged revenue as SalesRevenueNet.
+            "SalesRevenueNet": {
+                "units": {
+                    "USD": [
+                        {
+                            "end": "2015-09-26",
+                            "val": 3.0,
+                            "fy": 2017,
+                            "fp": "FY",
+                            "form": "10-K",
+                            "filed": "2017-11-03",
+                        },
+                        {
+                            "end": "2016-09-24",
+                            "val": 4.0,
+                            "fy": 2017,
+                            "fp": "FY",
+                            "form": "10-K",
+                            "filed": "2017-11-03",
+                        },
+                        {
+                            "end": "2017-09-30",
+                            "val": 229234000000.0,
+                            "fy": 2017,
+                            "fp": "FY",
+                            "form": "10-K",
+                            "filed": "2017-11-03",
+                        },
+                    ]
+                }
+            },
+            "NetIncomeLoss": {
                 "units": {
                     "USD": [
                         {
@@ -220,7 +302,19 @@ _SAMPLE_FACTS = {
                             "fy": 2020,
                             "fp": "FY",
                             "form": "10-K",
-                        }
+                            "filed": "2020-10-30",
+                        },
+                        # restatement filed later — must survive as its own row
+                        {
+                            "end": "2020-09-26",
+                            "val": 57411000000.0,
+                            "fy": 2020,
+                            "fp": "FY",
+                            "form": "10-K/A",
+                            "filed": "2021-02-15",
+                        },
+                        # quarterly — must be ignored
+                        {"end": "2020-06-27", "val": 123.0, "fp": "Q2", "form": "10-Q"},
                     ]
                 }
             },
@@ -229,11 +323,39 @@ _SAMPLE_FACTS = {
 }
 
 
-def test_extract_latest_annual_picks_latest_fy_and_ignores_quarters() -> None:
-    assert _extract_latest_annual(_SAMPLE_FACTS, "Revenues") == (2020, 274515000000.0)
-    # Suffix matching handles the "us-gaap:" prefix.
-    assert _extract_latest_annual(_SAMPLE_FACTS, "NetIncomeLoss") == (2020, 57411000000.0)
-    assert _extract_latest_annual(_SAMPLE_FACTS, "DoesNotExist") is None
+def test_extract_annual_filings_keeps_only_fiscal_year_end() -> None:
+    # Comparative prior-year rows (3.0 / 4.0) live inside the same 10-K and must
+    # NOT become separate annual figures — only the max-`end` row survives.
+    rows = _extract_annual_filings(_SAMPLE_FACTS, ["SalesRevenueNet"])
+    assert rows == [(2017, 229234000000.0, dt.date(2017, 11, 3))]
+
+
+def test_extract_annual_filings_unions_concepts_and_prefers_primary_unit() -> None:
+    # AAPL switched XBRL concepts across time (SalesRevenueNet -> Revenues ->
+    # RevenueFromContractWithCustomer...). The union must span all of them, and
+    # the primary "USD" unit wins over "USD_per_Share".
+    rows = _extract_annual_filings(
+        _SAMPLE_FACTS,
+        ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "SalesRevenueNet"],
+    )
+    assert len(rows) == 4
+    by_fy = {fy: val for fy, val, _ in rows}
+    assert by_fy[2017] == 229234000000.0
+    assert by_fy[2018] == 265595000000.0
+    assert by_fy[2019] == 260174000000.0
+    assert by_fy[2020] == 274515000000.0
+
+
+def test_extract_annual_filings_keeps_restatements_as_own_rows() -> None:
+    rows = _extract_annual_filings(_SAMPLE_FACTS, ["NetIncomeLoss"])
+    assert len(rows) == 2
+    assert (2020, 57411000000.0, dt.date(2020, 10, 30)) in rows
+    assert (2020, 57411000000.0, dt.date(2021, 2, 15)) in rows
+
+
+def test_extract_annual_filings_unknown_concepts_yield_empty() -> None:
+    assert _extract_annual_filings(_SAMPLE_FACTS, ["DoesNotExist"]) == []
+    assert _extract_annual_filings(_SAMPLE_FACTS, []) == []
 
 
 def test_fetch_facts_lands_valid_rows(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -259,7 +381,7 @@ def test_fetch_facts_lands_valid_rows(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr("ingest.providers.sec_edgar.requests.get", fake_get)
     df = EdgarFundamentalsProvider(user_agent="Test t@example.com").fetch_facts(
-        ["AAPL"], metrics=("Revenues", "NetIncomeLoss")
+        ["AAPL"], metrics=["Revenues", "NetIncomeLoss"]
     )
     assert list(df.columns) == [
         "ticker",
@@ -268,11 +390,23 @@ def test_fetch_facts_lands_valid_rows(monkeypatch: pytest.MonkeyPatch) -> None:
         "fiscal_year",
         "value",
         "unit",
+        "filed_at",
         "loaded_at",
     ]
-    assert df.loc[df["metric"] == "Revenues", "fiscal_year"].iloc[0] == 2020
-    assert df.loc[df["metric"] == "Revenues", "value"].iloc[0] == 274515000000.0
-    assert df.loc[df["metric"] == "Revenues", "cik"].iloc[0] == "0000320193"
+    # Revenues spans the concept switch (SalesRevenueNet -> Revenues ->
+    # RevenueFromContractWithCustomer...) as a single metric → 4 fiscal years.
+    rev = df[df["metric"] == "Revenues"]
+    assert set(rev["fiscal_year"]) == {2017, 2018, 2019, 2020}
+    assert rev[rev["fiscal_year"] == 2020]["value"].iloc[0] == 274515000000.0
+    assert set(rev["filed_at"]) == {
+        dt.date(2017, 11, 3),
+        dt.date(2018, 11, 5),
+        dt.date(2019, 10, 31),
+        dt.date(2020, 10, 30),
+    }
+    assert rev["cik"].iloc[0] == "0000320193"
+    # Restatement survives as its own point-in-time row.
+    assert len(df[df["metric"] == "NetIncomeLoss"]) == 2
 
 
 # ── Store (SnowflakeClient mocked) ──────────────────────────────────────────
@@ -309,13 +443,14 @@ def test_write_company_facts_uses_upsert(monkeypatch: pytest.MonkeyPatch) -> Non
                 "metric": "Revenues",
                 "fiscal_year": 2024,
                 "value": 1.0,
+                "filed_at": dt.date(2025, 1, 30),
                 "loaded_at": dt.datetime(2026, 1, 2),
             }
         ]
     )
     assert write_company_facts(df, _settings()) == 1
     assert captured["table_name"] == "COMPANY_FACTS"
-    assert captured["merge_keys"] == ["ticker", "metric", "fiscal_year"]
+    assert captured["merge_keys"] == ["ticker", "metric", "fiscal_year", "filed_at"]
 
 
 # ── Flow (write tasks mocked, offline) ──────────────────────────────────────

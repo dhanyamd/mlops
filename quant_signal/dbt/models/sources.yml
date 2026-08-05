@@ -93,7 +93,7 @@ sources:
           - name: loaded_at
             data_type: timestamp_ntz
       - name: company_facts
-        description: "Annual fundamentals from SEC EDGAR company facts (10-K/20-F)."
+        description: "Full annual-filing timeline from SEC EDGAR company facts (10-K/20-F), keyed by (ticker, metric, fiscal_year, filed_at) for point-in-time features."
         config:
           freshness:
             warn_after:
@@ -116,5 +116,7 @@ sources:
             data_type: float
           - name: unit
             data_type: text
+          - name: filed_at
+            data_type: date
           - name: loaded_at
             data_type: timestamp_ntz

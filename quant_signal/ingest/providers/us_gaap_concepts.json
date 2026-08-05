@@ -1,0 +1,18 @@
+{
+  "Revenues": [
+    "Revenues",
+    "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "RevenuesFromContractWithCustomerExcludingAssessedTax",
+    "SalesRevenueNet",
+    "TotalRevenues",
+    "SalesRevenueGoodsNet",
+    "SalesRevenueServicesNet"
+  ],
+  "NetIncomeLoss": [
+    "NetIncomeLoss",
+    "ProfitLoss"
+  ],
+  "Assets": [
+    "Assets"
+  ]
+}

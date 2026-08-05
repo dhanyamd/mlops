@@ -1,0 +1,65 @@
+version: 2
+
+models:
+  - name: silver_company_facts
+    description: "Deduplicated, typed annual-filing timeline from SEC EDGAR — keyed by (ticker, metric, fiscal_year, filed_at) so features are point-in-time correct."
+    config:
+      contract:
+        enforced: true
+    columns:
+      - name: ticker
+        description: "Instrument ticker."
+        data_type: text
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+      - name: cik
+        description: "SEC Central Index Key (zero-padded)."
+        data_type: text
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+      - name: metric
+        description: "Canonical fundamental metric (Revenues, NetIncomeLoss, Assets)."
+        data_type: text
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+      - name: fiscal_year
+        description: "Fiscal year the filing reports."
+        data_type: integer
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+      - name: value
+        description: "Reported value in USD."
+        data_type: float
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+      - name: unit
+        description: "Reporting unit (USD)."
+        data_type: text
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+      - name: filed_at
+        description: "SEC filing date — the point-in-time anchor. Filter filed_at <= as_of for bias-free features."
+        data_type: date
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+      - name: loaded_at
+        description: "When the row was landed into Bronze."
+        data_type: timestamp_ntz
+        constraints:
+          - type: not_null
+        tests:
+          - not_null

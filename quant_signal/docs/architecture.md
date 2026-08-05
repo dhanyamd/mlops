@@ -105,9 +105,10 @@ Every query is tagged: Snowflake client sends `query_tag`, dbt uses
 
 What we deliberately do NOT have yet (documented, not hidden):
 
-- **Feature store / point-in-time correctness** — no Feast/Featureform yet.
-  EDGAR fundamentals are stored as latest-annual *now*, not a filing-date
-  timeline; a PIT feature store is the M2 milestone.
+- **Feature store / point-in-time joins** — no Feast/Featureform yet. EDGAR
+  fundamentals ARE a filing-date timeline now (every 10-K/20-F with its
+  `filed_at`, restatements preserved, fiscal year derived from the period end),
+  but as-of joins to prices live in M2.
 - **Experiment tracking** — no MLflow; model runs aren't versioned/logged.
 - **Drift & anomaly monitoring** — Elementary covers table-level freshness/
   volume; model drift monitors come later.
@@ -116,8 +117,9 @@ What we deliberately do NOT have yet (documented, not hidden):
 
 ## M2+ roadmap
 
-1. **Feature store** (Feast or Featureform) with PIT joins; EDGAR filing-date
-   timelines.
+1. **Feature store** (Feast or Featureform) with as-of PIT joins. The data
+   layer already emits `(ticker, metric, fiscal_year, filed_at)` rows from
+   EDGAR; M2 adds the join to prices that makes lookahead-free features.
 2. **Alpaca IEX provider** — production-grade equity upgrade (free key, ~2.5%
    of consolidated volume documented).
 3. **MLflow** experiment tracking + model registry for forecasting/fraud
@@ -127,9 +129,30 @@ What we deliberately do NOT have yet (documented, not hidden):
 6. **CI**: enable the `dbt-build` job against a CI Snowflake schema when the
    repo has DBT secrets.
 
+## Sellable product ideas (parked — build after PIT + feature store)
+
+The moat is real data + point-in-time correctness + contracts + monitoring.
+Parked productizations, in rough value order:
+
+1. **Lookahead-bias audit (SaaS/consulting)** — "your backtests are lying to
+   you." Score a fund's fundamentals data (as-filed vs restated) and quantify
+   how much reported alpha is a restatement artifact. People pay for the
+   diagnosis. Vendors like FactSet/Refinitiv serve latest-restated numbers, so
+   this is exactly the gap our `filed_at` timeline fills.
+2. **As-filed earnings-surprise feed** — standardized unexpected earnings (SUE)
+   measured against the as-filed figure + PEAD (post-earnings-announcement
+   drift). Dataset tier ~$10-50k/yr/seat; hedge-fund-facing feeds $100k+/yr.
+3. **Research subscription** — monthly restatement-adjusted earnings-drift
+   factor for a fixed universe, with the PIT data layer as the proof of no
+   lookahead bias.
+
+First milestone if pursued: reproduce the PEAD anomaly on a few tickers with
+as-filed numbers (e.g. AAPL FY2009's $36.5B -> $42.9B restatement), then
+expand the universe.
+
 ## Quality gates
 
-- `make check` = `ruff` + `pytest` (60 tests, offline — all network/DB mocked).
+- `make check` = `ruff` + `pytest` (63 tests, offline — all network/DB mocked).
 - `make dbt-parse` validates models/contracts without a Snowflake connection.
 - CI (`.github/workflows/quant-signal-ci.yml`) runs lint + test + dbt parse on
   every PR touching `quant_signal/`.

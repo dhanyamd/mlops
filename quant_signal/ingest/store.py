@@ -53,7 +53,7 @@ def write_company_facts(df: pd.DataFrame, settings: Settings | None = None) -> i
     return client.upsert_df(
         df,
         FACTS_TABLE,
-        merge_keys=["ticker", "metric", "fiscal_year"],
+        merge_keys=["ticker", "metric", "fiscal_year", "filed_at"],
         schema=client._settings.snowflake_schema,
     )
 

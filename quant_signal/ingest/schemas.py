@@ -68,7 +68,14 @@ class MacroObservation(BaseModel):
 
 
 class CompanyFact(BaseModel):
-    """One annual fundamental from SEC EDGAR company facts (us-gaap)."""
+    """One annual fundamental from SEC EDGAR company facts (us-gaap).
+
+    ``filed_at`` is the SEC filing date — the point-in-time anchor. A value is
+    only "known" once its filing lands, so as-of features must filter
+    ``filed_at <= as_of``. Restatements (10-K/A) arrive on later dates and are
+    kept as separate rows; ``(ticker, metric, fiscal_year, filed_at)`` is the
+    natural key.
+    """
 
     ticker: str = Field(min_length=1, max_length=16, pattern=r"^[A-Z0-9.\-^]+$")
     cik: str = Field(pattern=r"^\d{10}$")
@@ -76,6 +83,7 @@ class CompanyFact(BaseModel):
     fiscal_year: int = Field(ge=2000, le=2100)
     value: float
     unit: str = "USD"
+    filed_at: dt.date
     loaded_at: dt.datetime
 
     @field_validator("ticker", mode="before")

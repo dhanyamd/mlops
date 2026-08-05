@@ -1,19 +1,43 @@
 """SEC EDGAR fundamentals provider — real external source, no API key.
 
-Pulls XBRL company facts (us-gaap) and extracts the latest annual value for a
-small set of metrics. SEC requires a descriptive User-Agent ("Sample Company
-AdminContact@example.com"); set EDGAR_USER_AGENT in .env.
+Pulls XBRL company facts (us-gaap) and extracts the FULL history of annual
+filings — every 10-K/20-F with its SEC ``filed`` date — so features can be
+built point-in-time (as-of ``filed_at``) with NO lookahead bias. This is the
+correctness gap the platform flags in ``docs/architecture.md``.
 
-The ticker→CIK mapping is NOT hardcoded: it is loaded from SEC's official
-keyless ``company_tickers.json`` registry (~10k companies, authoritative).
+Two things are NOT hardcoded:
 
-Output columns: ``ticker, cik, metric, fiscal_year, value, unit, loaded_at``.
+- The ticker→CIK mapping is loaded from SEC's official keyless
+  ``company_tickers.json`` registry (~10k companies).
+- The XBRL concept mapping (which us-gaap concepts a canonical metric like
+  "Revenues" is tagged under) is REFERENCE DATA in ``us_gaap_concepts.json``.
+  Different filers tag the same economic metric under different concepts, and
+  even a single filer switches concepts over time (e.g. AAPL: SalesRevenueNet
+  pre-2018, Revenues in FY2018, RevenueFromContractWithCustomerExcludingAssessedTax
+  post-2019). We UNION across every candidate concept for a metric and keep
+  every annual filing as its own row keyed by
+  (ticker, metric, fiscal_year, filed_at) so restatements (10-K/A) survive.
+
+Two SEC data quirks, verified live, are handled by the extraction:
+
+- A single 10-K/20-F contains comparative prior-period rows (1-2 years back)
+  alongside the fiscal-year figure. The ANNUAL value is the row whose ``end``
+  equals the fiscal-year end — the max ``end`` within the filing (e.g. AAPL's
+  original FY2009 10-K reported $36.5B revenue; the 10-K/A restated it to
+  $42.9B — both rows are kept, each with its own ``filed`` date).
+- SEC's ``fy`` label can disagree with the period's ``end`` date (NVDA's old
+  filings are off-by-one), so ``fiscal_year`` is derived from the ``end`` date.
+
+Output columns: ``ticker, cik, metric, fiscal_year, value, unit, filed_at,
+loaded_at``.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import json
 import time
+from pathlib import Path
 
 import pandas as pd
 import requests
@@ -26,38 +50,77 @@ _SEC_TICKER_MAP_URL = "https://www.sec.gov/files/company_tickers.json"
 # SEC fair-access policy: max 10 requests/second per IP. 0.15s = ~6.7 req/s,
 # well under the limit and polite.
 _REQUEST_INTERVAL_S = 0.15
+# Canonical metric -> candidate us-gaap concepts (reference data, not logic).
+_CONCEPT_MAP_PATH = Path(__file__).parent / "us_gaap_concepts.json"
 
 
-def _extract_latest_annual(facts: dict, metric: str) -> tuple[int, float] | None:
-    """Return (fiscal_year, value) of the most recent annual filing for ``metric``.
+def _load_concept_map() -> dict[str, list[str]]:
+    return json.loads(_CONCEPT_MAP_PATH.read_text())
 
-    The JSON nests taxonomy -> concept -> units -> entries; concept names may
-    carry a ``us-gaap:`` prefix, so match by suffix. Only USD-denominated
-    annual filings count: ``fp == "FY"`` AND a 10-K/20-F form type, so a rare
-    FY-tagged quarterly filing can never double-count into the series.
+
+def _is_annual_filing(entry: dict) -> bool:
+    """True for a fiscal-year filing (10-K/20-F), never a quarterly one."""
+    if entry.get("fp") != "FY" or entry.get("val") is None:
+        return False
+    form = str(entry.get("form") or "")
+    return form.startswith("10-K") or form.startswith("20-F")
+
+
+def _extract_annual_filings(facts: dict, concepts: list[str]) -> list[tuple[int, float, dt.date]]:
+    """Union of annual-filing values across candidate concepts.
+
+    Returns ``(fiscal_year, value, filed_date)`` per annual filing, one row per
+    SEC filing. Two structural facts about EDGAR's data drive the rules:
+
+    - A 10-K/20-F contains comparative prior-period rows (1-2 years back) in
+      addition to the fiscal-year figure. The ANNUAL value is the row whose
+      ``end`` equals the fiscal-year end, i.e. the max ``end`` within the
+      filing (``fp='FY'`` keeps only fiscal-year rows; ``10-Q`` is excluded).
+      Each filing contributes EXACTLY ONE row — its fiscal-year-end value —
+      and never one per comparative period.
+    - Filers switch XBRL concepts over time (e.g. AAPL revenue: SalesRevenueNet
+      -> Revenues -> RevenueFromContractWithCustomerExcludingAssessedTax), so
+      we union across every candidate concept. When a filing appears under more
+      than one candidate, the earliest candidate in ``concepts`` wins — that
+      precedence is reference data (e.g. SalesRevenueNet total revenue before
+      SalesRevenueGoodsNet product-only revenue).
+
+    ``fiscal_year`` is derived from the fiscal-year-end date (``year(end)``),
+    not SEC's ``fy`` label, because ``fy`` can disagree with ``end`` for some
+    filings (NVDA's older 10-Ks are off-by-one). Restatements filed on a later
+    date are kept as their own rows (point-in-time correct); the same filing
+    surfacing the same value multiple times is deduplicated on
+    (filed_date, accession).
     """
     gaap = facts.get("facts", {}).get("us-gaap", {})
-    candidates: list[tuple[int, float]] = []
-    for concept, payload in gaap.items():
-        if concept.rsplit(":", 1)[-1] != metric:
+    merged: dict[tuple[str, str], dict] = {}
+    for concept in concepts:
+        key = next((k for k in gaap if k.rsplit(":", 1)[-1] == concept), None)
+        if key is None:
             continue
-        units = payload.get("units", {})
-        for entries in units.get("USD", []):
-            if entries.get("fp") != "FY" or entries.get("val") is None:
-                continue
-            form = str(entries.get("form") or "")
-            if not (form.startswith("10-K") or form.startswith("20-F")):
-                continue
-            end = entries.get("end")
-            if not end:
-                continue
-            fy = entries.get("fy") or int(str(end)[:4])
-            candidates.append((fy, float(entries["val"])))
-    if not candidates:
-        return None
-    latest_fy = max(fy for fy, _ in candidates)
-    best = max(v for fy, v in candidates if fy == latest_fy)
-    return latest_fy, best
+        units = gaap[key].get("units", {})
+        # Prefer the primary currency unit when present (raw USD, not per-share).
+        unit_keys = ["USD"] if "USD" in units else list(units.keys())
+        best: dict[tuple[str, str], dict] = {}
+        for unit in unit_keys:
+            for entry in units.get(unit, []):
+                if not _is_annual_filing(entry):
+                    continue
+                filed = str(entry.get("filed") or "")
+                end = str(entry.get("end") or "")
+                if not filed or not end:
+                    continue
+                filing = (filed[:10], str(entry.get("accn") or ""))
+                if filing not in best or end > best[filing].get("end", ""):
+                    best[filing] = entry
+        for filing, entry in best.items():
+            # First candidate to claim a filing owns it (precedence order).
+            merged.setdefault(filing, entry)
+    rows = [
+        (int(entry["end"][:4]), float(entry["val"]), dt.date.fromisoformat(filed))
+        for (filed, _accn), entry in merged.items()
+    ]
+    return sorted(rows, key=lambda r: (r[2], r[0]))
 
 
 class EdgarFundamentalsProvider:
@@ -73,6 +136,7 @@ class EdgarFundamentalsProvider:
         )
         self._timeout = timeout
         self._ticker_to_cik: dict[str, str] | None = None
+        self._concept_map = _load_concept_map()
 
     def _headers(self) -> dict[str, str]:
         # requests sets the Host header from the URL automatically. SEC vhosts
@@ -106,10 +170,10 @@ class EdgarFundamentalsProvider:
     def fetch_facts(
         self,
         tickers: list[str],
-        metrics: tuple[str, ...] | None = None,
+        metrics: list[str] | None = None,
     ) -> pd.DataFrame:
-        """Latest annual fundamental per (ticker, metric); empty if none found."""
-        metric_set = metrics or tuple(csv_list(get_settings().ingest_default_metrics))
+        """Full annual-filing timeline per (ticker, metric); empty if none found."""
+        metric_list = metrics or csv_list(get_settings().ingest_default_metrics)
         ticker_map = self._ticker_map()
         now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
         rows: list[tuple] = []
@@ -119,13 +183,21 @@ class EdgarFundamentalsProvider:
                 continue
             facts = self._fetch_facts(cik)
             time.sleep(_REQUEST_INTERVAL_S)  # stay well under SEC's rate limit
-            for metric in metric_set:
-                extracted = _extract_latest_annual(facts, metric)
-                if extracted is None:
-                    continue
-                fy, value = extracted
-                rows.append((ticker.upper(), cik, metric, fy, value, "USD", now))
+            for metric in metric_list:
+                for fy, value, filed_at in _extract_annual_filings(
+                    facts, self._concept_map.get(metric, [])
+                ):
+                    rows.append((ticker.upper(), cik, metric, fy, value, "USD", filed_at, now))
         return pd.DataFrame(
             rows,
-            columns=["ticker", "cik", "metric", "fiscal_year", "value", "unit", "loaded_at"],
+            columns=[
+                "ticker",
+                "cik",
+                "metric",
+                "fiscal_year",
+                "value",
+                "unit",
+                "filed_at",
+                "loaded_at",
+            ],
         )
