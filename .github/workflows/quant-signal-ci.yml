@@ -1,0 +1,75 @@
+name: quant-signal-ci
+
+on:
+  push:
+    paths: ["quant_signal/**"]
+  pull_request:
+    paths: ["quant_signal/**"]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: quant_signal
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies (locked)
+        run: uv sync --extra dev --frozen
+      - name: Lint
+        run: uv run ruff check .
+      - name: Test
+        run: uv run pytest
+
+  # Compiles the dbt project WITHOUT a Snowflake connection — catches broken
+  # models/contracts on every PR. Dummy env vars satisfy profiles.yml parsing.
+  dbt-compile:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: quant_signal
+    env:
+      DBT_SNOWFLAKE_ACCOUNT: dummy_account
+      DBT_SNOWFLAKE_USER: dummy_user
+      DBT_ENV_SECRET_SNOWFLAKE_PASSWORD: dummy_password
+      DBT_SNOWFLAKE_DATABASE: QUANT
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies (locked, incl. dbt)
+        run: uv sync --extra dev --extra dbt --frozen
+      - name: Install dbt packages
+        run: uv run dbt deps --project-dir dbt --profiles-dir dbt
+      - name: Parse (contract/schema validation)
+        run: uv run dbt parse --project-dir dbt --profiles-dir dbt
+
+  # Optional (enable when the repo has DBT_* secrets): full dbt build against
+  # a real Snowflake CI schema. Uncomment when ready.
+  # dbt-build:
+  #   runs-on: ubuntu-latest
+  #   defaults:
+  #     run:
+  #       working-directory: quant_signal
+  #   env:
+  #     DBT_SNOWFLAKE_ACCOUNT: ${{ secrets.DBT_SNOWFLAKE_ACCOUNT }}
+  #     DBT_SNOWFLAKE_USER: ${{ secrets.DBT_SNOWFLAKE_USER }}
+  #     DBT_ENV_SECRET_SNOWFLAKE_PASSWORD: ${{ secrets.DBT_ENV_SECRET_SNOWFLAKE_PASSWORD }}
+  #     DBT_SNOWFLAKE_ROLE: ${{ secrets.DBT_SNOWFLAKE_ROLE }}
+  #     DBT_SNOWFLAKE_DATABASE: ${{ secrets.DBT_SNOWFLAKE_DATABASE }}
+  #     DBT_SNOWFLAKE_WAREHOUSE: ${{ secrets.DBT_SNOWFLAKE_WAREHOUSE }}
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: astral-sh/setup-uv@v5
+  #     - uses: actions/setup-python@v5
+  #       with:
+  #         python-version: "3.12"
+  #     - run: uv sync --extra dev --extra dbt --frozen
+  #     - run: uv run dbt deps --project-dir dbt --profiles-dir dbt
+  #     - run: uv run dbt build --project-dir dbt --profiles-dir dbt

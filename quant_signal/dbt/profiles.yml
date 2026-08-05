@@ -1,0 +1,23 @@
+# Connection credentials come exclusively from env vars (loaded via the
+# Makefile from ./.env). The password uses the DBT_ENV_SECRET_* prefix so dbt
+# scrubs it from logs automatically.
+quant_signal:
+  target: dev
+  outputs:
+    dev:
+      type: snowflake
+      account: "{{ env_var('DBT_SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('DBT_SNOWFLAKE_USER') }}"
+      password: "{{ env_var('DBT_ENV_SECRET_SNOWFLAKE_PASSWORD') }}"
+      # Modern Snowflake accounts require MFA for password logins. dbt reuses
+      # the client-side MFA token cache (macOS/Windows), so no prompt after
+      # the first auth. Set to 'snowflake' for accounts without MFA.
+      authenticator: "{{ env_var('DBT_SNOWFLAKE_AUTHENTICATOR', 'snowflake') }}"
+      role: "{{ env_var('DBT_SNOWFLAKE_ROLE', 'ACCOUNTADMIN') }}"
+      database: "{{ env_var('DBT_SNOWFLAKE_DATABASE', 'QUANT') }}"
+      warehouse: "{{ env_var('DBT_SNOWFLAKE_WAREHOUSE', 'QUANT_WH') }}"
+      schema: "{{ env_var('DBT_SNOWFLAKE_SCHEMA', 'BRONZE') }}"
+      threads: 4
+      # Credit/cost attribution: every dbt query is tagged so Snowflake's
+      # ACCOUNT_USAGE.QUERY_HISTORY can attribute spend to this project.
+      query_tag: quant_signal_dbt

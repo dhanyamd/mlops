@@ -1,0 +1,82 @@
+version: 2
+
+models:
+  - name: silver_equity_bars
+    description: "Deduplicated, typed OHLCV bars (Yahoo daily / Binance crypto minute) — the clean core of the platform."
+    config:
+      contract:
+        enforced: true
+    columns:
+      - name: symbol
+        description: "Instrument symbol."
+        data_type: text
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+      - name: ts
+        description: "Bar timestamp (open of the bar)."
+        data_type: timestamp_ntz
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+      - name: timeframe
+        description: "Bar aggregation: 1Min or 1D. Never sum volumes across timeframes."
+        data_type: text
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["1Min", "1D"]
+      - name: open
+        description: "Open price."
+        data_type: float
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+      - name: high
+        description: "High price."
+        data_type: float
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+      - name: low
+        description: "Low price."
+        data_type: float
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+      - name: close
+        description: "Close price."
+        data_type: float
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+      - name: volume
+        description: "Volume traded in the bar (fractional for crypto base volume)."
+        data_type: float
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+      - name: provider
+        description: "Source provider that produced the row."
+        data_type: text
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+      - name: loaded_at
+        description: "When the row was landed into Bronze."
+        data_type: timestamp_ntz
+        constraints:
+          - type: not_null
+        tests:
+          - not_null

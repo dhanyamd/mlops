@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=69.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quant-signal"
+version = "0.1.0"
+description = "Production-grade quant signal platform: Snowflake-backed pipelines with Spark, data quality, and full observability"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    # secure-local-storage (keyring) enables MFA token caching on macOS.
+    "snowflake-connector-python[pandas,secure-local-storage]>=4.7.1",
+    "pandas>=2.2.0",
+    "pyarrow>=19.0.0",
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.10.0",
+    "python-dotenv>=1.0.0",
+    "structlog>=24.1.0",
+    "prefect>=2.19.0",
+    "requests>=2.34.2",
+    "curl-cffi>=0.16.0",
+]
+
+[project.optional-dependencies]
+dbt = [
+    "dbt-core>=1.9.0,<2.0.0",
+    "dbt-snowflake>=1.9.0,<2.0.0",
+]
+dev = [
+    "pytest>=8.2.0",
+    "pytest-cov>=5.0.0",
+    "ruff>=0.4.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["config*", "db*", "ingest*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

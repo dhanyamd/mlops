@@ -1,0 +1,78 @@
+version: 2
+
+models:
+  - name: gold_daily_bars
+    description: "Daily OHLCV rollups per symbol and timeframe — the first analytics-ready mart."
+    config:
+      contract:
+        enforced: true
+    columns:
+      - name: symbol
+        description: "Instrument symbol."
+        data_type: text
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+      - name: timeframe
+        description: "Bar aggregation of the underlying silver bars."
+        data_type: text
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["1Min", "1D"]
+      - name: trade_date
+        description: "Trading date (UTC)."
+        data_type: date
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+      - name: day_open
+        description: "First bar open of the day."
+        data_type: float
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+      - name: day_high
+        description: "Max high of the day."
+        data_type: float
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+      - name: day_low
+        description: "Min low of the day."
+        data_type: float
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+      - name: day_close
+        description: "Last bar close of the day."
+        data_type: float
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+      - name: volume
+        description: "Total daily volume."
+        data_type: float
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+      - name: n_bars
+        description: "Number of bars contributing to the day."
+        data_type: integer
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_between:
+              arguments:
+                min_value: 0

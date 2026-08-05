@@ -1,0 +1,9 @@
+packages:
+  # Statistical / expectation-style tests on top of built-in dbt tests.
+  - package: metaplane/dbt_expectations
+    version: 0.10.10
+
+  # Open-source data observability: anomaly/volume/schema-drift detection that
+  # runs as part of the dbt build and writes to Snowflake.
+  - package: elementary-data/elementary
+    version: 0.25.1

@@ -1,0 +1,120 @@
+version: 2
+
+# Bronze = raw data landed untouched by ingestion (no dbt writes here).
+# Freshness checks alert when a source stops arriving — the "clean, reliable"
+# guarantee of the platform.
+sources:
+  - name: bronze
+    database: "{{ env_var('DBT_SNOWFLAKE_DATABASE', 'QUANT') }}"
+    schema: bronze
+    tables:
+      - name: equity_bars
+        description: "Real OHLCV bars (Yahoo daily, Binance crypto minute), landed untouched by ingestion."
+        config:
+          freshness:
+            warn_after:
+              count: 2
+              period: day
+            error_after:
+              count: 4
+              period: day
+          loaded_at_field: loaded_at
+        columns:
+          - name: symbol
+            data_type: text
+          - name: ts
+            data_type: timestamp_ntz
+          - name: timeframe
+            data_type: text
+          - name: open
+            data_type: float
+          - name: high
+            data_type: float
+          - name: low
+            data_type: float
+          - name: close
+            data_type: float
+          - name: volume
+            data_type: float
+          - name: provider
+            data_type: text
+          - name: loaded_at
+            data_type: timestamp_ntz
+      - name: crypto_bars
+        description: "Real Binance crypto minute bars (single venue), landed untouched by ingestion."
+        config:
+          freshness:
+            warn_after:
+              count: 1
+              period: day
+            error_after:
+              count: 2
+              period: day
+          loaded_at_field: loaded_at
+        columns:
+          - name: symbol
+            data_type: text
+          - name: ts
+            data_type: timestamp_ntz
+          - name: timeframe
+            data_type: text
+          - name: open
+            data_type: float
+          - name: high
+            data_type: float
+          - name: low
+            data_type: float
+          - name: close
+            data_type: float
+          - name: volume
+            data_type: float
+          - name: provider
+            data_type: text
+          - name: loaded_at
+            data_type: timestamp_ntz
+      - name: fred_macro
+        description: "Real St. Louis Fed macro series (FRED), keyless public CSV download."
+        config:
+          freshness:
+            warn_after:
+              count: 3
+              period: day
+            error_after:
+              count: 7
+              period: day
+          loaded_at_field: loaded_at
+        columns:
+          - name: series_id
+            data_type: text
+          - name: date
+            data_type: date
+          - name: value
+            data_type: float
+          - name: loaded_at
+            data_type: timestamp_ntz
+      - name: company_facts
+        description: "Annual fundamentals from SEC EDGAR company facts (10-K/20-F)."
+        config:
+          freshness:
+            warn_after:
+              count: 90
+              period: day
+            error_after:
+              count: 180
+              period: day
+          loaded_at_field: loaded_at
+        columns:
+          - name: ticker
+            data_type: text
+          - name: cik
+            data_type: text
+          - name: metric
+            data_type: text
+          - name: fiscal_year
+            data_type: integer
+          - name: value
+            data_type: float
+          - name: unit
+            data_type: text
+          - name: loaded_at
+            data_type: timestamp_ntz

@@ -1,0 +1,135 @@
+# quant_signal — production data platform architecture
+
+A real-data quant platform: ingest → contract gate → Bronze → dbt (Silver/Gold)
+with observability and enforced contracts. **No toy data**: every production
+source is a real, keyless, publicly downloadable endpoint verified live.
+
+## Data sources and quality tiers
+
+| Source    | Asset class   | Grain    | Keyless | Quality tier                                   |
+| --------- | ------------- | -------- | ------- | ---------------------------------------------- |
+| SEC EDGAR | fundamentals  | annual   | yes     | institutional (official government API)        |
+| FRED      | macro         | daily/mo | yes     | institutional (official St. Louis Fed CSV)     |
+| Binance   | crypto        | minute   | yes     | high for a single venue (self-reported volume) |
+| Yahoo     | US equities   | daily    | yes     | research-grade (unofficial endpoint, ToS-gray) |
+| synthetic | n/a           | n/a      | n/a     | OFFLINE/TEST ONLY — never a production source  |
+
+All production providers are **keyless** — verified live in this repo's history
+(FRED `fredgraph.csv` HTTP 200; SEC `company_tickers.json` + `companyfacts`
+HTTP 200; Binance public klines HTTP 200; Yahoo chart API HTTP 200 after the
+`curl_cffi` Chrome-TLS fix, previously 429 with plain `requests`).
+
+Production upgrade path (documented, not yet wired): Alpaca free IEX feed for
+equities (~2.5% of consolidated volume, free key), paid Alpaca SIP for
+production-grade equity coverage.
+
+## Architecture
+
+```
+providers (yahoo/binance/fred/sec_edgar)
+   │  fetch (real HTTP, retries, throttling, disk cache where needed)
+   ▼
+contract gate (pydantic validate_bars / validate_macro / validate_facts)
+   ├── valid   → BRONZE (MERGE upsert on natural key)
+   └── invalid → QUARANTINE (never dropped)
+                        │
+dbt (data as code)      ▼
+   SILVER  — dedup, typing, clean core (contracts enforced)
+   GOLD    — analytics marts (daily OHLCV rollups)
+```
+
+### Medallion layers
+
+- **BRONZE** — raw landed data, one table per asset class, **never mixed**:
+  `EQUITY_BARS`, `CRYPTO_BARS`, `FRED_MACRO`, `COMPANY_FACTS`.
+  Types are explicit (`TIMESTAMP_NTZ`, `DATE`, `FLOAT`, `TEXT`) — guaranteed by
+  `write_pandas(use_logical_type=True)` (root-caused live: without it Snowflake
+  binds datetimes as epoch-nanos and auto-creates `NUMBER` columns).
+- **SILVER** — deduplicated, contract-typed models: `silver_equity_bars`,
+  `silver_crypto_bars`, `silver_fred_macro`. Every column declares a contract
+  (`not_null`, `data_type`, `accepted_values`) enforced at build time.
+- **GOLD** — consumer-ready: `gold_daily_bars` (per-symbol daily OHLCV rollup
+  grouped by `(symbol, timeframe, date)`).
+
+### Anti-pollution rules
+
+- One Bronze table per asset class; Binance rows never touch `EQUITY_BARS`
+  (routing by provider in the flow, tested).
+- Different grains never summed across timeframes (`timeframe` is a column;
+  Gold groups by it).
+- Quarantine over drop: any row breaking the contract lands in `QUARANTINE`
+  with its source, so nothing is silently lost.
+- Idempotency: MERGE upsert on natural keys (`symbol,timeframe,ts` for bars;
+  `series_id,date` for macro; `ticker,metric,fiscal_year` for facts) — reruns
+  are safe.
+
+## Configuration — no hardcoded business values
+
+Every business/operational value comes from the environment (`.env` → typed
+`Settings` in `config/settings.py`):
+
+- `INGEST_DEFAULT_PROVIDER`, `INGEST_DEFAULT_DAYS`, `INGEST_DEFAULT_SYMBOLS`,
+  `INGEST_DEFAULT_CRYPTO_SYMBOLS`, `INGEST_DEFAULT_MACRO_SERIES`,
+  `INGEST_DEFAULT_TICKERS`, `INGEST_DEFAULT_METRICS`, `YAHOO_CACHE_DIR`
+- Snowflake connection/auth (MFA token-cached, key-pair alternative), dbt
+  `DBT_*` mirror vars, `EDGAR_USER_AGENT`, `LOG_LEVEL`
+
+Flows resolve defaults from `Settings`, and the inline CLI entrypoints use
+stdlib `argparse` to override (defaults `None` → env). Nothing business-related
+is hardcoded in flows or providers. The only literals in provider code are
+immutable third-party API facts (URLs, rate-limit intervals, host
+alternation) — not config.
+
+Secrets: `.env` is gitignored; `DBT_ENV_SECRET_*` scrubs the dbt password from
+logs; Snowflake secrets are `Field(repr=False)`.
+
+## Orchestration
+
+- **Prefect** flows: `ingest_market_data` (equity/crypto routing),
+  `ingest_macro_data`, `ingest_fundamentals`. Task-level retries + backoff.
+- Runs inline (no server) via `make ingest | ingest-crypto | ingest-macro |
+  ingest-fundamentals`; as a deployment they'd run on a Prefect work pool.
+- **Note (verified live):** Prefect 3.8 removed the `python flow.py -- --param`
+  passthrough — flows use explicit `argparse` entrypoints instead.
+- **dbt** via `make dbt-run` (parse → build → tests). Elementary package
+  provides source-freshness + data-monitoring alerts (isolated in the
+  `ELEMENTARY` schema so raw BRONZE stays clean).
+
+## Cost / credit attribution
+
+Every query is tagged: Snowflake client sends `query_tag`, dbt uses
+`query_tag: quant_signal_dbt`. Spend is attributable per pipeline via
+`ACCOUNT_USAGE.QUERY_HISTORY` by `QUERY_TAG`.
+
+## Honest gaps vs. real quant firms
+
+What we deliberately do NOT have yet (documented, not hidden):
+
+- **Feature store / point-in-time correctness** — no Feast/Featureform yet.
+  EDGAR fundamentals are stored as latest-annual *now*, not a filing-date
+  timeline; a PIT feature store is the M2 milestone.
+- **Experiment tracking** — no MLflow; model runs aren't versioned/logged.
+- **Drift & anomaly monitoring** — Elementary covers table-level freshness/
+  volume; model drift monitors come later.
+- **Streaming** — batch-only. Real-time milestone: Snowpipe + Snowflake
+  STREAMS/tasks (replaces Kafka for this workload), not Kafka/K8s.
+
+## M2+ roadmap
+
+1. **Feature store** (Feast or Featureform) with PIT joins; EDGAR filing-date
+   timelines.
+2. **Alpaca IEX provider** — production-grade equity upgrade (free key, ~2.5%
+   of consolidated volume documented).
+3. **MLflow** experiment tracking + model registry for forecasting/fraud
+   models (the sibling `fraud_detection/` project).
+4. **Spark** (local cluster) for feature engineering at scale.
+5. **Snowpipe/STREAMS** for near-real-time crypto minute ingestion.
+6. **CI**: enable the `dbt-build` job against a CI Snowflake schema when the
+   repo has DBT secrets.
+
+## Quality gates
+
+- `make check` = `ruff` + `pytest` (60 tests, offline — all network/DB mocked).
+- `make dbt-parse` validates models/contracts without a Snowflake connection.
+- CI (`.github/workflows/quant-signal-ci.yml`) runs lint + test + dbt parse on
+  every PR touching `quant_signal/`.

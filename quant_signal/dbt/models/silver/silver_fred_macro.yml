@@ -1,0 +1,37 @@
+version: 2
+
+models:
+  - name: silver_fred_macro
+    description: "Deduplicated, typed FRED macro series (real St. Louis Fed data)."
+    config:
+      contract:
+        enforced: true
+    columns:
+      - name: series_id
+        description: "FRED series identifier, e.g. VIXCLS, CPIAUCSL, DGS10."
+        data_type: text
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+      - name: date
+        description: "Observation date."
+        data_type: date
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+      - name: value
+        description: "Published value for the series on that date."
+        data_type: float
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+      - name: loaded_at
+        description: "When the row was landed into Bronze."
+        data_type: timestamp_ntz
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
