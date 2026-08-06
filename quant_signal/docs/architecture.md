@@ -150,9 +150,34 @@ First milestone if pursued: reproduce the PEAD anomaly on a few tickers with
 as-filed numbers (e.g. AAPL FY2009's $36.5B -> $42.9B restatement), then
 expand the universe.
 
+## PEAD backtest (delivered)
+
+`scripts/pead_backtest.py` runs a real event study on the PIT data layer:
+
+- **Events** = SEC EDGAR earnings filings, dated by `filed_at` (the day the
+  10-K became public), as-filed values (restatements are separate events).
+- **SUE** per Bernard & Thomas (1989): expected = seasonal random walk (prior
+  fiscal year's last-known value strictly from earlier filings), surprise =
+  actual − expected, standardized by the σ of the last 8 surprises.
+- **Ranking** uses prior events' SUE breakpoints (Mohanram 2009) so quintile
+  assignment is implementable at the event date — no lookahead anywhere.
+- **CAR** = ticker buy-and-hold return minus equal-weight universe return over
+  [+0, +h] trading days from the first trading day at/after `filed_at`.
+
+Live result (27 mega-caps, 273 filings, ~19y daily prices): **no significant
+drift**. Bad-news (bottom-SUE) filings drift down (car20 ≈ −1.7%), but the
+top-SUE quintile shows no drift up; the Q5−Q1 spread is +0.4/+0.9/+0.9 bps at
+1/5/20 days (t < 2). This is the expected finding, not a bug: Bernard & Thomas
+document drift concentrated in small caps and on **quarterly** announcements;
+annual bottom-line net income for mega-caps is the noisiest, most efficiently
+priced setting. The pipeline itself is the deliverable — PIT-correct SUE/CAR
+with zero lookahead, unit-tested (`tests/test_pead.py`). To reproduce the
+textbook drift, extend the EDGAR provider to quarterly 10-Q filings (fp != FY)
+and compute EPS-based surprises.
+
 ## Quality gates
 
-- `make check` = `ruff` + `pytest` (63 tests, offline — all network/DB mocked).
+- `make check` = `ruff` + `pytest` (68 tests, offline — all network/DB mocked).
 - `make dbt-parse` validates models/contracts without a Snowflake connection.
 - CI (`.github/workflows/quant-signal-ci.yml`) runs lint + test + dbt parse on
   every PR touching `quant_signal/`.
