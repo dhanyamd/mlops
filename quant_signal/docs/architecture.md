@@ -129,6 +129,9 @@ What we deliberately do NOT have yet (documented, not hidden):
 6. **CI**: enable the `dbt-build` job against a CI Snowflake schema when the
    repo has DBT secrets.
 
+System-level view (latency budgets, bottlenecks, target architecture, infra-first
+roadmap): see `docs/system_design.md`.
+
 ## Sellable product ideas (parked — build after PIT + feature store)
 
 The moat is real data + point-in-time correctness + contracts + monitoring.
