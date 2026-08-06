@@ -16,6 +16,20 @@ CREATE SCHEMA IF NOT EXISTS QUANT.GOLD;
 -- Rows that fail the ingestion contract land here, never in Silver.
 CREATE SCHEMA IF NOT EXISTS QUANT.QUARANTINE;
 
+-- Pipeline latency telemetry: one row per (flow run, stage), written by
+-- ingest/metrics.py and scripts/run_dbt.py. Powers the E2E latency SLAs in
+-- docs/system_design.md. Best-effort writes (a metrics failure never fails a run).
+CREATE TABLE IF NOT EXISTS QUANT.BRONZE.PIPELINE_METRICS (
+    RUN_ID      VARCHAR(36)   NOT NULL COMMENT 'flow run id (uuid)',
+    FLOW        VARCHAR(64)   NOT NULL COMMENT 'flow name (ingest-market-data, ingest-fundamentals, dbt)',
+    STAGE       VARCHAR(64)   NOT NULL COMMENT 'stage name (fetch, validate, write-bronze, quarantine, dbt-build)',
+    STARTED_AT  TIMESTAMP_NTZ NOT NULL COMMENT 'stage start time (UTC)',
+    ELAPSED_MS  NUMBER(10, 0) NOT NULL COMMENT 'stage wall-clock duration',
+    N_ROWS      NUMBER(10, 0) COMMENT 'rows handled by the stage (null when not applicable)',
+    LOADED_AT   TIMESTAMP_NTZ NOT NULL COMMENT 'when the metrics row was written',
+    PRIMARY KEY (RUN_ID, STAGE)
+) COMMENT = 'Pipeline stage timings for latency SLAs and cost attribution';
+
 -- Enable client-side MFA token caching (macOS/Windows) so automated jobs only
 -- prompt for Duo/TOTP once per ~4h instead of every connection.
 ALTER ACCOUNT SET ALLOW_CLIENT_MFA_CACHING = TRUE;

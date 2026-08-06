@@ -56,5 +56,5 @@ dbt-debug: ## Validate Snowflake connection + profile (no transforms)
 dbt-parse: ## Compile the project without running (fast contract check)
 	$(ENV) $(DBT) parse --project-dir . --profiles-dir .
 
-dbt-run: ## Build + test all models (silver/gold, contracts enforced)
-	$(ENV) $(DBT) build --project-dir . --profiles-dir .
+dbt-run: ## Build + test all models (silver/gold, contracts enforced) with latency telemetry
+	$(ENV) $(PYTHON) python scripts/run_dbt.py build --project-dir . --profiles-dir .

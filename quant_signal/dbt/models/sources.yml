@@ -120,3 +120,23 @@ sources:
             data_type: date
           - name: loaded_at
             data_type: timestamp_ntz
+      - name: pipeline_metrics
+        description: "Pipeline stage timings written by ingest/metrics.py and scripts/run_dbt.py — latency telemetry for E2E SLAs."
+        config:
+          freshness: null
+          loaded_at_field: loaded_at
+        columns:
+          - name: run_id
+            data_type: text
+          - name: flow
+            data_type: text
+          - name: stage
+            data_type: text
+          - name: started_at
+            data_type: timestamp_ntz
+          - name: elapsed_ms
+            data_type: integer
+          - name: n_rows
+            data_type: integer
+          - name: loaded_at
+            data_type: timestamp_ntz

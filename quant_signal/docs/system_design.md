@@ -88,9 +88,14 @@ MERGE, dbt) is already seconds-scale.
 
 ## 6. Infra-first roadmap
 
-1. **Latency telemetry** — write per-stage `elapsed_ms` events to a
-   `PIPELINE_METRICS` table; add an SLO-breach alert. (The logs already emit the
-   data; this only persists it.)
+1. **Latency telemetry — DONE (2026-08-06).** `ingest/metrics.py` + the
+   `scripts/run_dbt.py` wrapper persist per-stage `elapsed_ms` into
+   `BRONZE.PIPELINE_METRICS` (source → `silver_pipeline_metrics`); every ingest
+   flow and `make dbt-run` records fetch/validate/write/quarantine/dbt-build.
+   Live first run: ingest ≈ 85 s + dbt-build ≈ 30 s → E2E ≈ 2 min, inside the
+   < 10 min budget. Known nuance: the dbt-build row lands *after* the silver
+   table materializes, so silver picks it up on the next build (query Bronze for
+   same-run visibility). Next: SLO-breach alert on this table.
 2. **Persistent orchestration** — Prefect work pool + server (today: inline temp
    server per run), scheduled warm path.
 3. **Near-real-time crypto path** — Snowpipe/STREAMS for CRYPTO_BARS (the latency

@@ -1,0 +1,56 @@
+version: 2
+
+models:
+  - name: silver_pipeline_metrics
+    description: "Pipeline stage timings (fetch/validate/write/quarantine/dbt) per flow run — the latency telemetry backing the E2E SLAs in docs/system_design.md."
+    config:
+      contract:
+        enforced: true
+    columns:
+      - name: run_id
+        description: "Flow run id (uuid)."
+        data_type: text
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+      - name: flow
+        description: "Flow name (ingest-market-data, ingest-fundamentals, ingest-macro-data, dbt)."
+        data_type: text
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+      - name: stage
+        description: "Stage name (fetch, validate, write-bronze, quarantine, dbt-build)."
+        data_type: text
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+      - name: started_at
+        description: "Stage start time (UTC)."
+        data_type: timestamp_ntz
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+      - name: elapsed_ms
+        description: "Stage wall-clock duration in milliseconds (>= 0)."
+        data_type: integer
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 0
+      - name: n_rows
+        description: "Rows handled by the stage (null when not applicable)."
+        data_type: integer
+      - name: loaded_at
+        description: "When the metrics row was written."
+        data_type: timestamp_ntz
+        constraints:
+          - type: not_null
+        tests:
+          - not_null

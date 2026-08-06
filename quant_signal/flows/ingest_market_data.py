@@ -23,6 +23,7 @@ from prefect import flow, task
 
 from config.logging import configure_logging, get_logger
 from config.settings import Settings, csv_list, get_settings
+from ingest.metrics import PipelineMetrics
 from ingest.providers.base import BarProvider
 from ingest.providers.binance import BinanceBarProvider
 from ingest.providers.synthetic import SyntheticBarProvider
@@ -114,16 +115,22 @@ def ingest_market_data(
     if symbols is None:
         symbols = _default_symbols(provider_name, settings)
     days = days or settings.ingest_default_days
-    raw = fetch_bars(provider_name, symbols, days)
-    good, bad = validate(raw)
-    if provider_name == "binance":
-        written = write_bronze_crypto(good)
-        source = "crypto_bars"
-    else:
-        written = write_bronze(good)
-        source = "equity_bars"
-    quarantined = quarantine(bad, source)
+    metrics = PipelineMetrics(flow="ingest-market-data")
+    with metrics.stage("fetch"):
+        raw = fetch_bars(provider_name, symbols, days)
+    with metrics.stage("validate", rows=len(raw)):
+        good, bad = validate(raw)
+    with metrics.stage("write-bronze", rows=len(good)):
+        if provider_name == "binance":
+            written = write_bronze_crypto(good)
+            source = "crypto_bars"
+        else:
+            written = write_bronze(good)
+            source = "equity_bars"
+    with metrics.stage("quarantine", rows=len(bad)):
+        quarantined = quarantine(bad, source)
     result = {"fetched": int(len(raw)), "written": written, "quarantined": quarantined}
+    metrics.flush()
     log.info("ingest_market_data_complete", provider=provider_name, **result)
     return result
 

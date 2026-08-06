@@ -18,6 +18,7 @@ from prefect import flow, task
 
 from config.logging import configure_logging, get_logger
 from config.settings import csv_list, get_settings
+from ingest.metrics import PipelineMetrics
 from ingest.providers.fred import FredProvider
 from ingest.quality import validate_macro
 from ingest.store import write_macro, write_quarantine
@@ -57,15 +58,21 @@ def ingest_macro_data(series_ids: list[str] | None = None) -> dict[str, int]:
     configure_logging()
     settings = get_settings()
     ids = series_ids or csv_list(settings.ingest_default_macro_series)
-    raw = fetch_macro(ids)
-    good, bad = validate(raw)
-    written = write_bronze(good)
-    quarantined = quarantine(bad, "fred_macro")
+    metrics = PipelineMetrics(flow="ingest-macro-data")
+    with metrics.stage("fetch"):
+        raw = fetch_macro(ids)
+    with metrics.stage("validate", rows=len(raw)):
+        good, bad = validate(raw)
+    with metrics.stage("write-bronze", rows=len(good)):
+        written = write_bronze(good)
+    with metrics.stage("quarantine", rows=len(bad)):
+        quarantined = quarantine(bad, "fred_macro")
     result = {
         "fetched": int(len(raw)),
         "written": written,
         "quarantined": quarantined,
     }
+    metrics.flush()
     log.info("ingest_macro_data_complete", **result)
     return result
 

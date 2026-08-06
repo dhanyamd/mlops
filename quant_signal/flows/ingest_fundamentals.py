@@ -15,6 +15,7 @@ from prefect import flow, task
 
 from config.logging import configure_logging, get_logger
 from config.settings import csv_list, get_settings
+from ingest.metrics import PipelineMetrics
 from ingest.providers.sec_edgar import EdgarFundamentalsProvider
 from ingest.quality import validate_facts
 from ingest.store import write_company_facts, write_quarantine
@@ -46,15 +47,21 @@ def ingest_fundamentals(tickers: list[str] | None = None) -> dict[str, int]:
     configure_logging()
     if tickers is None:
         tickers = csv_list(get_settings().ingest_default_tickers)
-    raw = fetch_facts(tickers)
-    good, bad = validate(raw)
-    written = write_bronze(good)
-    quarantined = write_quarantine(bad, "company_facts", get_settings())
+    metrics = PipelineMetrics(flow="ingest-fundamentals")
+    with metrics.stage("fetch"):
+        raw = fetch_facts(tickers)
+    with metrics.stage("validate", rows=len(raw)):
+        good, bad = validate(raw)
+    with metrics.stage("write-bronze", rows=len(good)):
+        written = write_bronze(good)
+    with metrics.stage("quarantine", rows=len(bad)):
+        quarantined = write_quarantine(bad, "company_facts", get_settings())
     result = {
         "fetched": int(len(raw)),
         "written": written,
         "quarantined": quarantined,
     }
+    metrics.flush()
     log.info("ingest_fundamentals_complete", **result)
     return result
 
