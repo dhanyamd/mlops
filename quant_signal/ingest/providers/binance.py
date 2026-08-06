@@ -1,8 +1,9 @@
 """Binance public market-data provider — REAL crypto OHLCV, no API key.
 
-Public klines endpoint (verified live): ``/api/v3/klines`` returns minute bars
-since ~2017, paginated at 1000 bars/request. Single venue (Binance), so volume
-is exchange volume, not consolidated tape; pairs are uppercase like ``BTCUSDT``.
+Public klines endpoint (verified live): the market-data-only base
+``data-api.binance.vision`` returns minute bars since ~2017, paginated at
+1000 bars/request (weight 2/request). Single venue (Binance), so volume is
+exchange volume, not consolidated tape; pairs are uppercase like ``BTCUSDT``.
 Fractional base-asset volume is kept as float.
 
 Output columns match the bar contract: ``symbol, ts, timeframe, open, high,
@@ -19,7 +20,7 @@ import requests
 
 from ingest.providers.base import BarProvider
 
-_BASE = "https://api.binance.com/api/v3/klines"
+_BASE = "https://data-api.binance.vision/api/v3/klines"
 _HEADERS = {"User-Agent": "quant-signal-research/1.0"}
 _REQUEST_INTERVAL_S = 0.2
 _MAX_TRIES = 3
@@ -47,9 +48,11 @@ class BinanceBarProvider(BarProvider):
                 time.sleep(1.5 * (attempt + 1))
         raise RuntimeError(f"binance fetch failed after {_MAX_TRIES} tries: {last_exc}")
 
-    def _fetch_symbol(self, symbol: str, days: int) -> list[tuple]:
+    def _fetch_symbol(self, symbol: str, days: int, minutes: int | None = None) -> list[tuple]:
         now_ms = int(time.time() * 1000)
-        start_ms = now_ms - days * 86_400_000
+        # ``minutes`` overrides ``days``: fetch only the trailing window (used by
+        # the live-stream poller so each poll is a handful of bars, not a day).
+        start_ms = now_ms - minutes * 60_000 if minutes else now_ms - days * 86_400_000
         # Kline: [openTime_ms, open, high, low, close, volume, closeTime, ...]
         rows: list[tuple] = []
         cursor = start_ms
@@ -86,8 +89,8 @@ class BinanceBarProvider(BarProvider):
             time.sleep(_REQUEST_INTERVAL_S)
         return rows
 
-    def fetch_bars(self, symbols: list[str], days: int) -> pd.DataFrame:
-        if not symbols or days < 1:
+    def fetch_bars(self, symbols: list[str], days: int, minutes: int | None = None) -> pd.DataFrame:
+        if not symbols or (days < 1 and not minutes):
             return pd.DataFrame(
                 columns=[
                     "symbol",
@@ -104,7 +107,7 @@ class BinanceBarProvider(BarProvider):
             )
         rows: list[tuple] = []
         for symbol in symbols:
-            rows.extend(self._fetch_symbol(symbol.upper(), days))
+            rows.extend(self._fetch_symbol(symbol.upper(), days, minutes))
             time.sleep(_REQUEST_INTERVAL_S)
         return pd.DataFrame(
             rows,

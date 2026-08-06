@@ -115,6 +115,32 @@ What we deliberately do NOT have yet (documented, not hidden):
 - **Streaming** — batch-only. Real-time milestone: Snowpipe + Snowflake
   STREAMS/tasks (replaces Kafka for this workload), not Kafka/K8s.
 
+## Live-stream roadmap (M2–M4)
+
+The live market stream is the near-real-time showcase: Binance minute bars
+arrive continuously, and the pipeline demonstrates the full serving path for a
+real-time data product — from provider, through a validated Bronze write, to a
+live WebSocket endpoint.
+
+- **M2 — Live stream v1 (2026-08-06, DONE).** `api/stream.py` runs an in-API
+  poller that fetches recent Binance minute bars every `STREAM_POLL_SECONDS`,
+  upserts them to `BRONZE.CRYPTO_BARS` (best-effort — a Snowflake outage logs a
+  warning, never kills the stream), keeps a per-symbol ring buffer for instant
+  snapshots, and fans deltas out over `/ws/market` (REST snapshot at
+  `/api/market/live/{symbol}`). Instruments come from
+  `INGEST_DEFAULT_CRYPTO_SYMBOLS` — nothing hardcoded. Hermetic tests cover
+  ingest/dedupe/broadcast and both endpoints without a network or database.
+- **M3 — Streaming-native ingestion.** Replace the API-side poller with
+  Snowpipe → STREAMS → task so `CRYPTO_BARS` refreshes within minutes from
+  Snowflake itself (no Kafka — the doc's stated choice for this workload),
+  plus a freshness monitor on the table. The API poller remains the mock-free
+  dev/fallback path.
+- **M4 — Online feature serving.** Materialize as-of features over the minute
+  bars in dbt and serve them through a register/lookup layer at p95 < 500 ms —
+  the online budget Snowflake alone cannot hit. This closes the loop from raw
+  stream to a live-updating feature endpoint and is the crypto analogue of the
+  feature-store milestone in the system design doc.
+
 ## M2+ roadmap
 
 1. **Feature store** (Feast or Featureform) with as-of PIT joins. The data

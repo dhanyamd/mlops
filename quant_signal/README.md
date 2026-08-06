@@ -56,8 +56,9 @@ quant_signal/
 │   ├── packages.yml        # dbt_expectations + elementary
 │   └── models/             # sources.yml + silver/gold models with contracts
 ├── api/
-│   ├── main.py             # FastAPI: /api/market, /pead, /fundamentals, ...
-│   └── db.py               # read-only query layer over Silver/Gold
+│   ├── main.py             # FastAPI: /api/market, /pead, /fundamentals, /ws/market
+│   ├── db.py               # read-only query layer over Silver/Gold
+│   └── stream.py           # live Binance poller + ring buffer + WebSocket fan-out
 ├── scripts/                # ping.py, run_dbt.py, pead_backtest.py
 ├── ui/                     # Next.js dashboard (Market/Fundamentals/PEAD/...)
 ├── tests/                  # config + connection-param + API tests (no live DB)
@@ -112,6 +113,20 @@ Open `http://localhost:3000`. The API is also directly usable:
 `curl localhost:8000/api/pead`, `/api/market/AAPL?days=750`, `/api/fundamentals/AAPL`,
 `/api/metrics/pipeline`, `/api/macro?series=VIXCLS`. The PEAD endpoint recomputes
 the ~10s event study at most once per 60s (env `API_PEAD_CACHE_TTL_SECONDS`).
+
+### Live market stream (near-real-time showcase)
+
+While the API runs it also drives a **live minute-bar stream** from Binance
+(`api/stream.py`): a background poller fetches recent crypto bars every
+`STREAM_POLL_SECONDS`, upserts them to `BRONZE.CRYPTO_BARS` (best-effort —
+a Snowflake outage degrades to a warning, never kills the stream), and
+broadcasts deltas over WebSocket. No hardcoded instruments: the symbol set is
+`INGEST_DEFAULT_CRYPTO_SYMBOLS` from the environment.
+
+- Snapshot REST: `curl localhost:8000/api/market/live/BTCUSDT`
+- Live WebSocket: `wscat -c 'ws://localhost:8000/ws/market?symbol=BTCUSDT'`
+
+The stream is on by default; set `STREAM_ENABLED=false` for a pure query API.
 
 ## Notes
 

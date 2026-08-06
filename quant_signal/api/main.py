@@ -4,17 +4,23 @@ Serves the same real numbers the CLI shows: market bars, PIT fundamentals,
 the PEAD event study, pipeline latency, and macro series. No mocking, no
 business values hardcoded — instruments come from ``INGEST_DEFAULT_TICKERS``.
 
+Also runs the live market stream (Binance minute bars → WebSocket fan-out)
+for the duration of the process, via the FastAPI lifespan.
+
 Run:  uv run uvicorn api.main:app --port 8000
 """
 
 from __future__ import annotations
 
+import asyncio
 import time
+from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from api import db
+from api.stream import start_stream, stop_stream
 from config.logging import configure_logging
 from config.settings import csv_list, get_settings
 from scripts.pead_backtest import compute_pead
@@ -23,7 +29,21 @@ configure_logging()
 
 settings = get_settings()
 
-app = FastAPI(title="Quant Signal Dashboard", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Start/stop the live market stream with the API process."""
+    stream = start_stream()
+    if stream is not None:
+        stream.start(asyncio.get_running_loop())
+    app.state.stream = stream
+    try:
+        yield
+    finally:
+        stop_stream(app.state.stream)
+
+
+app = FastAPI(title="Quant Signal Dashboard", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -34,6 +54,11 @@ app.add_middleware(
 
 # The PEAD study is a ~10s query; cache per parameter set for a short TTL.
 _pead_cache: dict[str, tuple[float, dict]] = {}
+
+
+def _stream() -> object | None:
+    """The running MarketStream (if enabled) — None in tests that disable it."""
+    return getattr(app.state, "stream", None)
 
 
 @app.get("/api/health")
@@ -110,3 +135,48 @@ def macro(
 ) -> dict:
     points = db.macro_series(series_id=series, limit=limit)
     return {"count": len(points), "points": points}
+
+
+@app.get("/api/market/live/{symbol}")
+def market_live(symbol: str) -> dict:
+    """Ring-buffer snapshot from the live stream (no Snowflake, no polling delay)."""
+    stream = _stream()
+    if stream is None or not hasattr(stream, "hub"):
+        return {"symbol": symbol.upper(), "enabled": False, "count": 0, "bars": []}
+    bars = stream.hub.snapshot(symbol)
+    return {"symbol": symbol.upper(), "enabled": True, "count": len(bars), "bars": bars}
+
+
+def _default_live_symbol() -> str:
+    """First tracked crypto symbol from env — never a hardcoded instrument."""
+    symbols = csv_list(settings.ingest_default_crypto_symbols)
+    return symbols[0] if symbols else ""
+
+
+@app.websocket("/ws/market")
+async def market_ws(websocket: WebSocket, symbol: str = Query(default="")) -> None:
+    """Live minute bars for one symbol: snapshot, then deltas as they arrive."""
+    if not symbol:
+        symbol = _default_live_symbol()
+    await websocket.accept()
+    stream = _stream()
+    if stream is None or not hasattr(stream, "hub"):
+        await websocket.send_json({"type": "error", "message": "live stream disabled"})
+        await websocket.close()
+        return
+
+    queue: asyncio.Queue[list[dict]] = asyncio.Queue(maxsize=1000)
+    stream.hub.subscribe(queue)
+    try:
+        await websocket.send_json(
+            {"type": "snapshot", "symbol": symbol.upper(), "bars": stream.hub.snapshot(symbol)}
+        )
+        while True:
+            bars = await queue.get()
+            for bar in bars:
+                if bar["symbol"] == symbol.upper():
+                    await websocket.send_json({"type": "bar", "symbol": symbol.upper(), "bar": bar})
+    except WebSocketDisconnect:
+        pass
+    finally:
+        stream.hub.unsubscribe(queue)

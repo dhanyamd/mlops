@@ -93,6 +93,15 @@ class Settings(BaseSettings):
     # (a full run is a ~10s Snowflake query, far slower than the other reads).
     api_pead_cache_ttl_seconds: int = 60
 
+    # ── Live market stream (near-real-time showcase) ────────────────────────
+    # Background poller in the API process: fetches recent Binance minute bars,
+    # persists them to BRONZE.CRYPTO_BARS (best-effort), and broadcasts deltas
+    # to /ws/market subscribers. Disable for a pure query API.
+    stream_enabled: bool = True
+    stream_poll_seconds: int = 15
+    # Ring-buffer depth kept per symbol for WebSocket snapshots.
+    stream_history_minutes: int = 180
+
     @field_validator("snowflake_account")
     @classmethod
     def _validate_account(cls, value: str) -> str:

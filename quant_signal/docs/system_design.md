@@ -61,8 +61,11 @@ MERGE, dbt) is already seconds-scale.
   splitting) and resumable; parallelize *across symbols* with a per-provider
   rate-limit token bucket instead of the current sequential 1 s throttle.
 - **Near-real-time path (the latency showcase)**: crypto minute bars are the only
-  source that *arrives* continuously. Route Binance through Snowpipe → STREAMS →
-  task so BRONZE.CRYPTO_BARS refreshes within minutes, not hours. No Kafka:
+  source that *arrives* continuously. M2 (done 2026-08-06): an in-API poller
+  (`api/stream.py`) fetches Binance minute bars, upserts them best-effort to
+  BRONZE.CRYPTO_BARS, and serves them live over `/ws/market` + a REST snapshot.
+  M3: route Binance through Snowpipe → STREAMS → task so BRONZE.CRYPTO_BARS
+  refreshes from Snowflake within minutes, not hours. No Kafka:
   Snowpipe/STREAMS replaces it for this workload.
 - **Serving path (features)**: materialize as-of feature tables in dbt
   (incremental on `filed_at`, restatements preserved) and expose through a thin
@@ -98,8 +101,9 @@ MERGE, dbt) is already seconds-scale.
    same-run visibility). Next: SLO-breach alert on this table.
 2. **Persistent orchestration** — Prefect work pool + server (today: inline temp
    server per run), scheduled warm path.
-3. **Near-real-time crypto path** — Snowpipe/STREAMS for CRYPTO_BARS (the latency
-   showcase) + freshness monitor.
+3. **Near-real-time crypto path** — M2 live stream (done): in-API Binance
+   poller → BRONZE.CRYPTO_BARS + WebSocket. Next: Snowpipe/STREAMS (M3) +
+   freshness monitor.
 4. **Feature store / as-of serving** (M2) — dbt as-of features + lookup layer,
    p95 < 500 ms target.
 5. **Storage tiering** — archive cold Bronze to object store; keep marts in

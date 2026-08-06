@@ -22,3 +22,14 @@ from prefect.testing.utilities import prefect_test_harness
 def _prefect_test_harness() -> Iterator[None]:
     with prefect_test_harness():
         yield
+
+
+@pytest.fixture(autouse=True)
+def _disable_live_stream(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep tests hermetic: never spawn the real Binance poller thread.
+
+    ``api.main.start_stream`` is called by the FastAPI lifespan that
+    ``TestClient`` triggers; returning None means no network thread and no
+    Snowflake writes. Stream tests inject a fake provider themselves.
+    """
+    monkeypatch.setattr("api.main.start_stream", lambda: None)
