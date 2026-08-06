@@ -715,6 +715,114 @@ def test_yahoo_provider_skips_missing_days(
     assert len(df) == 1  # the no-data day is a gap, not a bad row
 
 
+def test_yahoo_provider_fetches_long_history_via_periods(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    import json
+
+    # Two overlapping windows; the shared date (mid) must appear once.
+    payload = {
+        "chart": {
+            "result": [
+                {
+                    "meta": {"symbol": "AAPL"},
+                    "timestamp": [1785369600, 1785456000],
+                    "indicators": {
+                        "quote": [
+                            {
+                                "open": [100.0, 102.0],
+                                "high": [101.0, 103.0],
+                                "low": [99.0, 101.0],
+                                "close": [100.5, 102.5],
+                                "volume": [1000, 2000],
+                            }
+                        ]
+                    },
+                }
+            ]
+        }
+    }
+    requests_seen: list[dict] = []
+
+    def fake_get(self, url, params=None, timeout=None):  # type: ignore[no-untyped-def]
+        class _R:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict:
+                return json.loads(json.dumps(payload))
+
+        requests_seen.append(dict(params or {}))
+        return _R()
+
+    monkeypatch.setattr("curl_cffi.requests.Session.get", fake_get)
+    df = YahooBarProvider(cache_dir=tmp_path).fetch_bars(["aapl"], days=7000)
+    assert len(df) == 2
+    assert requests_seen  # every request used period1/period2, never range=max
+    assert all("period1" in p and "period2" in p for p in requests_seen)
+    assert all("range" not in p for p in requests_seen)
+
+
+def test_yahoo_provider_splits_windows_on_pre_ipo_400(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    import json
+    import time as _time
+
+    now = int(_time.time())
+    ipo_ts = now - 16 * 365 * 86400  # ticker listed ~16y ago
+    payload = {
+        "chart": {
+            "result": [
+                {
+                    "meta": {"symbol": "AAPL"},
+                    "timestamp": [1785369600, 1785456000],
+                    "indicators": {
+                        "quote": [
+                            {
+                                "open": [100.0, 102.0],
+                                "high": [101.0, 103.0],
+                                "low": [99.0, 101.0],
+                                "close": [100.5, 102.5],
+                                "volume": [1000, 2000],
+                            }
+                        ]
+                    },
+                }
+            ]
+        }
+    }
+    requests_seen: list[dict] = []
+
+    class _Resp:
+        def __init__(self, status: int) -> None:
+            self.status_code = status
+
+        def raise_for_status(self) -> None:
+            if self.status_code >= 400:
+                raise _HTTPError(self)
+
+        def json(self) -> dict:
+            return json.loads(json.dumps(payload))
+
+    class _HTTPError(Exception):
+        def __init__(self, resp: _Resp) -> None:
+            self.response = resp
+
+    def fake_get(self, url, params=None, timeout=None):  # type: ignore[no-untyped-def]
+        requests_seen.append(dict(params or {}))
+        if (params or {}).get("period1", now) < ipo_ts:
+            return _Resp(400)  # window predates the IPO — deterministic rejection
+        return _Resp(200)
+
+    monkeypatch.setattr("curl_cffi.requests.Session.get", fake_get)
+    df = YahooBarProvider(cache_dir=tmp_path).fetch_bars(["aapl"], days=7000)
+    assert len(df) == 2  # only post-IPO rows survive; no exception from the 400s
+    pre_ipo = [p for p in requests_seen if p.get("period1", now) < ipo_ts]
+    assert pre_ipo, "expected pre-IPO windows to be probed and split, not retried"
+    assert all("range" not in p for p in requests_seen)
+
+
 def test_binance_provider_paginates_minute_bars(monkeypatch: pytest.MonkeyPatch) -> None:
     import json
 
