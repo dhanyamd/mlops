@@ -5,10 +5,12 @@ Production-grade quant signal platform: **Snowflake-backed pipelines** with
 quant research houses (Two Sigma / Man AHL patterns) actually run data
 infrastructure.
 
-> Status: **M0 — foundations**. Config, Snowflake client, structured logging,
-> idempotent warehouse bootstrap, and the dbt project skeleton with enforced
-> contracts. No code is hardcoded: every credential and connection value comes
-> from the environment.
+> Status: **M0–M1 — foundations + live data + dashboard.** Config, Snowflake
+> client, structured logging, idempotent bootstrap, dbt with enforced contracts,
+> real ingestion (Yahoo/EDGAR/FRED/Binance) into Bronze→Silver→Gold with
+> latency telemetry, the PEAD event study, and a read-only FastAPI + Next.js
+> dashboard over the live marts. No code is hardcoded: every credential and
+> connection value comes from the environment.
 
 ## Non-negotiables
 
@@ -53,9 +55,13 @@ quant_signal/
 │   ├── dbt_project.yml     # silver/gold: contracts enforced at project level
 │   ├── packages.yml        # dbt_expectations + elementary
 │   └── models/             # sources.yml + silver/gold models with contracts
-├── scripts/ping.py         # connection smoke test (make ping)
-├── tests/                  # config + connection-param tests (no live DB)
-└── Makefile                # setup / lint / test / bootstrap / dbt targets
+├── api/
+│   ├── main.py             # FastAPI: /api/market, /pead, /fundamentals, ...
+│   └── db.py               # read-only query layer over Silver/Gold
+├── scripts/                # ping.py, run_dbt.py, pead_backtest.py
+├── ui/                     # Next.js dashboard (Market/Fundamentals/PEAD/...)
+├── tests/                  # config + connection-param + API tests (no live DB)
+└── Makefile                # setup / lint / test / bootstrap / dbt / api / ui
 ```
 
 ## Setup (needs a Snowflake trial account)
@@ -90,6 +96,22 @@ print(client.ping())                       # True once connected
 df = client.query_df("SELECT 1 AS one")
 client.insert_df(df, table_name="my_table")  # appends into QUANT.BRONZE
 ```
+
+## Dashboard (live UI over the marts)
+
+The read-only dashboard serves the *same* numbers the CLI shows — market bars,
+PIT fundamentals, the PEAD event study, macro series, and pipeline latency.
+Nothing is mocked; every page queries Silver/Gold in real time.
+
+```bash
+make api   # FastAPI on :8000 (needs .env; MFA passcode via env or prompt)
+make ui    # Next.js on :3000 — proxies /api/* to :8000, so browsers stay same-origin
+```
+
+Open `http://localhost:3000`. The API is also directly usable:
+`curl localhost:8000/api/pead`, `/api/market/AAPL?days=750`, `/api/fundamentals/AAPL`,
+`/api/metrics/pipeline`, `/api/macro?series=VIXCLS`. The PEAD endpoint recomputes
+the ~10s event study at most once per 60s (env `API_PEAD_CACHE_TTL_SECONDS`).
 
 ## Notes
 

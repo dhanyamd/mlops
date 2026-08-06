@@ -2793,11 +2793,16 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+api = [
+    { name = "fastapi" },
+    { name = "uvicorn" },
+]
 dbt = [
     { name = "dbt-core" },
     { name = "dbt-snowflake" },
 ]
 dev = [
+    { name = "httpx" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
@@ -2808,6 +2813,8 @@ requires-dist = [
     { name = "curl-cffi", specifier = ">=0.16.0" },
     { name = "dbt-core", marker = "extra == 'dbt'", specifier = ">=1.9.0,<2.0.0" },
     { name = "dbt-snowflake", marker = "extra == 'dbt'", specifier = ">=1.9.0,<2.0.0" },
+    { name = "fastapi", marker = "extra == 'api'", specifier = ">=0.115.0" },
+    { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27.0" },
     { name = "pandas", specifier = ">=2.2.0" },
     { name = "prefect", specifier = ">=2.19.0" },
     { name = "pyarrow", specifier = ">=19.0.0" },
@@ -2820,8 +2827,9 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4.0" },
     { name = "snowflake-connector-python", extras = ["pandas", "secure-local-storage"], specifier = ">=4.7.1" },
     { name = "structlog", specifier = ">=24.1.0" },
+    { name = "uvicorn", marker = "extra == 'api'", specifier = ">=0.30.0" },
 ]
-provides-extras = ["dbt", "dev"]
+provides-extras = ["dbt", "api", "dev"]
 
 [[package]]
 name = "rapidfuzz"

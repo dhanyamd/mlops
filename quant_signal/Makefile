@@ -3,7 +3,7 @@ DBT := cd dbt && uv run dbt
 # dbt reads profiles/dbt_project from the dbt/ dir; credentials come from ./.env
 ENV := set -a; . ./.env; set +a;
 
-.PHONY: setup lint test check dbt-setup dbt-deps dbt-debug dbt-run dbt-parse bootstrap ping ingest ingest-macro ingest-fundamentals
+.PHONY: setup lint test check dbt-setup dbt-deps dbt-debug dbt-run dbt-parse bootstrap ping ingest ingest-macro ingest-fundamentals api ui-setup ui
 
 ## Environment ────────────────────────────────────────────────────────────────
 
@@ -58,3 +58,14 @@ dbt-parse: ## Compile the project without running (fast contract check)
 
 dbt-run: ## Build + test all models (silver/gold, contracts enforced) with latency telemetry
 	$(ENV) $(PYTHON) python scripts/run_dbt.py build --project-dir . --profiles-dir .
+
+## Dashboard ─────────────────────────────────────────────────────────────────
+
+api: ## Run the read-only dashboard API (FastAPI) on :8000
+	$(ENV) $(PYTHON) uvicorn api.main:app --port 8000 --reload
+
+ui-setup: ## Install the Next.js dashboard dependencies
+	cd ui && npm install
+
+ui: ## Run the Next.js dashboard on :3000 (proxy /api → :8000; start `make api` first)
+	cd ui && npm run dev

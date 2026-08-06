@@ -84,6 +84,15 @@ class Settings(BaseSettings):
     # ── Runtime ─────────────────────────────────────────────────────────────
     log_level: str = "INFO"
 
+    # ── Dashboard API ───────────────────────────────────────────────────────
+    # Allowed browser origins for the read-only dashboard API (CSV). The
+    # Next.js dev server proxies /api → :8000 via rewrites, so this only
+    # matters if a browser hits the API directly from another origin.
+    api_cors_origins: str = "http://localhost:3000"
+    # Recompute the PEAD event study at most this often per parameter set
+    # (a full run is a ~10s Snowflake query, far slower than the other reads).
+    api_pead_cache_ttl_seconds: int = 60
+
     @field_validator("snowflake_account")
     @classmethod
     def _validate_account(cls, value: str) -> str:

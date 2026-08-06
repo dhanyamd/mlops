@@ -29,7 +29,6 @@ from __future__ import annotations
 import argparse
 import math
 from collections import defaultdict
-from typing import Iterable
 
 import pandas as pd
 
@@ -40,29 +39,36 @@ _WINDOW_DEFAULT = [1, 5, 20]
 
 
 def _load_facts(client: SnowflakeClient, tickers: list[str], metric: str) -> pd.DataFrame:
-    client._settings.snowflake_schema = "SILVER"  # type: ignore[attr-defined]
-    placeholders = ", ".join(f"'{t}'" for t in tickers)
+    """PIT facts for the metric, bound-parameter safe (the API exposes these)."""
+    if not tickers:
+        return pd.DataFrame()
+    qual = client._qualify("SILVER_COMPANY_FACTS", None, "SILVER")
+    placeholders = ", ".join(["%s"] * len(tickers))
     return client.query_df(
         f"""
         SELECT TICKER, FISCAL_YEAR, VALUE, FILED_AT
-        FROM SILVER_COMPANY_FACTS
-        WHERE METRIC = '{metric}'
+        FROM {qual}
+        WHERE METRIC = %s
           AND TICKER IN ({placeholders})
         ORDER BY TICKER, FILED_AT
-        """
+        """,
+        (metric, *tickers),
     )
 
 
 def _load_prices(client: SnowflakeClient, tickers: list[str]) -> tuple[list, dict[str, dict]]:
     """Global trading calendar + {symbol: {trade_date: close}} point-in-time."""
-    client._settings.snowflake_schema = "GOLD"  # type: ignore[attr-defined]
-    placeholders = ", ".join(f"'{t}'" for t in tickers)
+    if not tickers:
+        return [], {}
+    qual = client._qualify("GOLD_DAILY_BARS", None, "GOLD")
+    placeholders = ", ".join(["%s"] * len(tickers))
     rows = client.query_df(
         f"""
         SELECT SYMBOL, TRADE_DATE, DAY_CLOSE
-        FROM GOLD_DAILY_BARS
+        FROM {qual}
         WHERE TIMEFRAME = '1D' AND SYMBOL IN ({placeholders})
-        """
+        """,
+        tuple(tickers),
     )
     calendar = sorted(rows["TRADE_DATE"].unique().tolist())
     closes: dict[str, dict] = defaultdict(dict)
@@ -148,33 +154,102 @@ def _cares(
     return events
 
 
-def _print_table(events: list[dict], windows: list[int], quintiles: int) -> None:
+def _clean(value: float) -> float | None:
+    """NaN → None so the result is JSON-serializable (the API serves this)."""
+    return None if value != value else round(value, 4)
+
+
+def _summarize(events: list[dict], windows: list[int], quintiles: int) -> dict:
+    """Quintile drift table + spread, JSON-serializable."""
     df = pd.DataFrame(events)
-    print(f"\nPEAD event study — {len(df)} earnings filings, {df['ticker'].nunique()} tickers")
+    summary: dict = {
+        "n_events": len(df),
+        "n_tickers": int(df["ticker"].nunique()) if not df.empty else 0,
+    }
     if df.empty:
-        return
+        summary["quintiles"] = []
+        summary["spread"] = {}
+        return summary
     df["quintile"] = _prior_breakpoint_labels(events, quintiles)
-    unlabeled = int(df["quintile"].isna().sum())
-    if unlabeled:
-        print(f"  ({unlabeled} early events excluded — no prior SUE distribution yet)")
-    rows = []
+    summary["unlabeled"] = int(df["quintile"].isna().sum())
+    rows: list[dict] = []
     for label, g in df.dropna(subset=["quintile"]).groupby("quintile", observed=True):
-        row = {"quintile": label, "n": len(g), "mean_sue": g["sue"].mean()}
+        row = {"quintile": label, "n": len(g), "mean_sue": _clean(g["sue"].mean())}
         for h in windows:
             valid = g[f"car{h}"].dropna()
             mean = valid.mean() if len(valid) else float("nan")
             se = valid.std(ddof=0) / math.sqrt(len(valid)) if len(valid) > 1 else float("nan")
-            row[f"car{h}"] = mean
-            row[f"t{h}"] = mean / se if se and se == se else float("nan")
+            row[f"car{h}"] = _clean(mean)
+            row[f"t{h}"] = _clean(mean / se) if se and se == se else None
         rows.append(row)
-    out = pd.DataFrame(rows).set_index("quintile")
+    summary["quintiles"] = rows
+    q1 = rows[0]
+    q5 = rows[-1]
+    summary["spread"] = {
+        f"+{h}d": _clean(q5.get(f"car{h}") or 0.0 - (q1.get(f"car{h}") or 0.0)) for h in windows
+    }
+    return summary
+
+
+def compute_pead(
+    metric: str = "NetIncomeLoss",
+    windows: list[int] | None = None,
+    min_prior: int = 5,
+    quintiles: int = 5,
+    tickers: list[str] | None = None,
+) -> dict:
+    """Full PEAD event study against the live SILVER/GOLD data. JSON-safe.
+
+    Shared by the CLI (``main``) and the dashboard API so both show the same
+    numbers. Instruments default to ``INGEST_DEFAULT_TICKERS`` — not hardcoded.
+    """
+    settings = get_settings()
+    tickers = tickers or csv_list(settings.ingest_default_tickers)
+    windows = windows or list(_WINDOW_DEFAULT)
+    client = SnowflakeClient()
+    facts = _load_facts(client, list(tickers), metric)
+    if facts.empty:
+        return {"error": f"no {metric} filings found — run 'make ingest-fundamentals' first"}
+    calendar, closes = _load_prices(client, list(tickers))
+    events = _cares(_compute_sue(facts, min_prior), calendar, closes, windows)
+    result = _summarize(events, windows, quintiles)
+    result["metric"] = metric
+    result["windows"] = windows
+    return result
+
+
+def _print_summary(result: dict) -> None:
+    if "error" in result:
+        print(result["error"])
+        return
+    print(
+        f"\nPEAD event study — {result['n_events']} earnings filings, "
+        f"{result['n_tickers']} tickers (metric: {result['metric']})"
+    )
+    if result.get("unlabeled"):
+        print(f"  ({result['unlabeled']} early events excluded — no prior SUE distribution yet)")
+    out = pd.DataFrame(result["quintiles"]).set_index("quintile")
     print(out.round(4).to_string())
-    q1 = out.iloc[0]
-    q5 = out.iloc[-1]
     print("\nPEAD spread (highest minus lowest SUE quintile):")
-    for h in windows:
-        spread = q5[f"car{h}"] - q1[f"car{h}"]
-        print(f"  window +{h}d: {spread:+.4f} ({100 * spread:.2f} bps)")
+    for h in result["windows"]:
+        spread = result["spread"].get(f"+{h}d")
+        if spread is not None:
+            print(f"  window +{h}d: {spread:+.4f} ({100 * spread:+.2f}%)")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument(
+        "--metric", default="NetIncomeLoss", help="earnings metric from US-GAAP facts"
+    )
+    parser.add_argument("--windows", default="1,5,20", help="post-filing trading-day windows")
+    parser.add_argument(
+        "--min-prior", type=int, default=5, help="min prior surprises before SUE is computed"
+    )
+    parser.add_argument("--quintiles", type=int, default=5, help="SUE groups for the drift table")
+    args = parser.parse_args()
+    windows = [int(w) for w in args.windows.split(",")]
+    _print_summary(compute_pead(args.metric, windows, args.min_prior, args.quintiles))
 
 
 def _prior_breakpoint_labels(events: list[dict], quintiles: int) -> list[str | None]:
@@ -195,33 +270,6 @@ def _prior_breakpoint_labels(events: list[dict], quintiles: int) -> list[str | N
             labels[pos] = f"Q{bisect.bisect_left(cutoffs, events[pos]['sue']) + 1}"
         prior.append(events[pos]["sue"])
     return labels
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument(
-        "--metric", default="NetIncomeLoss", help="earnings metric from US-GAAP facts"
-    )
-    parser.add_argument("--windows", default="1,5,20", help="post-filing trading-day windows")
-    parser.add_argument(
-        "--min-prior", type=int, default=5, help="min prior surprises before SUE is computed"
-    )
-    parser.add_argument("--quintiles", type=int, default=5, help="SUE groups for the drift table")
-    args = parser.parse_args()
-
-    settings = get_settings()
-    tickers: Iterable[str] = csv_list(settings.ingest_default_tickers)
-    windows = [int(w) for w in args.windows.split(",")]
-
-    client = SnowflakeClient()
-    facts = _load_facts(client, list(tickers), args.metric)
-    if facts.empty:
-        raise SystemExit(f"no {args.metric} filings found — run 'make ingest-fundamentals' first")
-    calendar, closes = _load_prices(client, list(tickers))
-
-    events = _compute_sue(facts, args.min_prior)
-    events = _cares(events, calendar, closes, windows)
-    _print_table(events, windows, args.quintiles)
 
 
 if __name__ == "__main__":
