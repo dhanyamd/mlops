@@ -21,3 +21,19 @@ quant_signal:
       # Credit/cost attribution: every dbt query is tagged so Snowflake's
       # ACCOUNT_USAGE.QUERY_HISTORY can attribute spend to this project.
       query_tag: quant_signal_dbt
+    # CI output — fully isolated from dev/prod by the schema-prefix macro:
+    # every model lands in CI_<schema> (CI_SILVER, CI_GOLD, CI_ELEMENTARY) so
+    # a PR build can never collide with the dev warehouse layout. Driven by the
+    # same DBT_* secrets; the workflow uses `dbt build --target ci`.
+    ci:
+      type: snowflake
+      account: "{{ env_var('DBT_SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('DBT_SNOWFLAKE_USER') }}"
+      password: "{{ env_var('DBT_ENV_SECRET_SNOWFLAKE_PASSWORD') }}"
+      authenticator: "{{ env_var('DBT_SNOWFLAKE_AUTHENTICATOR', 'snowflake') }}"
+      role: "{{ env_var('DBT_SNOWFLAKE_ROLE', 'ACCOUNTADMIN') }}"
+      database: "{{ env_var('DBT_SNOWFLAKE_DATABASE', 'QUANT') }}"
+      warehouse: "{{ env_var('DBT_SNOWFLAKE_WAREHOUSE', 'QUANT_WH') }}"
+      schema: CI_RAW
+      threads: 2
+      query_tag: quant_signal_dbt_ci

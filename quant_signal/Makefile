@@ -45,6 +45,14 @@ ingest-macro: ## Land REAL FRED macro series (keyless CSV download)
 ingest-fundamentals: ## Land REAL SEC EDGAR fundamentals (keyless, needs EDGAR_USER_AGENT)
 	$(ENV) $(PYTHON) python flows/ingest_fundamentals.py
 
+## Feature engineering (M4) ───────────────────────────────────────────────────
+
+features: ## Compute rolling/as-of features over BRONZE bars -> GOLD.FEATURES (no Java needed)
+	$(ENV) $(PYTHON) python flows/feature_engineering.py --source pandas
+
+features-spark: ## Same batch via PySpark (needs Java + the spark-snowflake connector)
+	$(ENV) $(PYTHON) --extra spark python flows/feature_engineering.py --source snowflake
+
 ## dbt ────────────────────────────────────────────────────────────────────────
 
 dbt-deps: ## Install dbt packages (dbt_expectations, elementary)

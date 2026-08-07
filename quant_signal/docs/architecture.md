@@ -149,31 +149,41 @@ BinanceProducer → Redpanda (crypto.bars.raw) → Flink SQL 5m TUMBLE (checkpoi
   watermarks tolerate the producer's in-progress-minute re-publishes. Run the
   stack with `make stream-infra` + `make stream-topics` + `make
   stream-flink-submit` (see README).
-- **M3.5 — Prediction + Signal Terminal (NEXT).** Online learning (River)
-  model fed by the Flink feature stream, **conformal prediction intervals**
-  with self-measured coverage, and a **Monte Carlo** forward-simulation engine
-  (paths seeded by Flink realized-vol) — predictions and quantile bands served
-  from Redis and visualized in the Next.js Signal Terminal (live MC fan chart +
-  feature panel + signal gauge + live P&L vs buy-and-hold, backtest-linked to
-  Snowflake). Event Study + Macro as secondary tabs.
-- **M4 — Breadth (trimmed).** Only the cheap wins: Spark feature-engineering
-  batch over `BRONZE` and CI dbt against a CI Snowflake schema. Prefect
-  orchestration and Snowpipe Streaming persistence are parked.
+- **M3.5 — Prediction + Signal Terminal (2026-08-07, DONE).** Online learning
+  (River) model fed by the Flink feature stream, **conformal prediction
+  intervals** with self-measured coverage, and a **Monte Carlo** forward
+  simulation engine (paths seeded by Flink realized-vol) — predictions and
+  quantile bands served from Redis and visualized in the Next.js Signal
+  Terminal (live MC fan chart + feature panel + signal gauge + live P&L vs
+  buy-and-hold, backtest-linked to Snowflake). Strategy validation mirrors
+  QuantPad: 10k-path bootstrap over the strategy's realized returns with
+  pass-probability against the prop-firm target and max-drawdown. Event Study +
+  Macro as secondary tabs.
+- **M4 — Feature batch + CI dbt (2026-08-07, DONE).** Rolling/as-of
+  feature engineering over `BRONZE` into `GOLD.FEATURES`, two run modes with an
+  identical output contract: `--source pandas` (no-Java fallback, `make
+  features`) and `--source snowflake` (PySpark + spark-snowflake connector,
+  grouped-map pandas UDF, `make features-spark`). Feature math lives in
+  `flows/features.py` (single source of truth, hermetic-unit-tested). CI now
+  runs `dbt parse` on every PR (no Snowflake connection) and a secret-gated
+  `dbt-build` job against an isolated `CI_*` schema (see
+  `.github/workflows/quant-signal-ci.yml`). Prefect orchestration and Snowpipe
+  Streaming persistence are parked.
 
 ## M4+ roadmap
 
-1. **Prediction layer (M3.5)** — online learning (River) on the Flink feature
-   stream + conformal prediction intervals + Monte Carlo forward simulation,
-   served from Redis into the Signal Terminal UI.
-2. **Alpaca IEX provider** — production-grade equity upgrade (free key, ~2.5%
-   of consolidated volume documented).
-3. **MLflow** experiment tracking + model registry for forecasting/fraud
-   models (the sibling `fraud_detection/` project).
-4. **Spark** (local cluster) for feature engineering at scale over `BRONZE`.
-5. **Snowpipe Streaming** — persist the Kafka crypto stream into Snowflake
-   without batch best-effort writes (documented connector path).
-6. **CI**: enable the `dbt-build` job against a CI Snowflake schema when the
-   repo has DBT secrets.
+1. **Prediction layer (M3.5)** — done, see above.
+2. **Feature batch + CI dbt (M4)** — done, see above.
+3. **Alpaca IEX provider (M5)** — production-grade equity upgrade (free key,
+   ~2.5% of consolidated volume documented), as a `BarProvider` behind the
+   existing ingest path.
+4. **Snowpipe Streaming persistence (M5)** — persist the Kafka crypto stream
+   into Snowflake without batch best-effort writes (documented connector path,
+   see `docs/snowpipe_streaming.md`).
+5. **MLflow** experiment tracking + model registry for forecasting/fraud
+   models (the sibling `fraud_detection/` project). Parked while the served
+   models are online learners (River) + MC, which don't map to classic
+   train/register loops; revisit if a batch-trained model is added.
 
 System-level view (latency budgets, bottlenecks, target architecture, infra-first
 roadmap): see `docs/system_design.md`.

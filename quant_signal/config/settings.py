@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     snowflake_warehouse: str = "QUANT_WH"
     # Rows that fail the ingestion contract are never dropped: they land here.
     snowflake_quarantine_schema: str = "QUARANTINE"
+    # Consumer-ready analytics marts (dbt GOLD + Spark feature batch output).
+    snowflake_gold_schema: str = "GOLD"
     # Attached to every query for cost/credit attribution per pipeline.
     snowflake_query_tag: str = "quant_signal"
 

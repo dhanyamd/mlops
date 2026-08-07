@@ -50,26 +50,48 @@ jobs:
       - name: Parse (contract/schema validation)
         run: uv run dbt parse --project-dir dbt --profiles-dir dbt
 
-  # Optional (enable when the repo has DBT_* secrets): full dbt build against
-  # a real Snowflake CI schema. Uncomment when ready.
-  # dbt-build:
-  #   runs-on: ubuntu-latest
-  #   defaults:
-  #     run:
-  #       working-directory: quant_signal
-  #   env:
-  #     DBT_SNOWFLAKE_ACCOUNT: ${{ secrets.DBT_SNOWFLAKE_ACCOUNT }}
-  #     DBT_SNOWFLAKE_USER: ${{ secrets.DBT_SNOWFLAKE_USER }}
-  #     DBT_ENV_SECRET_SNOWFLAKE_PASSWORD: ${{ secrets.DBT_ENV_SECRET_SNOWFLAKE_PASSWORD }}
-  #     DBT_SNOWFLAKE_ROLE: ${{ secrets.DBT_SNOWFLAKE_ROLE }}
-  #     DBT_SNOWFLAKE_DATABASE: ${{ secrets.DBT_SNOWFLAKE_DATABASE }}
-  #     DBT_SNOWFLAKE_WAREHOUSE: ${{ secrets.DBT_SNOWFLAKE_WAREHOUSE }}
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: astral-sh/setup-uv@v5
-  #     - uses: actions/setup-python@v5
-  #       with:
-  #         python-version: "3.12"
-  #     - run: uv sync --extra dev --extra dbt --frozen
-  #     - run: uv run dbt deps --project-dir dbt --profiles-dir dbt
-  #     - run: uv run dbt build --project-dir dbt --profiles-dir dbt
+  # The dbt-build job needs real DBT_* secrets (a CI Snowflake target). `secrets`
+  # cannot be referenced in `if:` conditionals, so a small gate job checks their
+  # presence and the build only runs when they are configured — CI stays green
+  # on repos/forks without secrets, and fully builds+contract-tests on repos
+  # that have them. The build targets `ci`, which writes only to CI_* schemas
+  # (see dbt/macros/generate_schema_name.sql), so it can never touch dev data.
+  check-dbt-secrets:
+    runs-on: ubuntu-latest
+    outputs:
+      available: ${{ steps.check.outputs.available }}
+    steps:
+      - id: check
+        run: |
+          if [ -n "${{ secrets.DBT_SNOWFLAKE_ACCOUNT }}" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  dbt-build:
+    needs: check-dbt-secrets
+    if: needs.check-dbt-secrets.outputs.available == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: quant_signal
+    env:
+      DBT_SNOWFLAKE_ACCOUNT: ${{ secrets.DBT_SNOWFLAKE_ACCOUNT }}
+      DBT_SNOWFLAKE_USER: ${{ secrets.DBT_SNOWFLAKE_USER }}
+      DBT_ENV_SECRET_SNOWFLAKE_PASSWORD: ${{ secrets.DBT_ENV_SECRET_SNOWFLAKE_PASSWORD }}
+      DBT_SNOWFLAKE_ROLE: ${{ secrets.DBT_SNOWFLAKE_ROLE }}
+      DBT_SNOWFLAKE_DATABASE: ${{ secrets.DBT_SNOWFLAKE_DATABASE }}
+      DBT_SNOWFLAKE_WAREHOUSE: ${{ secrets.DBT_SNOWFLAKE_WAREHOUSE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies (locked, incl. dbt)
+        run: uv sync --extra dev --extra dbt --frozen
+      - name: Install dbt packages
+        run: uv run dbt deps --project-dir dbt --profiles-dir dbt
+      - name: Build + contract-test models against the CI schema
+        run: uv run dbt build --project-dir dbt --profiles-dir dbt --target ci

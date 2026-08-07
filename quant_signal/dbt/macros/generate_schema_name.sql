@@ -3,13 +3,15 @@
         - our models use their declared schema directly (silver -> SILVER,
           gold -> GOLD) instead of the default target-schema prefixing;
         - the elementary observability package is isolated into its own
-          ELEMENTARY schema so raw BRONZE stays untouched by tooling.
+          ELEMENTARY schema so raw BRONZE stays untouched by tooling;
+        - under the 'ci' target every schema is prefixed CI_ so a PR build
+          can never collide with the dev warehouse layout.
     -#}
     {%- if node.package_name == 'elementary' -%}
-        {{ 'elementary' }}
+        {%- if target.name == 'ci' -%}{{ 'ci_elementary' }}{%- else -%}{{ 'elementary' }}{%- endif -%}
     {%- elif custom_schema_name is none -%}
         {{ target.schema }}
     {%- else -%}
-        {{ custom_schema_name | trim }}
+        {%- if target.name == 'ci' -%}{{ 'ci_' ~ custom_schema_name | trim }}{%- else -%}{{ custom_schema_name | trim }}{%- endif -%}
     {%- endif -%}
 {%- endmacro %}

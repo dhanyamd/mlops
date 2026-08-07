@@ -19,6 +19,7 @@ BAR_TABLE = "EQUITY_BARS"
 CRYPTO_TABLE = "CRYPTO_BARS"
 FACTS_TABLE = "COMPANY_FACTS"
 MACRO_TABLE = "FRED_MACRO"
+FEATURES_TABLE = "FEATURES"
 
 # Natural keys per table. A row is unique per (asset, timeframe, timestamp).
 _BAR_KEYS = ["symbol", "timeframe", "ts"]
@@ -77,4 +78,21 @@ def write_quarantine(df: pd.DataFrame, source: str, settings: Settings | None = 
         df,
         f"QUARANTINE_{source}",
         schema=client._settings.snowflake_quarantine_schema,
+    )
+
+
+def write_features(df: pd.DataFrame, settings: Settings | None = None) -> int:
+    """Land computed rolling/as-of features into the GOLD analytics mart.
+
+    Idempotent MERGE on the bar natural key (symbol, timeframe, ts), so a
+    rebuild of the feature batch is a safe re-run.
+    """
+    if df.empty:
+        return 0
+    client = _client(settings)
+    return client.upsert_df(
+        df,
+        FEATURES_TABLE,
+        merge_keys=_BAR_KEYS,
+        schema=client._settings.snowflake_gold_schema,
     )
