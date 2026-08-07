@@ -94,6 +94,8 @@ export type Strategy = {
 export type SamplePath = {
   equity: number[];
   outcome: "passed" | "busted" | "neutral";
+  terminal_return: number;
+  max_drawdown: number;
 };
 
 export type Validation = {

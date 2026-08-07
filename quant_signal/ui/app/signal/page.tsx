@@ -13,6 +13,7 @@ import {
   YAxis,
 } from "recharts";
 import { Card } from "@/components/Card";
+import { EfficiencyCloud } from "@/components/EfficiencyCloud";
 import { FanChart } from "@/components/FanChart";
 import { Select } from "@/components/Select";
 import { StrategyFan } from "@/components/StrategyFan";
@@ -346,11 +347,19 @@ function ValidationPanel({ validation }: { validation: Validation }) {
         </div>
       </div>
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        <Card
+          title="Efficiency cloud"
+          subtitle={`pain vs. gain across futures · ${validation.sample_paths?.length ?? 0} paths shown`}
+        >
+          <EfficiencyCloud validation={validation} height={280} />
+        </Card>
         <div className="lg:col-span-2">
           <Card title="Terminal outcomes" subtitle="final equity across futures, colored by verdict">
             <OutcomeHistogram validation={validation} />
           </Card>
         </div>
+      </div>
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <Card title="Max drawdown" subtitle={`distribution of worst peak-to-trough · rule ${rulePct}`}>
           <DrawdownHistogram validation={validation} />
         </Card>

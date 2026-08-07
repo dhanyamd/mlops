@@ -118,6 +118,8 @@ class StrategyMonteCarlo:
             {
                 "equity": [round(float(v), 6) for v in steps[i]],
                 "outcome": "passed" if passed[i] else ("busted" if busted[i] else "neutral"),
+                "terminal_return": round(float(terminal[i] - 1.0), 6),
+                "max_drawdown": round(float(max_dd[i]), 6),
             }
             for i in sample_idx
         ]
