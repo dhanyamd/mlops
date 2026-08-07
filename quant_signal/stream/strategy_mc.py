@@ -55,13 +55,11 @@ class StrategyMonteCarlo:
         n_sims: int = 10_000,
         max_drawdown: float = 0.08,
         target: float | None = None,
-        floor: float = 1.0,
         seed: int | None = None,
     ) -> None:
         self._n_sims = n_sims
         self._max_drawdown = max_drawdown
         self._target = target
-        self._floor = floor
         self._seed = seed
 
     def _classify(
@@ -71,7 +69,7 @@ class StrategyMonteCarlo:
         if self._target is not None:
             hit_target = np.max(steps, axis=1) >= (1.0 + self._target)
         else:
-            hit_target = steps[:, -1] >= self._floor
+            hit_target = steps[:, -1] >= 1.0
         passed = never_broke & hit_target
         busted = ~never_broke
         neutral = never_broke & ~hit_target
