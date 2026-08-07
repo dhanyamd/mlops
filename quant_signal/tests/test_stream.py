@@ -235,6 +235,59 @@ def test_market_features_endpoint_disabled_without_stream(monkeypatch: pytest.Mo
     assert body["count"] == 0
 
 
+def test_market_predict_endpoint_reads_redis(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The predict endpoint serves the conformal prediction from the online store."""
+    monkeypatch.setattr("api.main.RedisKV", lambda url: FakeKV())
+    with TestClient(app) as client:
+        kv = client.app.state.kv
+        assert kv is not None
+        kv.set_json(
+            "prediction:crypto:5m:BTCUSDT",
+            {"symbol": "BTCUSDT", "predicted_return": 0.001, "direction": "LONG"},
+        )
+        resp = client.get("/api/market/predict/btcusdt")
+    body = resp.json()
+    assert body["symbol"] == "BTCUSDT"
+    assert body["enabled"] is True
+    assert body["prediction"]["direction"] == "LONG"
+    assert body["prediction"]["predicted_return"] == 0.001
+
+
+def test_market_predict_endpoint_disabled_without_stream(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = stream_mod.get_settings()
+    monkeypatch.setattr(settings, "stream_enabled", False)
+    with TestClient(app) as client:
+        resp = client.get("/api/market/predict/btcusdt")
+    assert resp.json()["enabled"] is False
+
+
+def test_market_simulation_endpoint_reads_redis(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The simulation endpoint serves the MC fan chart from the online store."""
+    monkeypatch.setattr("api.main.RedisKV", lambda url: FakeKV())
+    with TestClient(app) as client:
+        kv = client.app.state.kv
+        assert kv is not None
+        kv.set_json(
+            "simulation:crypto:5m:BTCUSDT",
+            {"symbol": "BTCUSDT", "base_price": 100.0, "var95": -0.02},
+        )
+        resp = client.get("/api/market/simulation/btcusdt")
+    body = resp.json()
+    assert body["symbol"] == "BTCUSDT"
+    assert body["enabled"] is True
+    assert body["simulation"]["var95"] == -0.02
+
+
+def test_market_simulation_endpoint_disabled_without_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = stream_mod.get_settings()
+    monkeypatch.setattr(settings, "stream_enabled", False)
+    with TestClient(app) as client:
+        resp = client.get("/api/market/simulation/btcusdt")
+    assert resp.json()["enabled"] is False
+
+
 def test_ws_market_snapshot_then_delta(_fake_stream: MarketHub) -> None:
     with TestClient(app) as client:
         with client.websocket_connect("/ws/market?symbol=BTCUSDT") as ws:

@@ -25,11 +25,17 @@ def _bucket_start(stamp: pd.Timestamp) -> pd.Timestamp:
     return stamp.floor("5min")
 
 
-def _synthetic_bars(symbol: str, seed: float, minutes: int = 3) -> pd.DataFrame:
-    """A rising OHLCV series over ``minutes`` bars for a symbol."""
+def _synthetic_bars(symbol: str, seed: float, drift: float, minutes: int = 3) -> pd.DataFrame:
+    """A rising OHLCV series over ``minutes`` bars for a symbol.
+
+    ``drift`` offsets the whole window (per-bucket base price), so consecutive
+    5m windows land at *different* closes — the cross-window volatility the
+    Monte Carlo simulator calibrates on would otherwise be zero and no
+    forecast could be produced.
+    """
     rows = []
     for i in range(minutes):
-        base = seed + 10 * i
+        base = seed + drift + 10 * i
         rows.append(
             {
                 "symbol": symbol,
@@ -55,8 +61,9 @@ def main() -> None:
     frames: list[pd.DataFrame] = []
     for idx, symbol in enumerate(symbols):
         seed = 100.0 + 40 * idx
-        for bucket in buckets:
-            bars = _synthetic_bars(symbol, seed, minutes=3)
+        # Distinct per-bucket drift so consecutive windows have non-zero vol.
+        for bucket_idx, bucket in enumerate(buckets):
+            bars = _synthetic_bars(symbol, seed, drift=bucket_idx * 3.0, minutes=3)
             bars["ts"] = bucket + pd.to_timedelta(bars.index, unit="m")
             bars["timeframe"] = "1Min"
             bars["provider"] = "demo"

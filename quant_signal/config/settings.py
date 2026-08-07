@@ -118,6 +118,23 @@ class Settings(BaseSettings):
     # Windows of Flink features kept per symbol (RPUSH + LTRIM bound).
     stream_redis_feature_maxlen: int = 200
 
+    # ── Prediction layer (M3.5): River + conformal intervals + Monte Carlo ───
+    # Online store prefixes for the predictor and simulator outputs.
+    stream_redis_prediction_prefix: str = "prediction:crypto:5m"
+    stream_redis_simulation_prefix: str = "simulation:crypto:5m"
+    # Adaptive Conformal Inference (Gibbs & Candès 2021): target miscoverage
+    # and step size; the nominal level adapts so long-run coverage tracks
+    # (1 - alpha) even under drift.
+    stream_prediction_alpha: float = 0.1
+    stream_prediction_gamma: float = 0.005
+    # Residuals kept for the conformal interval quantile.
+    stream_prediction_residual_window: int = 200
+    # Monte Carlo engine: paths, forward horizon (5m steps), trailing 5m
+    # windows used to estimate the per-step log-return volatility.
+    stream_simulation_paths: int = 2000
+    stream_simulation_horizon_steps: int = 12
+    stream_simulation_vol_windows: int = 40
+
     @field_validator("snowflake_account")
     @classmethod
     def _validate_account(cls, value: str) -> str:

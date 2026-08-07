@@ -3,7 +3,7 @@ DBT := cd dbt && uv run dbt
 # dbt reads profiles/dbt_project from the dbt/ dir; credentials come from ./.env
 ENV := set -a; . ./.env; set +a;
 
-.PHONY: setup lint test check dbt-setup dbt-deps dbt-debug dbt-run dbt-parse bootstrap ping ingest ingest-macro ingest-fundamentals api ui-setup ui stream-infra stream-topics stream-flink-submit stream-flink-status stream-producer stream-materializer stream-seed
+.PHONY: setup lint test check dbt-setup dbt-deps dbt-debug dbt-run dbt-parse bootstrap ping ingest ingest-macro ingest-fundamentals api ui-setup ui stream-infra stream-topics stream-flink-submit stream-flink-status stream-producer stream-materializer stream-predictor stream-simulator stream-seed
 
 ## Environment ────────────────────────────────────────────────────────────────
 
@@ -81,6 +81,12 @@ stream-producer: ## Run the live Binance ingestion producer (polls + publishes)
 
 stream-materializer: ## Materialize Kafka → Redis online store (run alongside producer)
 	$(ENV) $(PYTHON) python -m stream.materializer
+
+stream-predictor: ## Train the online model + emit conformal predictions to Redis
+	$(ENV) $(PYTHON) python -m stream.predictor
+
+stream-simulator: ## Run the Monte Carlo forward simulator to Redis
+	$(ENV) $(PYTHON) python -m stream.simulation
 
 stream-seed: ## Publish synthetic demo bars (fast E2E without waiting on Binance)
 	$(ENV) $(PYTHON) python -m scripts.seed_stream_demo

@@ -62,7 +62,10 @@ class BinanceProducer:
             stop.wait(self._poll_seconds)
 
     def _poll_once(self, minutes: int) -> int:
-        df = self._provider(self._symbols, minutes)
+        # ``fetch_bars(symbols, days, minutes=None)``: pass minutes as a keyword
+        # so a positional ``minutes`` doesn't silently bind to ``days`` (which
+        # would fetch *days* of paged history and stall the first poll).
+        df = self._provider(self._symbols, days=0, minutes=minutes)
         if df is None or df.empty:
             return 0
         bars = df_to_bars(df)

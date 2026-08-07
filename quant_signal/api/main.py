@@ -26,6 +26,8 @@ from config.settings import csv_list, get_settings
 from scripts.pead_backtest import compute_pead
 from stream.kv import KVStore, RedisKV
 from stream.materializer import feature_key
+from stream.predictor import prediction_key
+from stream.simulation import simulation_key
 
 configure_logging()
 
@@ -174,6 +176,30 @@ def market_features(
         maxlen=limit,
     )
     return {"symbol": symbol.upper(), "enabled": True, "count": len(rows), "features": rows}
+
+
+@app.get("/api/market/predict/{symbol}")
+def market_predict(symbol: str) -> dict:
+    """Next-return prediction + conformal interval from the online store."""
+    kv = _kv()
+    if kv is None:
+        return {"symbol": symbol.upper(), "enabled": False, "prediction": None}
+    prediction = kv.get_json(
+        prediction_key(settings.stream_redis_prediction_prefix, symbol.upper())
+    )
+    return {"symbol": symbol.upper(), "enabled": True, "prediction": prediction}
+
+
+@app.get("/api/market/simulation/{symbol}")
+def market_simulation(symbol: str) -> dict:
+    """Monte Carlo forward fan chart (percentiles, VaR/ES) from the online store."""
+    kv = _kv()
+    if kv is None:
+        return {"symbol": symbol.upper(), "enabled": False, "simulation": None}
+    simulation = kv.get_json(
+        simulation_key(settings.stream_redis_simulation_prefix, symbol.upper())
+    )
+    return {"symbol": symbol.upper(), "enabled": True, "simulation": simulation}
 
 
 def _default_live_symbol() -> str:
