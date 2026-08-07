@@ -555,7 +555,7 @@ export default function SignalPage() {
             title="Forward fan chart"
             subtitle={
               sim
-                ? `10–90 / 25–75 percentile bands, median path · base ${sim.base_price.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+                ? `${sim.n_paths.toLocaleString()} simulated paths · ${sim.sample_paths?.length ?? 0} drawn · base ${sim.base_price.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
                 : "Monte Carlo percentile fan"
             }
           >
@@ -563,6 +563,7 @@ export default function SignalPage() {
               <FanChart
                 percentiles={sim.percentiles}
                 medianPath={sim.median_path}
+                paths={sim.sample_paths}
                 horizonSteps={sim.horizon_steps}
                 height={280}
               />

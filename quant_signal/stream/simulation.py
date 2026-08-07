@@ -41,6 +41,11 @@ _PERCENTILES = [10, 25, 50, 75, 90]
 # Bins for the terminal-return histogram (a display resolution, not a model knob).
 _HIST_BINS = 24
 
+# Number of raw paths shipped to the UI for the QuantPad-style "all paths"
+# fan-chart spaghetti. The percentile statistics always use *all* paths; this
+# is purely how many thin lines the browser renders (a display resolution).
+_SAMPLE_PATHS = 200
+
 
 def simulation_key(prefix: str, symbol: str) -> str:
     return f"{prefix}:{symbol.upper()}"
@@ -57,12 +62,14 @@ class MonteCarloEngine:
         vol_windows: int = 40,
         drift: bool = False,
         seed: int | None = None,
+        sample_paths: int = _SAMPLE_PATHS,
     ) -> None:
         self._n_paths = n_paths
         self._horizon_steps = horizon_steps
         self._vol_windows = vol_windows
         self._drift = drift
         self._seed = seed
+        self._sample_paths = sample_paths
 
     def calibrate(self, closes: list[float]) -> tuple[float, float] | None:
         """Per-step ``(mu, sigma)`` of log returns over the trailing windows.
@@ -113,6 +120,11 @@ class MonteCarloEngine:
         prob_up = float(np.mean(returns > 0.0))
         hist_counts, hist_edges = np.histogram(returns, bins=_HIST_BINS)
 
+        # Evenly-spaced subsample of the raw paths for the QuantPad-style
+        # "all paths (N)" fan-chart spaghetti — stats always use every path.
+        sample_idx = np.linspace(0, self._n_paths - 1, self._sample_paths, dtype=int)
+        sample_paths = paths[:, sample_idx].T  # (sample_paths, steps + 1)
+
         return {
             "symbol": None,  # filled by run()
             "base_price": round(s0, 6),
@@ -123,6 +135,7 @@ class MonteCarloEngine:
             "sigma_annualized": round(sigma * math.sqrt(_PERIODS_PER_YEAR), 6),
             "percentiles": bands,
             "median_path": bands["50"],
+            "sample_paths": [p.tolist() for p in sample_paths],
             "var95": round(var95, 6),
             "es95": round(es95, 6),
             "prob_up": round(prob_up, 4),

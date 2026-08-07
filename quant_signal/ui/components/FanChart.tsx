@@ -4,6 +4,7 @@ import {
   Area,
   AreaChart,
   CartesianGrid,
+  Line,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -15,19 +16,21 @@ function fmt(v: number) {
 }
 
 /**
- * Monte Carlo forward fan chart: 10–90 and 25–75 percentile bands drawn as
- * stacked areas (the quantpad-style "10k paths at once" view) around the
- * median path.
+ * Monte Carlo forward fan chart: the raw simulated paths drawn as thin
+ * spaghetti lines (QuantPad-style "all paths (N)"), with the 10–90 and 25–75
+ * percentile bands stacked on top around the median path.
  */
 export function FanChart({
   percentiles,
   medianPath,
   horizonSteps,
+  paths,
   height = 320,
 }: {
   percentiles: Record<string, number[]>;
   medianPath: number[];
   horizonSteps: number;
+  paths?: number[][];
   height?: number;
 }) {
   const data = Array.from({ length: horizonSteps + 1 }, (_, step) => {
@@ -35,7 +38,7 @@ export function FanChart({
     const p25 = percentiles["25"][step];
     const p75 = percentiles["75"][step];
     const p90 = percentiles["90"][step];
-    return {
+    const row: Record<string, number> = {
       step,
       p10,
       p25,
@@ -45,12 +48,28 @@ export function FanChart({
       outer: p90 - p10,
       inner: p75 - p25,
     };
+    paths?.forEach((path, i) => {
+      row[`path${i}`] = path[step];
+    });
+    return row;
   });
 
   return (
     <div style={{ height }} className="w-full">
       <ResponsiveContainer width="100%" height="100%">
         <AreaChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+          {paths?.map((_, i) => (
+            <Line
+              key={`path${i}`}
+              type="monotone"
+              dataKey={`path${i}`}
+              stroke="#60a5fa"
+              strokeOpacity={0.14}
+              strokeWidth={1}
+              dot={false}
+              isAnimationActive={false}
+            />
+          ))}
           <defs>
             <linearGradient id="fan-outer" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.18} />
@@ -76,6 +95,7 @@ export function FanChart({
             formatter={(value, name) => {
               const v = Number(value);
               if (name === "p50") return [fmt(v), "median"];
+              if (String(name).startsWith("path")) return [fmt(v), "simulated path"];
               return [fmt(v), name === "outer" ? "10–90" : "25–75"];
             }}
             contentStyle={{

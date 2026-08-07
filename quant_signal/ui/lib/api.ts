@@ -70,6 +70,7 @@ export type Simulation = {
   sigma_annualized: number;
   percentiles: Record<string, number[]>;
   median_path: number[];
+  sample_paths?: number[][];
   var95: number;
   es95: number;
   prob_up: number;

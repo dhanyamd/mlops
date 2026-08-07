@@ -220,6 +220,13 @@ def test_simulation_consumer_lands_forecast_from_feature_stream() -> None:
     assert stored["base_price"] > 0.0
     assert len(stored["percentiles"]["50"]) == stored["horizon_steps"] + 1
 
+    # QuantPad-style "all paths (N)" fan chart: subsampled raw paths shipped
+    # for display, percentiles always computed from every path.
+    assert "sample_paths" in stored
+    assert len(stored["sample_paths"]) == 200  # default _SAMPLE_PATHS cap
+    assert len(stored["sample_paths"][0]) == stored["horizon_steps"] + 1
+    assert len(stored["sample_paths"][-1]) == stored["horizon_steps"] + 1
+
 
 def test_warm_start_replays_stored_feature_history() -> None:
     """Warm-starting from the online store must calibrate immediately."""
