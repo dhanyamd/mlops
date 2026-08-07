@@ -1,14 +1,15 @@
-"""Live market stream tests — hermetic (no Binance, no Snowflake).
+"""Live market stream tests — hermetic (no Binance, no Kafka, no Snowflake).
 
-Covers the ring-buffer hub (ingest/dedupe/snapshot/broadcast) and the poller
-(wire a fake provider + fake persist into ``MarketStream._poll_once``), plus
-the two API surface endpoints (REST snapshot + WebSocket) with a fake stream
-injected via ``api.main.start_stream``.
+Covers the ring-buffer hub (ingest/dedupe/snapshot/broadcast) and the Kafka
+consumer (``MarketStream`` fed by ``FakeBus``), plus the API surface endpoints
+(REST snapshot, REST features, WebSocket) with a fake stream injected via
+``api.main.start_stream``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pandas as pd
 import pytest
@@ -17,6 +18,9 @@ from fastapi.testclient import TestClient
 import api.stream as stream_mod
 from api.main import app
 from api.stream import MarketHub, MarketStream
+from stream.bars import df_to_bars
+from stream.bus import FakeBus
+from stream.kv import FakeKV
 
 _BAR_COLUMNS = [
     "symbol",
@@ -60,7 +64,7 @@ def _bar_df(symbols: list[str], n_minutes: int = 3) -> pd.DataFrame:
 
 def test_hub_ingest_returns_deltas_and_builds_snapshot() -> None:
     hub = MarketHub(["BTCUSDT"], history_minutes=10)
-    deltas = hub.ingest(stream_mod._df_to_bars(_bar_df(["BTCUSDT"], n_minutes=3)))
+    deltas = hub.ingest(df_to_bars(_bar_df(["BTCUSDT"], n_minutes=3)))
 
     assert [d["ts"] for d in deltas] == [hub.snapshot("BTCUSDT")[i]["ts"] for i in range(3)]
     assert [b["symbol"] for b in deltas] == ["BTCUSDT"] * 3
@@ -70,12 +74,12 @@ def test_hub_ingest_returns_deltas_and_builds_snapshot() -> None:
 def test_hub_dedupes_same_timestamp_in_place() -> None:
     hub = MarketHub(["BTCUSDT"], history_minutes=10)
     first = _bar_df(["BTCUSDT"], n_minutes=1)
-    hub.ingest(stream_mod._df_to_bars(first))
+    hub.ingest(df_to_bars(first))
 
     # The in-progress minute updates: same ts, new close.
     second = first.copy()
     second.loc[0, "close"] = 200.0
-    deltas = hub.ingest(stream_mod._df_to_bars(second))
+    deltas = hub.ingest(df_to_bars(second))
 
     assert len(deltas) == 1
     snapshot = hub.snapshot("BTCUSDT")
@@ -85,7 +89,7 @@ def test_hub_dedupes_same_timestamp_in_place() -> None:
 
 def test_hub_snapshot_bounded_by_history() -> None:
     hub = MarketHub(["BTCUSDT"], history_minutes=3)
-    hub.ingest(stream_mod._df_to_bars(_bar_df(["BTCUSDT"], n_minutes=5)))
+    hub.ingest(df_to_bars(_bar_df(["BTCUSDT"], n_minutes=5)))
     assert len(hub.snapshot("BTCUSDT")) == 3  # oldest 2 evicted
 
 
@@ -100,61 +104,48 @@ def test_hub_broadcast_fans_out_to_subscribers() -> None:
         hub.unsubscribe(queue)
 
 
-# ── MarketStream poller (fake provider + persist) ───────────────────────────
+# ── MarketStream Kafka consumer (FakeBus → hub) ─────────────────────────────
 
 
-def test_poller_polls_provider_persists_and_broadcasts(monkeypatch: pytest.MonkeyPatch) -> None:
-    fetched: list[int] = []
-    persisted: list[pd.DataFrame] = []
+def test_stream_consumes_bus_bars_into_hub_and_broadcasts() -> None:
     hub = MarketHub(["BTCUSDT"], history_minutes=10)
     queue: asyncio.Queue[list[dict]] = asyncio.Queue()
     hub.subscribe(queue)
-
-    def fake_provider(symbols: list[str], minutes: int) -> pd.DataFrame:
-        fetched.append(minutes)
-        return _bar_df(symbols, n_minutes=2)
-
-    def fake_persist(df: pd.DataFrame) -> int:
-        persisted.append(df)
-        return len(df)
-
+    bus = FakeBus()
     stream = MarketStream(
         symbols=["BTCUSDT"],
-        poll_seconds=15,
         history_minutes=10,
-        provider=fake_provider,  # type: ignore[arg-type]
-        persist=fake_persist,  # type: ignore[arg-type]
+        bus=bus,
+        raw_topic="crypto.bars.raw",
         hub=hub,
     )
     try:
-        deltas = stream._poll_once(minutes=10)
+        stream.start()
+        for payload in df_to_bars(_bar_df(["BTCUSDT"], n_minutes=2)):
+            bus.publish("crypto.bars.raw", payload["symbol"], payload)
+        deadline = time.monotonic() + 5.0
+        while len(hub.snapshot("BTCUSDT")) < 2 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        snapshot = hub.snapshot("BTCUSDT")
+        assert len(snapshot) == 2
+        assert snapshot[0]["ts"] == "2026-08-06T12:00:00"  # ISO ts preserved for hub dedupe
+        assert snapshot[0]["close"] == 100.5
+        assert not queue.empty()  # fan-out reached the subscriber
+        assert queue.get_nowait()[0]["symbol"] == "BTCUSDT"
     finally:
+        stream.stop()
         hub.unsubscribe(queue)
 
-    assert fetched == [10]  # first poll seeds full history
-    assert len(deltas) == 2
-    assert len(hub.snapshot("BTCUSDT")) == 2
-    assert len(persisted) == 1
-    assert len(persisted[0]) == 2
-    assert not queue.empty()  # broadcast reached the subscriber
 
-
-def test_poller_persist_failure_does_not_break_stream(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A Snowflake outage must degrade to a warning, not kill the poller."""
-    hub = MarketHub(["BTCUSDT"])
-
-    def boom(df: pd.DataFrame) -> int:  # type: ignore[no-untyped-def]
-        raise RuntimeError("snowflake down")
-
+def test_stream_stop_terminates_consumer_thread() -> None:
     stream = MarketStream(
         symbols=["BTCUSDT"],
-        provider=lambda s, m: _bar_df(s, n_minutes=1),  # type: ignore[arg-type]
-        persist=boom,  # type: ignore[arg-type]
-        hub=hub,
+        bus=FakeBus(),
+        raw_topic="crypto.bars.raw",
     )
-    deltas = stream._poll_once(minutes=5)
-    assert len(deltas) == 1  # in-memory stream still works
-    assert len(hub.snapshot("BTCUSDT")) == 1
+    stream.start()
+    stream.stop()
+    assert stream._thread is None
 
 
 def test_start_stream_returns_none_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -166,7 +157,7 @@ def test_start_stream_returns_none_when_disabled(monkeypatch: pytest.MonkeyPatch
 def test_start_stream_returns_stream_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = stream_mod.get_settings()
     monkeypatch.setattr(settings, "stream_enabled", True)
-    # start() launches a thread against the real provider — avoid that by
+    # start() would launch a consumer thread against the real bus — avoid that by
     # exercising start_stream only up to construction via a stubbed start.
     monkeypatch.setattr(stream_mod.MarketStream, "start", lambda self, loop=None: None)
     stream = stream_mod.start_stream()
@@ -191,7 +182,7 @@ class _FakeStream:
 @pytest.fixture
 def _fake_stream(monkeypatch: pytest.MonkeyPatch) -> MarketHub:
     hub = MarketHub(["BTCUSDT"], history_minutes=10)
-    hub.ingest(stream_mod._df_to_bars(_bar_df(["BTCUSDT"], n_minutes=3)))
+    hub.ingest(df_to_bars(_bar_df(["BTCUSDT"], n_minutes=3)))
     monkeypatch.setattr("api.main.start_stream", lambda: _FakeStream(hub))
     return hub
 
@@ -209,6 +200,36 @@ def test_market_live_endpoint_returns_hub_snapshot(_fake_stream: MarketHub) -> N
 def test_market_live_endpoint_disabled_without_stream() -> None:
     with TestClient(app) as client:
         resp = client.get("/api/market/live/btcusdt")
+    body = resp.json()
+    assert body["enabled"] is False
+    assert body["count"] == 0
+
+
+def test_market_features_endpoint_reads_redis(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The features endpoint serves Flink features from the Redis online store."""
+    monkeypatch.setattr("api.main.RedisKV", lambda url: FakeKV())
+    with TestClient(app) as client:
+        kv = client.app.state.kv
+        assert kv is not None
+        kv.push_json(
+            "feature:crypto:5m:BTCUSDT", {"symbol": "BTCUSDT", "window_start_ms": 100}, maxlen=10
+        )
+        kv.push_json(
+            "feature:crypto:5m:BTCUSDT", {"symbol": "BTCUSDT", "window_start_ms": 200}, maxlen=10
+        )
+        resp = client.get("/api/market/features/btcusdt?limit=5")
+    body = resp.json()
+    assert body["symbol"] == "BTCUSDT"
+    assert body["enabled"] is True
+    assert body["count"] == 2
+    assert body["features"][0]["window_start_ms"] == 200  # newest window first
+
+
+def test_market_features_endpoint_disabled_without_stream(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = stream_mod.get_settings()
+    monkeypatch.setattr(settings, "stream_enabled", False)
+    with TestClient(app) as client:
+        resp = client.get("/api/market/features/btcusdt")
     body = resp.json()
     assert body["enabled"] is False
     assert body["count"] == 0

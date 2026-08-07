@@ -112,46 +112,66 @@ What we deliberately do NOT have yet (documented, not hidden):
 - **Experiment tracking** — no MLflow; model runs aren't versioned/logged.
 - **Drift & anomaly monitoring** — Elementary covers table-level freshness/
   volume; model drift monitors come later.
-- **Streaming** — batch-only. Real-time milestone: Snowpipe + Snowflake
-  STREAMS/tasks (replaces Kafka for this workload), not Kafka/K8s.
+- **Streaming** — M3 built a real-time layer (Redpanda/Kafka → Flink SQL →
+  Redis) for crypto minute bars. It is **not** yet wired to Snowflake:
+  `BRONZE.CRYPTO_BARS` still gets its rows from the batch/producer best-effort
+  writes. Kafka → Snowflake via Snowpipe Streaming is the documented upgrade.
+  No ML serving on the stream yet (M3.5).
 
-## Live-stream roadmap (M2–M4)
+## Real-time roadmap (M2–M4)
 
-The live market stream is the near-real-time showcase: Binance minute bars
-arrive continuously, and the pipeline demonstrates the full serving path for a
-real-time data product — from provider, through a validated Bronze write, to a
-live WebSocket endpoint.
+The real-time layer is the near-real-time showcase: Binance minute bars arrive
+continuously, Flink computes event-time features, Redis serves them at
+sub-500ms, and the dashboard visualizes them — demonstrating the full serving
+path for a real-time data product without touching Kafka or Snowflake at read
+time.
+
+```
+BinanceProducer → Redpanda (crypto.bars.raw) → Flink SQL 5m TUMBLE (checkpointed)
+   → Redpanda (crypto.features.5m) → materializer → Redis (online store)
+   → API /api/market/live (hub) + /api/market/features (Redis)
+```
 
 - **M2 — Live stream v1 (2026-08-06, DONE).** `api/stream.py` runs an in-API
-  poller that fetches recent Binance minute bars every `STREAM_POLL_SECONDS`,
-  upserts them to `BRONZE.CRYPTO_BARS` (best-effort — a Snowflake outage logs a
-  warning, never kills the stream), keeps a per-symbol ring buffer for instant
-  snapshots, and fans deltas out over `/ws/market` (REST snapshot at
-  `/api/market/live/{symbol}`). Instruments come from
-  `INGEST_DEFAULT_CRYPTO_SYMBOLS` — nothing hardcoded. Hermetic tests cover
-  ingest/dedupe/broadcast and both endpoints without a network or database.
-- **M3 — Streaming-native ingestion.** Replace the API-side poller with
-  Snowpipe → STREAMS → task so `CRYPTO_BARS` refreshes within minutes from
-  Snowflake itself (no Kafka — the doc's stated choice for this workload),
-  plus a freshness monitor on the table. The API poller remains the mock-free
-  dev/fallback path.
-- **M4 — Online feature serving.** Materialize as-of features over the minute
-  bars in dbt and serve them through a register/lookup layer at p95 < 500 ms —
-  the online budget Snowflake alone cannot hit. This closes the loop from raw
-  stream to a live-updating feature endpoint and is the crypto analogue of the
-  feature-store milestone in the system design doc.
+  poller that fetches recent Binance minute bars, upserts them to
+  `BRONZE.CRYPTO_BARS` (best-effort), keeps a per-symbol ring buffer, and fans
+  deltas out over `/ws/market`. Hermetic tests cover ingest/dedupe/broadcast
+  and the REST/WS endpoints. Demo-grade by design — superseded by M3's
+  standalone producer.
+- **M3 — Streaming-native ingestion + feature pipeline (2026-08-07, DONE).**
+  Standalone `stream/producer.py` publishes Binance minute bars to Redpanda
+  (Kafka API); a **Flink SQL job** (`stream/flink/jobs/crypto_features.sql`)
+  computes 5-minute event-time TUMBLE windows (OHLCV, VWAP, bar_count) with
+  checkpoints and out-of-order tolerance; `stream/materializer.py` lands live
+  bars + window features into a Redis online store. The API serves them from
+  Redis. KafkaBus/RedisKV are the production clients; FakeBus/FakeKV are
+  test-only doubles. Event time (not processing time) drives the windows —
+  watermarks tolerate the producer's in-progress-minute re-publishes. Run the
+  stack with `make stream-infra` + `make stream-topics` + `make
+  stream-flink-submit` (see README).
+- **M3.5 — Prediction + Signal Terminal (NEXT).** Online learning (River)
+  model fed by the Flink feature stream, **conformal prediction intervals**
+  with self-measured coverage, and a **Monte Carlo** forward-simulation engine
+  (paths seeded by Flink realized-vol) — predictions and quantile bands served
+  from Redis and visualized in the Next.js Signal Terminal (live MC fan chart +
+  feature panel + signal gauge + live P&L vs buy-and-hold, backtest-linked to
+  Snowflake). Event Study + Macro as secondary tabs.
+- **M4 — Breadth (trimmed).** Only the cheap wins: Spark feature-engineering
+  batch over `BRONZE` and CI dbt against a CI Snowflake schema. Prefect
+  orchestration and Snowpipe Streaming persistence are parked.
 
-## M2+ roadmap
+## M4+ roadmap
 
-1. **Feature store** (Feast or Featureform) with as-of PIT joins. The data
-   layer already emits `(ticker, metric, fiscal_year, filed_at)` rows from
-   EDGAR; M2 adds the join to prices that makes lookahead-free features.
+1. **Prediction layer (M3.5)** — online learning (River) on the Flink feature
+   stream + conformal prediction intervals + Monte Carlo forward simulation,
+   served from Redis into the Signal Terminal UI.
 2. **Alpaca IEX provider** — production-grade equity upgrade (free key, ~2.5%
    of consolidated volume documented).
 3. **MLflow** experiment tracking + model registry for forecasting/fraud
    models (the sibling `fraud_detection/` project).
-4. **Spark** (local cluster) for feature engineering at scale.
-5. **Snowpipe/STREAMS** for near-real-time crypto minute ingestion.
+4. **Spark** (local cluster) for feature engineering at scale over `BRONZE`.
+5. **Snowpipe Streaming** — persist the Kafka crypto stream into Snowflake
+   without batch best-effort writes (documented connector path).
 6. **CI**: enable the `dbt-build` job against a CI Snowflake schema when the
    repo has DBT secrets.
 
@@ -206,7 +226,7 @@ and compute EPS-based surprises.
 
 ## Quality gates
 
-- `make check` = `ruff` + `pytest` (68 tests, offline — all network/DB mocked).
+- `make check` = `ruff` + `pytest` (110 tests, offline — all network/DB mocked).
 - `make dbt-parse` validates models/contracts without a Snowflake connection.
 - CI (`.github/workflows/quant-signal-ci.yml`) runs lint + test + dbt parse on
   every PR touching `quant_signal/`.

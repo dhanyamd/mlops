@@ -20,6 +20,8 @@ dependencies = [
     "prefect>=2.19.0",
     "requests>=2.34.2",
     "curl-cffi>=0.16.0",
+    "confluent-kafka>=2.5.0",
+    "redis>=5.0.0",
 ]
 
 [project.optional-dependencies]

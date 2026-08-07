@@ -5,12 +5,15 @@ Production-grade quant signal platform: **Snowflake-backed pipelines** with
 quant research houses (Two Sigma / Man AHL patterns) actually run data
 infrastructure.
 
-> Status: **M0–M1 — foundations + live data + dashboard.** Config, Snowflake
-> client, structured logging, idempotent bootstrap, dbt with enforced contracts,
-> real ingestion (Yahoo/EDGAR/FRED/Binance) into Bronze→Silver→Gold with
-> latency telemetry, the PEAD event study, and a read-only FastAPI + Next.js
-> dashboard over the live marts. No code is hardcoded: every credential and
-> connection value comes from the environment.
+> Status: **M0–M1 + M3 — foundations, live data, dashboard, and a real-time
+> streaming stack.** Config, Snowflake client, structured logging, idempotent
+> bootstrap, dbt with enforced contracts, real ingestion
+> (Yahoo/EDGAR/FRED/Binance) into Bronze→Silver→Gold with latency telemetry,
+> the PEAD event study, and a read-only FastAPI + Next.js dashboard. M3 adds a
+> production streaming layer — Redpanda (Kafka API) → Flink SQL (5m event-time
+> windows) → Redis online store → API — for real-time crypto features. No code
+> is hardcoded: every credential and connection value comes from the
+> environment.
 
 ## Non-negotiables
 
@@ -36,6 +39,9 @@ infrastructure.
 | Transform + quality | `dbt-core` + `dbt-snowflake` (contracts, tests) |
 | Statistical tests | `dbt_expectations` |
 | Data observability | `elementary` (anomaly/schema-drift detection) |
+| Stream broker | Redpanda (Kafka API) — `confluent-kafka` producer/consumer |
+| Stream processing | Flink SQL (`flink:1.19.3`), checkpointed event-time windows |
+| Online store | Redis 7 (`redis-py`), bounded feature lists |
 | Orchestration (later) | Prefect |
 | Distributed compute (later) | Spark + `spark-snowflake` connector |
 
@@ -58,11 +64,19 @@ quant_signal/
 ├── api/
 │   ├── main.py             # FastAPI: /api/market, /pead, /fundamentals, /ws/market
 │   ├── db.py               # read-only query layer over Silver/Gold
-│   └── stream.py           # live Binance poller + ring buffer + WebSocket fan-out
-├── scripts/                # ping.py, run_dbt.py, pead_backtest.py
+│   └── stream.py           # live stream hub: Kafka consumer + ring buffer + WS fan-out
+├── stream/                 # M3 streaming stack (all bus/KV logic testable via fakes)
+│   ├── producer.py         # standalone Binance minute-bar producer → Kafka
+│   ├── materializer.py     # Kafka → Redis online store (live bars + 5m features)
+│   ├── bus.py              # MessageBus (KafkaBus / FakeBus for hermetic tests)
+│   ├── kv.py               # KVStore (RedisKV / FakeKV)
+│   ├── bars.py             # provider DataFrames → JSON bar payloads
+│   └── flink/              # Dockerfile + crypto_features.sql (5m event-time windows)
+├── docker-compose.yml      # redpanda + redis + flink-jobmanager/taskmanager
+├── scripts/                # ping.py, run_dbt.py, pead_backtest.py, seed_stream_demo.py
 ├── ui/                     # Next.js dashboard (Market/Fundamentals/PEAD/...)
 ├── tests/                  # config + connection-param + API tests (no live DB)
-└── Makefile                # setup / lint / test / bootstrap / dbt / api / ui
+└── Makefile                # setup / lint / test / bootstrap / dbt / api / ui / stream-*
 ```
 
 ## Setup (needs a Snowflake trial account)
@@ -127,6 +141,58 @@ broadcasts deltas over WebSocket. No hardcoded instruments: the symbol set is
 - Live WebSocket: `wscat -c 'ws://localhost:8000/ws/market?symbol=BTCUSDT'`
 
 The stream is on by default; set `STREAM_ENABLED=false` for a pure query API.
+
+### Streaming stack (M3): Kafka → Flink → Redis
+
+The **real-time feature pipeline** runs alongside the Snowflake batch layer:
+a standalone producer publishes Binance minute bars to Redpanda (Kafka API),
+a **Flink SQL job** computes 5-minute event-time windows (OHLCV, VWAP,
+bar count) with checkpoints, and a **materializer** lands both live bars and
+window features into a Redis **online store**. The API serves them from Redis
+(<500ms, never touching Kafka or Snowflake):
+
+```
+BinanceProducer → Redpanda(crypto.bars.raw) → Flink SQL 5m TUMBLE
+   → Redpanda(crypto.features.5m) → materializer → Redis → /api/market/*
+```
+
+Bring the stack up (needs Docker):
+
+```bash
+make stream-infra            # docker compose up -d --build (redpanda, redis, flink)
+make stream-topics           # create the Kafka topics (Flink requires them to exist)
+make stream-flink-submit     # deploy the crypto_features.sql job (detached)
+make stream-flink-status     # check job state (expect RUNNING)
+```
+
+Then run the live ingestion + online store in two terminals:
+
+```bash
+make stream-producer         # poll Binance → publish raw bars (real market data)
+make stream-materializer     # consume raw + features → Redis
+```
+
+For a fast end-to-end check without waiting on Binance, seed synthetic bars
+into the current + previous 5-minute buckets (the Flink window fires within
+~2 minutes): `make stream-seed`. Verify with:
+
+```bash
+curl localhost:8000/api/market/live/BTCUSDT         # hub ring buffer (from Kafka)
+curl localhost:8000/api/market/features/BTCUSDT     # 5m features (from Redis)
+```
+
+Notes:
+- The Kafka topics **must exist** before the Flink job starts (`make stream-topics`
+  is idempotent); Redpanda auto-creates topics on produce, but Flink's source
+  enumerator fails with `UnknownTopicOrPartitionException` if they're absent.
+- Redis maps to host **:6380** so it never collides with a host Redis on :6379
+  (`STREAM_REDIS_URL=redis://localhost:6380`).
+- The Flink image pins the Kafka connector JAR with correct ownership
+  (`chown flink:flink`, `chmod 644`) and a writable checkpoint dir — both are
+  required or the job restarts on `ClassNotFoundException`/`IOException`.
+- The old M2 in-API poller is demo-grade; the standalone `stream-producer` +
+  Kafka path is the production ingestion route. Streaming writes to Snowflake
+  only best-effort today (Kafka → Snowflake via Snowpipe Streaming is planned).
 
 ## Notes
 

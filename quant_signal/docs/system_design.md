@@ -35,6 +35,7 @@ that is allowed to be, and where the wall-clock time actually goes.
 | dbt full build | 49 s | 82 objects (16 incremental, 6 tables, 13 views, 45 tests) |
 | Interactive SELECT on marts | 1–4 s | dominated by Snowflake session/metadata, not query |
 | Validation gate (pandas) | ~1 s | in-process, contract checks |
+| **Streaming E2E (M3)** | **bar → Redis ≈ 2 s** | producer poll flush → Kafka → materializer → Redis; Flink features fire ≤ 5 min + 2 min watermark on the window's end |
 
 ## 3. Latency budgets & SLAs by tier
 
@@ -44,7 +45,9 @@ that is allowed to be, and where the wall-clock time actually goes.
 | Bronze → Silver/Gold (dbt) | < 5 min | 99% ≤ 10 min | currently 49 s |
 | **E2E daily refresh** | **< 10 min** | **99% ≤ 15 min** | ingest + dbt today ≈ 2 min wall |
 | Interactive analytics query | < 2 s | p95 < 5 s | acceptable for OLAP, NOT for serving |
-| Online feature lookup | **p95 < 500 ms** | p99 < 1 s | **cannot be served from Snowflake** — needs a feature/register layer (M2) |
+| Online feature lookup | **p95 < 500 ms** | p99 < 1 s | **cannot be served from Snowflake** — M3's Redis online store hits this (API reads Redis only) |
+| Streaming bar → online store | p95 < 5 s | p99 < 10 s | producer flush → Kafka → materializer → Redis (measured ≈ 2 s) |
+| Streaming window feature | ≤ 5 min + 2 min watermark | p99 ≤ 8 min | event-time TUMBLE: a window fires ≤ 2 min after it closes |
 | Backfill / replay | no SLA | bounded | chunked, resumable, idempotent (MERGE upsert) |
 
 The honest bottleneck split today: **fetch ≫ compute**. External rate limits
@@ -62,16 +65,16 @@ MERGE, dbt) is already seconds-scale.
   rate-limit token bucket instead of the current sequential 1 s throttle.
 - **Near-real-time path (the latency showcase)**: crypto minute bars are the only
   source that *arrives* continuously. M2 (done 2026-08-06): an in-API poller
-  (`api/stream.py`) fetches Binance minute bars, upserts them best-effort to
-  BRONZE.CRYPTO_BARS, and serves them live over `/ws/market` + a REST snapshot.
-  M3: route Binance through Snowpipe → STREAMS → task so BRONZE.CRYPTO_BARS
-  refreshes from Snowflake within minutes, not hours. No Kafka:
-  Snowpipe/STREAMS replaces it for this workload.
-- **Serving path (features)**: materialize as-of feature tables in dbt
-  (incremental on `filed_at`, restatements preserved) and expose through a thin
-  lookup layer (Snowflake read for research; object-store parquet + register for
-  online p95 < 500 ms). This is the M2 feature-store milestone and the
-  no-lookahead moat that the sellable products depend on.
+  (`api/stream.py`) fetches Binance minute bars and serves them live over
+  `/ws/market` + REST. M3 (done 2026-08-07): standalone producer → **Redpanda
+  (Kafka API) → Flink SQL (5m event-time windows, checkpointed) → Redis online
+  store**; the API serves bars + features from Redis at p95 < 500 ms. Kafka →
+  Snowflake persistence (Snowpipe Streaming) is the documented next hop.
+- **Serving path (features)**: the M3 Redis online store serves live 1m bars and
+  5m window features (OHLCV, VWAP, bar_count) at the sub-500 ms budget. The batch
+  as-of feature tables for equities (incremental on `filed_at`, restatements
+  preserved) remain a dbt milestone — the no-lookahead moat the sellable products
+  depend on.
 - **Observability**: per-stage structlog events already exist (`validation_gate`,
   `snowflake_upsert`, `ingest_market_data_complete`, all with `elapsed_ms`).
   Formalize them into a `PIPELINE_METRICS` table (write stage timings after each
@@ -84,10 +87,10 @@ MERGE, dbt) is already seconds-scale.
 |---|---|---|
 | Store | Warehouse-native (Snowflake) | Operational simplicity at this scale; revisit Iceberg/parquet + object store for cold Bronze archives when Bronze ≫ Silver |
 | Equity/fundamentals cadence | Batch (daily) | Sources are T+1 by nature; streaming adds latency-complexity for no freshness win |
-| Crypto cadence | Streaming (Snowpipe/STREAMS) | Only source that arrives continuously; the near-real-time showcase |
+| Crypto cadence | Streaming (Kafka/Flink/Redis, M3) | Only source that arrives continuously; the near-real-time showcase. Kafka→Snowflake (Snowpipe Streaming) still to wire for persistence |
 | Correctness | Quarantine over drop; MERGE upsert; PIT `filed_at` timeline | No lookahead, no silent data loss — the product moat |
-| Message bus | None (Snowpipe/STREAMS) | Defer Kafka/K8s until scale demands |
-| Feature serving | Materialized tables + register | OLAP (Snowflake) can't hit online p95 < 500 ms |
+| Message bus | Redpanda (Kafka API) + confluent-kafka | Industry-standard ingestion bus; Flink source/sink; online store on Redis |
+| Feature serving | Redis online store (stream) + dbt as-of tables (batch) | OLAP (Snowflake) can't hit online p95 < 500 ms |
 
 ## 6. Infra-first roadmap
 
@@ -102,8 +105,10 @@ MERGE, dbt) is already seconds-scale.
 2. **Persistent orchestration** — Prefect work pool + server (today: inline temp
    server per run), scheduled warm path.
 3. **Near-real-time crypto path** — M2 live stream (done): in-API Binance
-   poller → BRONZE.CRYPTO_BARS + WebSocket. Next: Snowpipe/STREAMS (M3) +
-   freshness monitor.
+   poller → WebSocket. M3 (done): standalone producer → Redpanda → Flink 5m
+   windows → Redis online store → API. Next: Snowpipe Streaming persistence +
+   freshness monitor, then the M3.5 prediction layer (online learning +
+   conformal intervals + Monte Carlo) served into the Signal Terminal UI.
 4. **Feature store / as-of serving** (M2) — dbt as-of features + lookup layer,
    p95 < 500 ms target.
 5. **Storage tiering** — archive cold Bronze to object store; keep marts in

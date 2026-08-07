@@ -20,10 +20,12 @@ from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from api import db
-from api.stream import start_stream, stop_stream
+from api.stream import MarketStream, start_stream, stop_stream
 from config.logging import configure_logging
 from config.settings import csv_list, get_settings
 from scripts.pead_backtest import compute_pead
+from stream.kv import KVStore, RedisKV
+from stream.materializer import feature_key
 
 configure_logging()
 
@@ -32,11 +34,16 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Start/stop the live market stream with the API process."""
+    """Start/stop the live market stream with the API process.
+
+    ``app.state.kv`` is the Redis online store (lazy client, no I/O here), so
+    the feature endpoint never touches Kafka or Snowflake.
+    """
     stream = start_stream()
     if stream is not None:
         stream.start(asyncio.get_running_loop())
     app.state.stream = stream
+    app.state.kv = RedisKV(settings.stream_redis_url) if settings.stream_enabled else None
     try:
         yield
     finally:
@@ -56,9 +63,14 @@ app.add_middleware(
 _pead_cache: dict[str, tuple[float, dict]] = {}
 
 
-def _stream() -> object | None:
+def _stream() -> MarketStream | None:
     """The running MarketStream (if enabled) — None in tests that disable it."""
     return getattr(app.state, "stream", None)
+
+
+def _kv() -> KVStore | None:
+    """The Redis online store (if streaming is enabled) — None otherwise."""
+    return getattr(app.state, "kv", None)
 
 
 @app.get("/api/health")
@@ -139,12 +151,29 @@ def macro(
 
 @app.get("/api/market/live/{symbol}")
 def market_live(symbol: str) -> dict:
-    """Ring-buffer snapshot from the live stream (no Snowflake, no polling delay)."""
+    """Ring-buffer snapshot from the live stream (no Kafka/Snowflake, no delay)."""
     stream = _stream()
-    if stream is None or not hasattr(stream, "hub"):
+    if stream is None:
         return {"symbol": symbol.upper(), "enabled": False, "count": 0, "bars": []}
     bars = stream.hub.snapshot(symbol)
     return {"symbol": symbol.upper(), "enabled": True, "count": len(bars), "bars": bars}
+
+
+@app.get("/api/market/features/{symbol}")
+def market_features(
+    symbol: str,
+    limit: int = Query(default=12, ge=1, le=200, description="windows to return"),
+) -> dict:
+    """Window features from the Redis online store (Flink-computed, sub-500ms)."""
+    kv = _kv()
+    if kv is None:
+        return {"symbol": symbol.upper(), "enabled": False, "count": 0, "features": []}
+    rows = kv.list_json(
+        feature_key(settings.stream_redis_feature_prefix, symbol.upper()),
+        reverse=True,  # newest window first
+        maxlen=limit,
+    )
+    return {"symbol": symbol.upper(), "enabled": True, "count": len(rows), "features": rows}
 
 
 def _default_live_symbol() -> str:

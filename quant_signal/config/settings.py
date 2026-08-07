@@ -94,13 +94,29 @@ class Settings(BaseSettings):
     api_pead_cache_ttl_seconds: int = 60
 
     # ── Live market stream (near-real-time showcase) ────────────────────────
-    # Background poller in the API process: fetches recent Binance minute bars,
-    # persists them to BRONZE.CRYPTO_BARS (best-effort), and broadcasts deltas
-    # to /ws/market subscribers. Disable for a pure query API.
+    # Ingestion runs in a standalone producer (``stream/producer.py``) that
+    # publishes Binance minute bars to the Kafka bus; the API consumes the raw
+    # topic and fans deltas out over /ws/market. Disable for a pure query API.
     stream_enabled: bool = True
     stream_poll_seconds: int = 15
     # Ring-buffer depth kept per symbol for WebSocket snapshots.
     stream_history_minutes: int = 180
+
+    # ── Streaming stack (M3): Kafka ingestion bus + Redis online store ──────
+    # Bootstrap servers for the message bus (comma-separated for a cluster).
+    stream_kafka_bootstrap_servers: str = "localhost:9092"
+    # Raw Binance minute bars (producer → Flink → materializer). Keyed by symbol.
+    stream_kafka_topic_raw: str = "crypto.bars.raw"
+    # 5m window features computed by the Flink SQL job (crypto_features.sql).
+    stream_kafka_topic_features: str = "crypto.features.5m"
+    # Online store where the materializer lands live bars + window features.
+    # 6380: the docker-compose Redis is remapped off 6379 so it never
+    # collides with a host Redis (the API/producer connect from the host).
+    stream_redis_url: str = "redis://localhost:6380"
+    stream_redis_live_prefix: str = "live:crypto"
+    stream_redis_feature_prefix: str = "feature:crypto:5m"
+    # Windows of Flink features kept per symbol (RPUSH + LTRIM bound).
+    stream_redis_feature_maxlen: int = 200
 
     @field_validator("snowflake_account")
     @classmethod

@@ -3,7 +3,7 @@ DBT := cd dbt && uv run dbt
 # dbt reads profiles/dbt_project from the dbt/ dir; credentials come from ./.env
 ENV := set -a; . ./.env; set +a;
 
-.PHONY: setup lint test check dbt-setup dbt-deps dbt-debug dbt-run dbt-parse bootstrap ping ingest ingest-macro ingest-fundamentals api ui-setup ui
+.PHONY: setup lint test check dbt-setup dbt-deps dbt-debug dbt-run dbt-parse bootstrap ping ingest ingest-macro ingest-fundamentals api ui-setup ui stream-infra stream-topics stream-flink-submit stream-flink-status stream-producer stream-materializer stream-seed
 
 ## Environment ────────────────────────────────────────────────────────────────
 
@@ -58,6 +58,32 @@ dbt-parse: ## Compile the project without running (fast contract check)
 
 dbt-run: ## Build + test all models (silver/gold, contracts enforced) with latency telemetry
 	$(ENV) $(PYTHON) python scripts/run_dbt.py build --project-dir . --profiles-dir .
+
+## Streaming stack (M3: Redpanda/Kafka + Flink + Redis) ──────────────────────
+
+FLINK_JM := quant_signal-flink-jobmanager-1
+REDPANDA := quant_signal-redpanda-1
+
+stream-infra: ## Start Redpanda + Redis + Flink (builds the Flink image)
+	docker compose up -d --build
+
+stream-topics: ## Create the Kafka topics (idempotent; Flink needs them to exist)
+	docker exec $(REDPANDA) rpk topic create crypto.bars.raw crypto.features.5m --partitions 1 --replicas 1 --if-not-exists
+
+stream-flink-submit: ## Submit the crypto 5m-window SQL job (detached)
+	docker exec $(FLINK_JM) bash -c 'sql-client.sh -f /opt/flink/jobs/crypto_features.sql -d'
+
+stream-flink-status: ## Show Flink job states
+	docker exec $(FLINK_JM) bash -c 'curl -s http://localhost:8081/jobs/overview'
+
+stream-producer: ## Run the live Binance ingestion producer (polls + publishes)
+	$(ENV) $(PYTHON) python -m stream.producer
+
+stream-materializer: ## Materialize Kafka → Redis online store (run alongside producer)
+	$(ENV) $(PYTHON) python -m stream.materializer
+
+stream-seed: ## Publish synthetic demo bars (fast E2E without waiting on Binance)
+	$(ENV) $(PYTHON) python -m scripts.seed_stream_demo
 
 ## Dashboard ─────────────────────────────────────────────────────────────────
 
