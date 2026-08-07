@@ -5,10 +5,14 @@ Run inline (no Prefect server needed)::
     make ingest                      # real daily bars via default provider/symbols
     uv run python flows/ingest_market_data.py --provider yahoo --days 365
     uv run python flows/ingest_market_data.py --provider binance --symbols BTCUSDT --days 3
+    uv run python flows/ingest_market_data.py --provider alpaca --symbols AAPL --days 365
 
-Providers (all REAL, keyless, verified live):
+Providers (all REAL; keyless unless noted):
     yahoo    — US equity daily OHLCV (unofficial endpoint, research-grade)
     binance  — crypto minute OHLCV (single venue)
+    alpaca   — US equity daily OHLCV via Alpaca's IEX feed (official, free API
+               key — the production-grade upgrade over yahoo; ~2.5% of US
+               consolidated volume)
     synthetic— OFFLINE/TEST ONLY, never a production source
 
 As a deployment it would run on a Prefect work pool with retries configured
@@ -24,6 +28,7 @@ from prefect import flow, task
 from config.logging import configure_logging, get_logger
 from config.settings import Settings, csv_list, get_settings
 from ingest.metrics import PipelineMetrics
+from ingest.providers.alpaca import AlpacaBarProvider
 from ingest.providers.base import BarProvider
 from ingest.providers.binance import BinanceBarProvider
 from ingest.providers.synthetic import SyntheticBarProvider
@@ -36,6 +41,7 @@ log = get_logger("flows.ingest_market_data")
 _PROVIDERS: dict[str, type[BarProvider]] = {
     "yahoo": YahooBarProvider,
     "binance": BinanceBarProvider,
+    "alpaca": AlpacaBarProvider,
     "synthetic": SyntheticBarProvider,
 }
 
@@ -48,6 +54,20 @@ def _build_provider(provider_name: str, settings: Settings) -> BarProvider:
         )
     if provider_name == "yahoo":
         return YahooBarProvider(cache_dir=settings.yahoo_cache_dir)
+    if provider_name == "alpaca":
+        if (
+            not settings.ingest_provider_alpaca_api_key
+            or not settings.ingest_provider_alpaca_secret_key
+        ):
+            raise ValueError(
+                "provider 'alpaca' needs INGEST_PROVIDER_ALPACA_API_KEY and "
+                "INGEST_PROVIDER_ALPACA_SECRET_KEY set (free alpaca.markets "
+                "account); the keyless default (yahoo) is used otherwise"
+            )
+        return AlpacaBarProvider(
+            api_key=settings.ingest_provider_alpaca_api_key,
+            api_secret=settings.ingest_provider_alpaca_secret_key,
+        )
     return provider_cls()
 
 
@@ -105,7 +125,7 @@ def ingest_market_data(
     """Fetch, validate, land valid bars in Bronze and invalid ones in QUARANTINE.
 
     Anti-pollution rule: Binance (crypto) lands in CRYPTO_BARS, equity providers
-    (yahoo/synthetic) land in EQUITY_BARS — never mixed in one table.
+    (yahoo/alpaca/synthetic) land in EQUITY_BARS — never mixed in one table.
     Every default (provider, symbols, days) comes from Settings/env, never
     hardcoded here.
     """

@@ -82,6 +82,12 @@ class Settings(BaseSettings):
     ingest_default_metrics: str = "Revenues,NetIncomeLoss,Assets"
     # Disk cache location for the Yahoo provider (None → ~/.cache/quant_signal).
     yahoo_cache_dir: Path | None = None
+    # Alpaca Market Data credentials (free IEX feed — the official US-equity
+    # upgrade over Yahoo, ~2.5% of consolidated volume). Unlike the keyless
+    # providers this needs a free API key pair; blank → the provider is
+    # unavailable and selecting it raises a clear error.
+    ingest_provider_alpaca_api_key: str | None = Field(default=None, repr=False)
+    ingest_provider_alpaca_secret_key: str | None = Field(default=None, repr=False)
 
     # ── Runtime ─────────────────────────────────────────────────────────────
     log_level: str = "INFO"

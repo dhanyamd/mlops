@@ -12,16 +12,21 @@ source is a real, keyless, publicly downloadable endpoint verified live.
 | FRED      | macro         | daily/mo | yes     | institutional (official St. Louis Fed CSV)     |
 | Binance   | crypto        | minute   | yes     | high for a single venue (self-reported volume) |
 | Yahoo     | US equities   | daily    | yes     | research-grade (unofficial endpoint, ToS-gray) |
+| Alpaca    | US equities   | daily    | no      | official, free key, IEX feed (~2.5% of tape)   |
 | synthetic | n/a           | n/a      | n/a     | OFFLINE/TEST ONLY — never a production source  |
 
-All production providers are **keyless** — verified live in this repo's history
-(FRED `fredgraph.csv` HTTP 200; SEC `company_tickers.json` + `companyfacts`
-HTTP 200; Binance public klines HTTP 200; Yahoo chart API HTTP 200 after the
-`curl_cffi` Chrome-TLS fix, previously 429 with plain `requests`).
+All production providers are **keyless except Alpaca** — verified live in this
+repo's history (FRED `fredgraph.csv` HTTP 200; SEC `company_tickers.json` +
+`companyfacts` HTTP 200; Binance public klines HTTP 200; Yahoo chart API HTTP
+200 after the `curl_cffi` Chrome-TLS fix, previously 429 with plain
+`requests`). Alpaca requires a free API key (free alpaca.markets account) and
+is the documented production-grade equity upgrade: official endpoint serving
+the IEX feed (~2.5% of consolidated volume) — switch `feed=iex` → `feed=sip`
+for the full consolidated tape with a paid subscription.
 
-Production upgrade path (documented, not yet wired): Alpaca free IEX feed for
-equities (~2.5% of consolidated volume, free key), paid Alpaca SIP for
-production-grade equity coverage.
+Production upgrade path (documented, wired behind `--provider alpaca`): Alpaca
+free IEX feed for equities (~2.5% of consolidated volume, free key), paid
+Alpaca SIP for production-grade equity coverage.
 
 ## Architecture
 
@@ -174,12 +179,14 @@ BinanceProducer → Redpanda (crypto.bars.raw) → Flink SQL 5m TUMBLE (checkpoi
 
 1. **Prediction layer (M3.5)** — done, see above.
 2. **Feature batch + CI dbt (M4)** — done, see above.
-3. **Alpaca IEX provider (M5)** — production-grade equity upgrade (free key,
-   ~2.5% of consolidated volume documented), as a `BarProvider` behind the
-   existing ingest path.
+3. **Alpaca IEX provider (M5)** — done: production-grade equity upgrade (free
+   key, ~2.5% of consolidated volume) as a `BarProvider` behind the existing
+   ingest path (`--provider alpaca`). Free IEX feed is the default;
+   `feed=sip` is the paid upgrade for the full consolidated tape.
 4. **Snowpipe Streaming persistence (M5)** — persist the Kafka crypto stream
    into Snowflake without batch best-effort writes (documented connector path,
-   see `docs/snowpipe_streaming.md`).
+   see `docs/snowpipe_streaming.md`; the Snowpipe Streaming SDK and Kafka
+   connector paths are written up, implementation is parked).
 5. **MLflow** experiment tracking + model registry for forecasting/fraud
    models (the sibling `fraud_detection/` project). Parked while the served
    models are online learners (River) + MC, which don't map to classic

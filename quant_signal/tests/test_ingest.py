@@ -15,6 +15,7 @@ from pydantic import ValidationError
 
 from config.settings import Settings
 from db.snowflake import SnowflakeClient
+from ingest.providers.alpaca import AlpacaBarProvider
 from ingest.providers.binance import BinanceBarProvider
 from ingest.providers.fred import FredProvider
 from ingest.providers.sec_edgar import (
@@ -911,3 +912,155 @@ def test_ingest_macro_data_flow_end_to_end(monkeypatch: pytest.MonkeyPatch) -> N
     assert result["written"] == 1
     assert result["quarantined"] == 1
     assert written["bronze"] == 1 and written["quarantine"] == 1
+
+
+# ── Alpaca IEX provider (network mocked, offline) ───────────────────────────
+
+
+class _FakeAlpacaResponse:
+    def __init__(self, payload: dict) -> None:
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict:
+        return self._payload
+
+
+def _alpaca_payload(*bars: dict) -> dict:
+    return {
+        "bars": list(bars),
+        "symbol": "AAPL",
+        "next_page_token": None,
+    }
+
+
+def test_alpaca_provider_parses_daily_bars(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_get(url, params=None, headers=None, timeout=None):  # type: ignore[no-untyped-def]
+        assert headers["APCA-API-KEY-ID"] == "key-id"
+        assert headers["APCA-API-SECRET-KEY"] == "secret"
+        # IEX feed + raw (unadjusted) prices are the explicit defaults.
+        assert params["feed"] == "iex"
+        assert params["adjustment"] == "raw"
+        assert params["timeframe"] == "1Day"
+        # Daily bars are anchored at NY midnight UTC (e.g. 2026-08-05T04:00:00Z
+        # in EDT); ts::date must still be the trade date 2026-08-05.
+        return _FakeAlpacaResponse(
+            _alpaca_payload(
+                {
+                    "t": "2026-08-05T04:00:00Z",
+                    "o": 100.0,
+                    "h": 101.0,
+                    "l": 99.0,
+                    "c": 100.5,
+                    "v": 1000,
+                },
+                {
+                    "t": "2026-08-06T04:00:00Z",
+                    "o": 101.0,
+                    "h": 102.0,
+                    "l": 100.0,
+                    "c": 101.5,
+                    "v": 2000,
+                },
+            )
+        )
+
+    monkeypatch.setattr("ingest.providers.alpaca.requests.get", fake_get)
+    df = AlpacaBarProvider(api_key="key-id", api_secret="secret").fetch_bars(["aapl"], days=30)
+    assert set(df.columns) == _BAR_COLUMNS
+    assert len(df) == 2
+    assert df.iloc[0]["symbol"] == "AAPL"
+    assert df.iloc[0]["timeframe"] == "1D"
+    assert df.iloc[0]["provider"] == "alpaca"
+    # NY-midnight-anchored timestamps normalize to the NY trade date at UTC
+    # midnight, so ts::date == trade date (matches the Yahoo provider contract).
+    assert df.iloc[0]["ts"] == dt.datetime(2026, 8, 5)
+    assert df.iloc[1]["ts"] == dt.datetime(2026, 8, 6)
+    assert df.iloc[0]["close"] == 100.5
+    assert df.iloc[0]["volume"] == 1000
+
+
+def test_alpaca_provider_paginates_next_page_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    pages = [
+        _alpaca_payload(
+            {"t": "2026-08-05T04:00:00Z", "o": 1.0, "h": 2.0, "l": 1.0, "c": 1.5, "v": 1}
+        ),
+        _alpaca_payload(
+            {"t": "2026-08-06T04:00:00Z", "o": 2.0, "h": 3.0, "l": 2.0, "c": 2.5, "v": 2}
+        ),
+    ]
+    pages[0]["next_page_token"] = "QUFQTHxEfDIwMjYtMDgtMDVUMDQ6MDA6MDAuMDAwMDAwMDAwWg=="
+    requests_seen: list[dict] = []
+
+    def fake_get(url, params=None, headers=None, timeout=None):  # type: ignore[no-untyped-def]
+        requests_seen.append(params)
+        return _FakeAlpacaResponse(pages[len(requests_seen) - 1])
+
+    monkeypatch.setattr("ingest.providers.alpaca.requests.get", fake_get)
+    df = AlpacaBarProvider(api_key="key", api_secret="secret").fetch_bars(["aapl"], days=60)
+    assert len(df) == 2  # both pages merged, no duplicates
+    assert "page_token" in requests_seen[1]  # second page uses the token
+    assert "page_token" not in requests_seen[0]
+    assert list(df["ts"]) == [dt.datetime(2026, 8, 5), dt.datetime(2026, 8, 6)]
+
+
+def test_alpaca_provider_empty_input_returns_empty() -> None:
+    df = AlpacaBarProvider(api_key="key", api_secret="secret").fetch_bars([], days=30)
+    assert set(df.columns) == _BAR_COLUMNS
+    assert df.empty
+
+
+def test_alpaca_provider_requires_both_keys() -> None:
+    import flows.ingest_market_data as flow_mod
+
+    with pytest.raises(ValueError, match="alpaca"):
+        flow_mod._build_provider("alpaca", _settings())
+    with pytest.raises(ValueError, match="alpaca"):
+        flow_mod._build_provider(
+            "alpaca",
+            _settings(ingest_provider_alpaca_api_key="key"),
+        )
+
+
+def test_alpaca_provider_builds_with_keys() -> None:
+    import flows.ingest_market_data as flow_mod
+
+    provider = flow_mod._build_provider(
+        "alpaca",
+        _settings(
+            ingest_provider_alpaca_api_key="key",
+            ingest_provider_alpaca_secret_key="secret",
+        ),
+    )
+    assert isinstance(provider, AlpacaBarProvider)
+
+
+def test_ingest_market_data_routes_alpaca_to_equity(monkeypatch: pytest.MonkeyPatch) -> None:
+    import flows.ingest_market_data as flow_mod
+
+    routed: list[str] = []
+
+    def fake_fetch(provider_name: str, symbols: list[str], days: int) -> pd.DataFrame:
+        return pd.DataFrame([_bar_payload(symbol="AAPL", provider="alpaca")])
+
+    def fake_write_bronze(df: pd.DataFrame) -> int:  # type: ignore[no-untyped-def]
+        routed.append("equity")
+        return len(df)
+
+    def fake_write_crypto(df: pd.DataFrame) -> int:  # type: ignore[no-untyped-def]
+        routed.append("crypto")
+        return len(df)
+
+    def fake_quarantine(df: pd.DataFrame, source: str) -> int:  # type: ignore[no-untyped-def]
+        return len(df)
+
+    monkeypatch.setattr(flow_mod, "fetch_bars", fake_fetch)
+    monkeypatch.setattr(flow_mod, "write_bronze", fake_write_bronze)
+    monkeypatch.setattr(flow_mod, "write_bronze_crypto", fake_write_crypto)
+    monkeypatch.setattr(flow_mod, "quarantine", fake_quarantine)
+
+    result = flow_mod.ingest_market_data.fn(provider_name="alpaca", symbols=["AAPL"], days=1)
+    assert routed == ["equity"]  # equity providers must NEVER land in CRYPTO_BARS
+    assert result["written"] == 1
