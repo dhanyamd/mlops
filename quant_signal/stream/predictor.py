@@ -41,6 +41,10 @@ def prediction_key(prefix: str, symbol: str) -> str:
     return f"{prefix}:{symbol.upper()}"
 
 
+def strategy_key(prefix: str, symbol: str) -> str:
+    return f"{prefix}:{symbol.upper()}"
+
+
 @dataclass
 class ConformalInterval:
     """Adaptive Conformal Inference wrapper (Gibbs & Candès, 2021).
@@ -133,7 +137,23 @@ class _SymbolState:
     last_close: float | None = None
     last_y_hat: float | None = None
     last_interval: tuple[float, float] | None = None
+    last_direction: str | None = None
     last_window_end_ms: int | None = None
+    # Compounded strategy equity from realized directions, vs buy-and-hold.
+    equity_strategy: list[float] = field(default_factory=lambda: [1.0])
+    equity_buyhold: list[float] = field(default_factory=lambda: [1.0])
+    n_trades: int = 0
+    n_wins: int = 0
+    n_windows: int = 0
+
+
+def _direction(y_hat: float) -> str:
+    """Trading rule: long/short when the predicted return is meaningful."""
+    if y_hat > 1e-4:
+        return "LONG"
+    if y_hat < -1e-4:
+        return "SHORT"
+    return "FLAT"
 
 
 class OnlinePredictor:
@@ -144,12 +164,16 @@ class OnlinePredictor:
         kv: KVStore,
         *,
         prediction_prefix: str,
+        strategy_prefix: str | None = None,
+        strategy_maxlen: int = 500,
         alpha: float = 0.1,
         gamma: float = 0.005,
         residual_window: int = 200,
     ) -> None:
         self._kv = kv
         self._prediction_prefix = prediction_prefix
+        self._strategy_prefix = strategy_prefix
+        self._strategy_maxlen = strategy_maxlen
         self._states: dict[str, _SymbolState] = {}
         self._default = (alpha, gamma, residual_window)
 
@@ -184,21 +208,18 @@ class OnlinePredictor:
             state.model.learn_one(state.last_features, realized)
             if state.last_y_hat is not None and state.last_interval is not None:
                 state.conformal.update(realized, state.last_y_hat, state.last_interval)
+            self._record_period(state, state.last_direction, realized)
 
         y_hat = float(state.model.predict_one(features))
         interval = state.conformal.predict(y_hat)
+        direction = _direction(y_hat)
 
         state.last_features = features
         state.last_close = close
         state.last_y_hat = y_hat
         state.last_interval = interval
+        state.last_direction = direction
         state.last_window_end_ms = window_end
-
-        direction = "FLAT"
-        if y_hat > 1e-4:
-            direction = "LONG"
-        elif y_hat < -1e-4:
-            direction = "SHORT"
 
         self._kv.set_json(
             prediction_key(self._prediction_prefix, symbol),
@@ -211,6 +232,51 @@ class OnlinePredictor:
                 "direction": direction,
                 "alpha": round(state.conformal.alpha_t, 4),
                 "coverage": state.conformal.coverage(),
+                "updated_at": self._kv_now(),
+            },
+        )
+        if self._strategy_prefix:
+            self._write_strategy(state, symbol)
+
+    def _record_period(self, state: _SymbolState, direction: str | None, realized: float) -> None:
+        """Compound equity after the previous window's prediction matures.
+
+        The previous direction earns ``+realized`` (LONG), ``-realized``
+        (SHORT), or nothing (FLAT); the market earns ``+realized`` either way.
+        """
+        if direction == "LONG":
+            strat = realized
+        elif direction == "SHORT":
+            strat = -realized
+        else:
+            strat = 0.0
+        if direction in ("LONG", "SHORT"):
+            state.n_trades += 1
+            if strat > 0.0:
+                state.n_wins += 1
+        state.n_windows += 1
+        state.equity_strategy.append(state.equity_strategy[-1] * (1.0 + strat))
+        state.equity_buyhold.append(state.equity_buyhold[-1] * (1.0 + realized))
+        if len(state.equity_strategy) > self._strategy_maxlen:
+            del state.equity_strategy[: -self._strategy_maxlen]
+        if len(state.equity_buyhold) > self._strategy_maxlen:
+            del state.equity_buyhold[: -self._strategy_maxlen]
+
+    def _write_strategy(self, state: _SymbolState, symbol: str) -> None:
+        eq_strat = state.equity_strategy
+        eq_buy = state.equity_buyhold
+        self._kv.set_json(
+            strategy_key(self._strategy_prefix or "", symbol),
+            {
+                "symbol": symbol,
+                "n_windows": state.n_windows,
+                "n_trades": state.n_trades,
+                "n_wins": state.n_wins,
+                "win_rate": (round(state.n_wins / state.n_trades, 4) if state.n_trades else None),
+                "strategy_equity": [round(e, 6) for e in eq_strat],
+                "buyhold_equity": [round(e, 6) for e in eq_buy],
+                "total_return_strategy": round(eq_strat[-1] - 1.0, 6),
+                "total_return_buyhold": round(eq_buy[-1] - 1.0, 6),
                 "updated_at": self._kv_now(),
             },
         )
@@ -250,6 +316,8 @@ def main() -> None:
     predictor = OnlinePredictor(
         kv,
         prediction_prefix=settings.stream_redis_prediction_prefix,
+        strategy_prefix=settings.stream_redis_strategy_prefix,
+        strategy_maxlen=settings.stream_strategy_maxlen,
         alpha=settings.stream_prediction_alpha,
         gamma=settings.stream_prediction_gamma,
         residual_window=settings.stream_prediction_residual_window,

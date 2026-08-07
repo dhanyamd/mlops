@@ -122,6 +122,11 @@ class Settings(BaseSettings):
     # Online store prefixes for the predictor and simulator outputs.
     stream_redis_prediction_prefix: str = "prediction:crypto:5m"
     stream_redis_simulation_prefix: str = "simulation:crypto:5m"
+    # Live strategy P&L curve (compounded equity vs buy-and-hold) derived from
+    # the predictor's realized directions, for the Signal Terminal P&L strip.
+    stream_redis_strategy_prefix: str = "strategy:crypto:5m"
+    # Windows kept in the per-symbol strategy equity curve.
+    stream_strategy_maxlen: int = 500
     # Adaptive Conformal Inference (Gibbs & Candès 2021): target miscoverage
     # and step size; the nominal level adapts so long-run coverage tracks
     # (1 - alpha) even under drift.
@@ -129,11 +134,22 @@ class Settings(BaseSettings):
     stream_prediction_gamma: float = 0.005
     # Residuals kept for the conformal interval quantile.
     stream_prediction_residual_window: int = 200
-    # Monte Carlo engine: paths, forward horizon (5m steps), trailing 5m
-    # windows used to estimate the per-step log-return volatility.
-    stream_simulation_paths: int = 2000
+    # Monte Carlo engine: paths (all simulated in one vectorized numpy call),
+    # forward horizon (5m steps), trailing 5m windows used to estimate the
+    # per-step log-return volatility.
+    stream_simulation_paths: int = 10_000
     stream_simulation_horizon_steps: int = 12
     stream_simulation_vol_windows: int = 40
+    # Strategy validation Monte Carlo (QuantPad-style pass probability):
+    # bootstrap the realized signal returns into simulated futures and score
+    # them against prop-firm-style rules (max drawdown breach + profit target,
+    # e.g. Topstep 50K ≈ 6% target / FTMO ≈ 8-10% target, trailing DD).
+    stream_validation_sims: int = 10_000
+    stream_validation_max_drawdown: float = 0.08
+    # Profit target: a future only "passes" if it reaches this return from
+    # starting equity without breaching max drawdown first.
+    stream_validation_target: float = 0.06
+    stream_validation_seed: int = 42
 
     @field_validator("snowflake_account")
     @classmethod

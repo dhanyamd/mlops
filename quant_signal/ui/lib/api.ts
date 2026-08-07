@@ -50,6 +50,93 @@ export type MacroPoint = {
   VALUE: number | null;
 };
 
+export type Prediction = {
+  symbol: string;
+  window_end_ms?: number | null;
+  predicted_return: number;
+  interval_low: number;
+  interval_high: number;
+  direction: "LONG" | "SHORT" | "FLAT";
+  alpha?: number | null;
+  coverage?: number | null;
+  updated_at?: string | null;
+};
+
+export type Simulation = {
+  symbol: string;
+  base_price: number;
+  horizon_steps: number;
+  n_paths: number;
+  sigma_annualized: number;
+  percentiles: Record<string, number[]>;
+  median_path: number[];
+  var95: number;
+  es95: number;
+  prob_up: number;
+  returns_histogram: { counts: number[]; edges: number[] };
+  confidence_interval: { p10: number; p90: number };
+};
+
+export type Strategy = {
+  symbol: string;
+  n_windows: number;
+  n_trades: number;
+  n_wins: number;
+  win_rate: number | null;
+  strategy_equity: number[];
+  buyhold_equity: number[];
+  total_return_strategy: number;
+  total_return_buyhold: number;
+  updated_at?: string | null;
+};
+
+export type SamplePath = {
+  equity: number[];
+  outcome: "passed" | "busted" | "neutral";
+};
+
+export type Validation = {
+  n_periods: number;
+  n_sims: number;
+  max_drawdown_rule: number;
+  target: number | null;
+  pass_probability: number;
+  bust_rate: number;
+  neutral_rate: number;
+  expected_terminal: number;
+  expected_return: number;
+  median_terminal: number;
+  best10_terminal: number;
+  worst10_terminal: number;
+  avg_max_drawdown: number;
+  median_max_drawdown: number;
+  p95_max_drawdown: number;
+  equity_fan: Record<string, number[]>;
+  median_path: number[];
+  sample_paths: SamplePath[];
+  terminal_histogram: {
+    counts: number[];
+    passed: number[];
+    busted: number[];
+    neutral: number[];
+    edges: number[];
+  };
+  drawdown_histogram: { counts: number[]; edges: number[] };
+};
+
+export type FeatureWindow = {
+  symbol: string;
+  window_start_ms: number;
+  window_end_ms: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  vwap?: number | null;
+  bar_count?: number | null;
+};
+
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(path, { cache: "no-store" });
   if (!res.ok) {
@@ -85,5 +172,26 @@ export const api = {
   macro: (series?: string, limit = 1000) =>
     get<{ count: number; points: MacroPoint[] }>(
       `/api/macro?limit=${limit}${series ? `&series=${encodeURIComponent(series)}` : ""}`
+    ),
+  marketSymbols: () => get<{ symbols: string[] }>("/api/market/symbols"),
+  prediction: (symbol: string) =>
+    get<{ symbol: string; enabled: boolean; prediction: Prediction | null }>(
+      `/api/market/predict/${encodeURIComponent(symbol)}`
+    ),
+  simulation: (symbol: string) =>
+    get<{ symbol: string; enabled: boolean; simulation: Simulation | null }>(
+      `/api/market/simulation/${encodeURIComponent(symbol)}`
+    ),
+  strategy: (symbol: string) =>
+    get<{ symbol: string; enabled: boolean; strategy: Strategy | null }>(
+      `/api/market/strategy/${encodeURIComponent(symbol)}`
+    ),
+  validation: (symbol: string) =>
+    get<{ symbol: string; enabled: boolean; validation: Validation | null }>(
+      `/api/market/validation/${encodeURIComponent(symbol)}`
+    ),
+  features: (symbol: string, limit = 12) =>
+    get<{ symbol: string; enabled: boolean; count: number; features: FeatureWindow[] }>(
+      `/api/market/features/${encodeURIComponent(symbol)}?limit=${limit}`
     ),
 };

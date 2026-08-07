@@ -24,6 +24,8 @@ from collections import deque
 from collections.abc import Mapping
 from statistics import mean, stdev
 
+import numpy as np
+
 from config.logging import configure_logging, get_logger
 from config.settings import get_settings
 from stream.bus import KafkaBus, MessageBus
@@ -36,6 +38,9 @@ _PERIODS_PER_YEAR = 365 * 24 * 12
 
 _PERCENTILES = [10, 25, 50, 75, 90]
 
+# Bins for the terminal-return histogram (a display resolution, not a model knob).
+_HIST_BINS = 24
+
 
 def simulation_key(prefix: str, symbol: str) -> str:
     return f"{prefix}:{symbol.upper()}"
@@ -47,7 +52,7 @@ class MonteCarloEngine:
     def __init__(
         self,
         *,
-        n_paths: int = 2000,
+        n_paths: int = 10_000,
         horizon_steps: int = 12,
         vol_windows: int = 40,
         drift: bool = False,
@@ -74,22 +79,18 @@ class MonteCarloEngine:
         mu = (mean(tail) + sigma * sigma / 2) if self._drift else 0.0
         return mu, sigma
 
-    def paths(self, s0: float, mu: float, sigma: float) -> list[list[float]]:
-        """``n_paths`` × ``(horizon_steps + 1)`` GBM price paths (S0 first)."""
-        import random
+    def paths(self, s0: float, mu: float, sigma: float) -> np.ndarray:
+        """``(horizon_steps + 1)`` × ``n_paths`` GBM price paths (S0 first).
 
-        rng = random.Random(self._seed)
-        paths: list[list[float]] = []
+        All paths are simulated in a single vectorized call (SIMD-parallel —
+        the same trick QuantPad's "10k parallel simulations" relies on), so
+        the whole fan chart costs microseconds rather than a Python loop.
+        """
+        rng = np.random.default_rng(self._seed)
         half_var = sigma * sigma / 2.0
-        for _ in range(self._n_paths):
-            price = s0
-            row = [price]
-            for _step in range(self._horizon_steps):
-                shock = rng.gauss(0.0, 1.0)
-                price = price * math.exp((mu - half_var) + sigma * shock)
-                row.append(price)
-            paths.append(row)
-        return paths
+        shocks = rng.normal(0.0, 1.0, size=(self._horizon_steps, self._n_paths))
+        increments = np.exp((mu - half_var) + sigma * shocks)
+        return s0 * np.vstack([np.ones(self._n_paths), np.cumprod(increments, axis=0)])
 
     def forecast(self, closes: list[float]) -> dict | None:
         """Full forecast payload from trailing closes, or None if uncalibrated."""
@@ -100,19 +101,17 @@ class MonteCarloEngine:
         s0 = closes[-1]
         paths = self.paths(s0, mu, sigma)
 
+        band_rows = np.percentile(paths, _PERCENTILES, axis=1)  # (5, steps)
         bands = {
-            str(pct): [
-                round(sorted(step)[math.floor(len(step) * pct / 100)], 6) for step in zip(*paths)
-            ]
-            for pct in _PERCENTILES
+            str(pct): [round(float(v), 6) for v in row] for pct, row in zip(_PERCENTILES, band_rows)
         }
-        finals = [path[-1] for path in paths]
-        returns = [final / s0 - 1.0 for final in finals]
-        sorted_returns = sorted(returns)
-        var95 = sorted_returns[max(0, math.floor(len(sorted_returns) * 0.05) - 1)]
-        tail = sorted_returns[: max(1, math.floor(len(sorted_returns) * 0.05))]
-        es95 = mean(tail)
-        prob_up = sum(1.0 for r in returns if r > 0.0) / len(returns)
+        finals = paths[-1]
+        returns = finals / s0 - 1.0
+        var95 = float(np.percentile(returns, 5))
+        tail = returns[returns <= var95]
+        es95 = float(np.mean(tail)) if tail.size else var95
+        prob_up = float(np.mean(returns > 0.0))
+        hist_counts, hist_edges = np.histogram(returns, bins=_HIST_BINS)
 
         return {
             "symbol": None,  # filled by run()
@@ -123,10 +122,14 @@ class MonteCarloEngine:
             "sigma": round(sigma, 6),
             "sigma_annualized": round(sigma * math.sqrt(_PERIODS_PER_YEAR), 6),
             "percentiles": bands,
-            "median_path": [round(sorted(step)[len(step) // 2], 6) for step in zip(*paths)],
+            "median_path": bands["50"],
             "var95": round(var95, 6),
             "es95": round(es95, 6),
             "prob_up": round(prob_up, 4),
+            "returns_histogram": {
+                "counts": [int(c) for c in hist_counts],
+                "edges": [round(float(e), 6) for e in hist_edges],
+            },
             "confidence_interval": {
                 "p10": bands["10"][-1],
                 "p90": bands["90"][-1],
@@ -169,7 +172,7 @@ class SimulationConsumer:
         kv: KVStore,
         *,
         simulation_prefix: str,
-        n_paths: int = 2000,
+        n_paths: int = 10_000,
         horizon_steps: int = 12,
         vol_windows: int = 40,
         drift: bool = False,

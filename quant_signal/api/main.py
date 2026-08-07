@@ -26,8 +26,9 @@ from config.settings import csv_list, get_settings
 from scripts.pead_backtest import compute_pead
 from stream.kv import KVStore, RedisKV
 from stream.materializer import feature_key
-from stream.predictor import prediction_key
+from stream.predictor import prediction_key, strategy_key
 from stream.simulation import simulation_key
+from stream.strategy_mc import StrategyMonteCarlo
 
 configure_logging()
 
@@ -93,6 +94,12 @@ def metrics() -> dict:
 @app.get("/api/macro/series")
 def macro_series_list() -> dict:
     return {"series": db.default_macro_series()}
+
+
+@app.get("/api/market/symbols")
+def market_symbols() -> dict:
+    """Tracked crypto symbols — never hardcoded, sourced from env."""
+    return {"symbols": csv_list(settings.ingest_default_crypto_symbols)}
 
 
 @app.get("/api/market/{symbol}")
@@ -200,6 +207,36 @@ def market_simulation(symbol: str) -> dict:
         simulation_key(settings.stream_redis_simulation_prefix, symbol.upper())
     )
     return {"symbol": symbol.upper(), "enabled": True, "simulation": simulation}
+
+
+@app.get("/api/market/strategy/{symbol}")
+def market_strategy(symbol: str) -> dict:
+    """Live strategy P&L curve (compounded equity vs buy-and-hold)."""
+    kv = _kv()
+    if kv is None:
+        return {"symbol": symbol.upper(), "enabled": False, "strategy": None}
+    strategy = kv.get_json(strategy_key(settings.stream_redis_strategy_prefix, symbol.upper()))
+    return {"symbol": symbol.upper(), "enabled": True, "strategy": strategy}
+
+
+@app.get("/api/market/validation/{symbol}")
+def market_validation(symbol: str) -> dict:
+    """QuantPad-style pass probability: bootstrap the strategy's realized
+    returns into simulated futures and score them against prop-firm rules."""
+    kv = _kv()
+    if kv is None:
+        return {"symbol": symbol.upper(), "enabled": False, "validation": None}
+    strategy = kv.get_json(strategy_key(settings.stream_redis_strategy_prefix, symbol.upper()))
+    if not strategy or not strategy.get("strategy_equity"):
+        return {"symbol": symbol.upper(), "enabled": True, "validation": None}
+    mc = StrategyMonteCarlo(
+        n_sims=settings.stream_validation_sims,
+        max_drawdown=settings.stream_validation_max_drawdown,
+        target=settings.stream_validation_target,
+        seed=settings.stream_validation_seed,
+    )
+    validation = mc.validate(strategy["strategy_equity"])
+    return {"symbol": symbol.upper(), "enabled": True, "validation": validation}
 
 
 def _default_live_symbol() -> str:

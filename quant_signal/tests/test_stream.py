@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 import api.stream as stream_mod
 from api.main import app
 from api.stream import MarketHub, MarketStream
+from config.settings import get_settings
 from stream.bars import df_to_bars
 from stream.bus import FakeBus
 from stream.kv import FakeKV
@@ -285,6 +286,69 @@ def test_market_simulation_endpoint_disabled_without_stream(
     monkeypatch.setattr(settings, "stream_enabled", False)
     with TestClient(app) as client:
         resp = client.get("/api/market/simulation/btcusdt")
+    assert resp.json()["enabled"] is False
+
+
+def test_market_strategy_endpoint_reads_redis(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The strategy endpoint serves the live P&L curve from the online store."""
+    monkeypatch.setattr("api.main.RedisKV", lambda url: FakeKV())
+    with TestClient(app) as client:
+        kv = client.app.state.kv
+        assert kv is not None
+        kv.set_json(
+            "strategy:crypto:5m:BTCUSDT",
+            {
+                "symbol": "BTCUSDT",
+                "n_windows": 30,
+                "strategy_equity": [1.0, 1.01, 1.02],
+                "buyhold_equity": [1.0, 1.005, 1.01],
+            },
+        )
+        resp = client.get("/api/market/strategy/btcusdt")
+    body = resp.json()
+    assert body["symbol"] == "BTCUSDT"
+    assert body["enabled"] is True
+    assert body["strategy"]["n_windows"] == 30
+    assert body["strategy"]["strategy_equity"][-1] == 1.02
+
+
+def test_market_validation_endpoint_reads_redis(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The validation endpoint bootstraps the live equity curve into a
+    QuantPad-style pass probability (deterministic via the seeded engine)."""
+    monkeypatch.setattr("api.main.RedisKV", lambda url: FakeKV())
+    with TestClient(app) as client:
+        kv = client.app.state.kv
+        assert kv is not None
+        kv.set_json(
+            "strategy:crypto:5m:BTCUSDT",
+            {
+                "symbol": "BTCUSDT",
+                "n_windows": 30,
+                "strategy_equity": [1.0 + 0.002 * i for i in range(30)],
+                "buyhold_equity": [1.0] * 30,
+            },
+        )
+        resp = client.get("/api/market/validation/btcusdt")
+    body = resp.json()
+    assert body["symbol"] == "BTCUSDT"
+    assert body["enabled"] is True
+    val = body["validation"]
+    assert val is not None
+    assert val["n_sims"] > 0
+    assert 0.0 <= val["pass_probability"] <= 1.0
+    assert val["max_drawdown_rule"] == get_settings().stream_validation_max_drawdown
+    assert val["target"] == get_settings().stream_validation_target
+    assert len(val["sample_paths"]) == 100
+    assert sum(val["terminal_histogram"]["counts"]) == val["n_sims"]
+
+
+def test_market_validation_endpoint_disabled_without_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = stream_mod.get_settings()
+    monkeypatch.setattr(settings, "stream_enabled", False)
+    with TestClient(app) as client:
+        resp = client.get("/api/market/validation/btcusdt")
     assert resp.json()["enabled"] is False
 
 

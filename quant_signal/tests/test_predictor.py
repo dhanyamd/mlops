@@ -14,7 +14,7 @@ from __future__ import annotations
 import random
 
 from stream.kv import FakeKV
-from stream.predictor import ConformalInterval, OnlinePredictor, prediction_key
+from stream.predictor import ConformalInterval, OnlinePredictor, prediction_key, strategy_key
 from stream.simulation import MonteCarloEngine, SimulationConsumer, simulation_key
 
 # ── ACI conformal intervals ─────────────────────────────────────────────────
@@ -99,7 +99,7 @@ def test_mc_driftless_terminal_expectation_matches_theory() -> None:
     mu, sigma = calibrated
     assert mu == 0.0
     paths = engine.paths(closes[-1], mu, sigma)
-    mean_terminal = sum(p[-1] for p in paths) / len(paths)
+    mean_terminal = float(paths[-1].mean())
     assert 0.98 * closes[-1] <= mean_terminal <= 1.02 * closes[-1]
 
 
@@ -111,6 +111,9 @@ def test_mc_risk_metrics_present() -> None:
     assert forecast["es95"] <= forecast["var95"]
     assert 0.0 <= forecast["prob_up"] <= 1.0
     assert forecast["sigma_annualized"] > 0.0
+    hist = forecast["returns_histogram"]
+    assert len(hist["counts"]) == len(hist["edges"]) - 1  # bins vs boundaries
+    assert sum(hist["counts"]) == forecast["n_paths"]  # every path lands in a bin
 
 
 def test_mc_engine_needs_enough_history() -> None:
@@ -157,6 +160,46 @@ def test_predictor_ignores_malformed_messages() -> None:
     predictor.handle({"symbol": "BTCUSDT"})  # no numeric close
     predictor.handle({"close": 100.0})  # no symbol
     assert kv.get_json(prediction_key("prediction:crypto:5m", "BTCUSDT")) is None
+
+
+def test_predictor_tracks_strategy_equity_vs_buyhold() -> None:
+    """Realized directions compound a strategy curve alongside buy-and-hold."""
+    kv = FakeKV()
+    predictor = OnlinePredictor(
+        kv,
+        prediction_prefix="prediction:crypto:5m",
+        strategy_prefix="strategy:crypto:5m",
+    )
+    for i in range(60):
+        predictor.handle(_feature_window("btcusdt", i))
+
+    stored = kv.get_json(strategy_key("strategy:crypto:5m", "BTCUSDT"))
+    assert stored is not None
+    assert stored["symbol"] == "BTCUSDT"
+    assert stored["n_windows"] == 59  # 60 windows → 59 matured periods
+    assert len(stored["strategy_equity"]) == len(stored["buyhold_equity"]) == 60
+    # Each price step is +0.5 absolute on a ~100 base → ~+0.5% per window.
+    assert stored["buyhold_equity"][-1] > 1.0
+    assert stored["total_return_buyhold"] > 0.0
+    assert stored["win_rate"] is None or 0.0 <= stored["win_rate"] <= 1.0
+    assert stored["strategy_equity"][0] == stored["buyhold_equity"][0] == 1.0
+
+
+def test_predictor_equity_curve_capped_at_maxlen() -> None:
+    kv = FakeKV()
+    predictor = OnlinePredictor(
+        kv,
+        prediction_prefix="prediction:crypto:5m",
+        strategy_prefix="strategy:crypto:5m",
+        strategy_maxlen=20,
+    )
+    for i in range(60):
+        predictor.handle(_feature_window("btcusdt", i))
+
+    stored = kv.get_json(strategy_key("strategy:crypto:5m", "BTCUSDT"))
+    assert stored is not None
+    assert len(stored["strategy_equity"]) == 20  # trimmed to the cap
+    assert stored["n_windows"] == 59  # counter keeps the true total
 
 
 def test_simulation_consumer_lands_forecast_from_feature_stream() -> None:
