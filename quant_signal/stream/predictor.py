@@ -28,6 +28,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from river import compose, linear_model, optim, preprocessing
+from river.base.typing import FeatureName
 
 from config.logging import configure_logging, get_logger
 from config.settings import get_settings
@@ -90,13 +91,13 @@ class ConformalInterval:
         return sum(self._hits) / len(self._hits)
 
 
-def _features(msg: dict) -> dict[str, float] | None:
+def _features(msg: Mapping) -> dict[FeatureName, float] | None:
     """Numeric feature dict from a Flink 5m window, or None if malformed.
 
     Uses only current-window values (no lookahead). Missing/NaN fields are
     dropped so River never sees a non-numeric feature.
     """
-    features: dict[str, float] = {}
+    features: dict[FeatureName, float] = {}
     close = msg.get("close")
     if not isinstance(close, (int, float)) or close != close or close == 0:
         return None
@@ -113,27 +114,25 @@ def _features(msg: dict) -> dict[str, float] | None:
     return features or None
 
 
-def _model() -> preprocessing.TargetStandardScaler:
+def _model() -> compose.Pipeline:
     """Streaming regressor: standardized features → SGD linear regression.
 
     ``TargetStandardScaler`` normalizes the target (returns are small), so the
-    learned weights are stable; predictions come back in original units.
+    learned weights are stable; predictions come back in original units. The
+    feature scaler sits *outside* the target wrapper — River's documented shape
+    (see its TargetStandardScaler examples) — because the wrapper expects a
+    plain ``Regressor``, and the scaler must run before the linear model.
     """
-    pipeline = compose.Pipeline(
-        ("scale", preprocessing.StandardScaler()),
-        (
-            "lin",
-            linear_model.LinearRegression(optimizer=optim.SGD(0.01), l2=0.001),
-        ),
+    return preprocessing.StandardScaler() | preprocessing.TargetStandardScaler(
+        regressor=linear_model.LinearRegression(optimizer=optim.SGD(0.01), l2=0.001)
     )
-    return preprocessing.TargetStandardScaler(regressor=pipeline)
 
 
 @dataclass
 class _SymbolState:
-    model: preprocessing.TargetStandardScaler = field(default_factory=_model)
+    model: compose.Pipeline = field(default_factory=_model)
     conformal: ConformalInterval = field(default_factory=ConformalInterval)
-    last_features: dict[str, float] | None = None
+    last_features: dict[FeatureName, float] | None = None
     last_close: float | None = None
     last_y_hat: float | None = None
     last_interval: tuple[float, float] | None = None

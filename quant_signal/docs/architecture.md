@@ -114,7 +114,12 @@ What we deliberately do NOT have yet (documented, not hidden):
   fundamentals ARE a filing-date timeline now (every 10-K/20-F with its
   `filed_at`, restatements preserved, fiscal year derived from the period end),
   but as-of joins to prices live in M2.
-- **Experiment tracking** — no MLflow; model runs aren't versioned/logged.
+- **Experiment tracking** — MLflow *tracking* is done (every strategy-validation
+  and promotion-gate run is logged with params/metrics/artifacts, explicit
+  `?track=true`). The **model registry** is deliberately unused: the served
+  models are online learners (River) + MC with no classic train/register/phase
+  loop. Drift/anomaly monitoring for the *model* (vs table-level Elementary)
+  is still open.
 - **Drift & anomaly monitoring** — Elementary covers table-level freshness/
   volume; model drift monitors come later.
 - **Streaming** — M3 built a real-time layer (Redpanda/Kafka → Flink SQL →
@@ -193,6 +198,21 @@ BinanceProducer → Redpanda (crypto.bars.raw) → Flink SQL 5m TUMBLE (checkpoi
    UI poll never spams runs). The **model registry** stays parked while the
    served models are online learners (River) + MC, which have no classic
    train/register loop; revisit if a batch-trained model is added.
+6. **Prediction promotion gate (M6)** — done: `stream/predictive_eval.py`
+   replays the predictor's exact learn-then-predict loop over the stored
+   feature-window history (oldest first) and scores it honestly — progressive
+   validation, transaction-cost-adjusted P&L (taker cost per position flip) vs
+   buy-and-hold, IC + direction accuracy, naive-baseline MASE skill, conformal
+   coverage vs nominal alpha, contiguous-block stability, and a **Deflated
+   Sharpe** (Bailey & López de Prado) charged for the number of trials
+   (`STREAM_GATE_N_TRIALS` — the multiple-testing disclosure). `passes_gate()`
+   is the promotion predicate: a model may learn but must not emit directions
+   until every check clears. Served by `/api/market/gate/{symbol}` and logged
+   to MLflow with `?track=true` (filterable by a `passes` 0/1 metric). All
+   thresholds are env-driven (`STREAM_GATE_*`), default deliberately strict.
+   The motivation is the honest-gaps note below: single-asset, next-window
+   return prediction is the weakest return-prediction setting, and a model
+   that isn't evaluated this way is "a guess wearing a number."
 
 System-level view (latency budgets, bottlenecks, target architecture, infra-first
 roadmap): see `docs/system_design.md`.
@@ -245,7 +265,7 @@ and compute EPS-based surprises.
 
 ## Quality gates
 
-- `make check` = `ruff` + `pytest` (110 tests, offline — all network/DB mocked).
+- `make check` = `ruff` + `pytest` (171 tests, offline — all network/DB mocked).
 - `make dbt-parse` validates models/contracts without a Snowflake connection.
 - CI (`.github/workflows/quant-signal-ci.yml`) runs lint + test + dbt parse on
   every PR touching `quant_signal/`.

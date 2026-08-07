@@ -168,6 +168,26 @@ class Settings(BaseSettings):
     mlflow_tracking_uri: str = "./mlruns"
     mlflow_experiment_name: str = "quant_signal"
 
+    # ── Prediction promotion gate (progressive validation) ──────────────────
+    # The live predictor may learn but must not trade until it clears the
+    # gate: enough scored windows, positive skill vs both naive baselines, IC
+    # and direction accuracy above floor, conformal coverage near nominal,
+    # strategy return clearing buy-and-hold after taker costs, and a Deflated
+    # Sharpe (multiple-testing-corrected) above the significance floor.
+    stream_gate_min_windows: int = 100
+    stream_gate_min_skill: float = 0.0
+    stream_gate_min_ic: float = 0.0
+    stream_gate_min_direction_accuracy: float = 0.5
+    stream_gate_coverage_tol: float = 0.05
+    stream_gate_min_dsr: float = 0.95
+    # Trials the model has gone through — the multiple-testing charge DSR is
+    # deflated by. Default 1 = "claim this is the first attempt"; any search
+    # that tried N configurations must disclose N here or the deflation is
+    # meaningless (Harvey / Bailey & López de Prado).
+    stream_gate_n_trials: int = 1
+    # Taker cost charged per position flip against the strategy (5bps default).
+    stream_gate_taker_cost: float = 0.0005
+
     @field_validator("snowflake_account")
     @classmethod
     def _validate_account(cls, value: str) -> str:

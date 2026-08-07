@@ -18,8 +18,33 @@ from fastapi.testclient import TestClient
 from api.main import app
 from config.settings import get_settings
 from stream.kv import FakeKV
-from stream.mlflow_tracking import track_validation
+from stream.mlflow_tracking import track_gate_report, track_validation
+from stream.predictive_eval import evaluate_predictor, passes_gate
 from tests.test_strategy_mc import _PROFITABLE
+
+
+def _feature_windows(n: int = 150) -> list[dict]:
+    """Synthetic 5m feature windows (clean uptrend) for the gate replay.
+
+    Mirrors the fixture in test_predictive_eval: real prices, a monotonic
+    trend the model can actually learn, and the Flink schema (symbol +
+    window_end_ms + OHLCV) the materializer lands in Redis.
+    """
+    return [
+        {
+            "symbol": "BTCUSDT",
+            "window_start_ms": i * 300_000,
+            "window_end_ms": (i + 1) * 300_000,
+            "open": 1000.0 + i,
+            "high": 1000.5 + i,
+            "low": 999.5 + i,
+            "close": 1000.5 + i,
+            "vwap": 1000.3 + i,
+            "volume": 1000.0,
+            "bar_count": 5,
+        }
+        for i in range(n)
+    ]
 
 
 def _sample_validation() -> dict:
@@ -178,3 +203,97 @@ def test_endpoint_tracks_only_with_query_flag(monkeypatch: pytest.MonkeyPatch) -
         assert len(calls) == 1
         assert calls[0]["symbol"] == "BTCUSDT"
         assert "pass_probability" in calls[0]["validation"]
+
+
+# ── Promotion gate: MLflow tracking + API wiring ────────────────────────────
+
+
+def _gated_report() -> tuple[dict, list[str], bool]:
+    """Progressive-validation report for the synthetic uptrend, gated once.
+
+    The gate is deliberately strict, so this fixture may or may not pass — the
+    tests assert the *tracking* records whatever verdict was computed, not
+    that the fixture clears the gate.
+    """
+    report = evaluate_predictor(_feature_windows(200), taker_cost=0.0005)
+    passed, failures = passes_gate(report, get_settings(), n_trials=1)
+    return report, failures, passed
+
+
+def test_gate_tracking_logs_params_metrics_artifacts(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "mlflow_tracking_enabled", True)
+    fake = _fake_mlflow()
+    monkeypatch.setitem(sys.modules, "mlflow", fake)
+
+    report, failures, passed = _gated_report()
+    run_id = track_gate_report(
+        "BTCUSDT",
+        report,
+        failures,
+        n_trials=1,
+        taker_cost=0.0005,
+        alpha=0.1,
+        gamma=0.005,
+        residual_window=200,
+    )
+
+    calls = fake._calls  # type: ignore[attr-defined]
+    assert run_id == "run-123"
+    assert calls["run_name"] == "gate-eval-btcusdt"
+    assert calls["uri"] == settings.mlflow_tracking_uri
+    assert calls["experiment"] == "quant_signal"
+    assert calls["params"]["symbol"] == "BTCUSDT"
+    assert calls["params"]["n_trials"] == 1
+    assert calls["params"]["taker_cost"] == 0.0005
+    # Flat metrics land as floats; the verdict is 0/1 so runs are filterable.
+    assert calls["metrics"]["passes"] == (1.0 if passed else 0.0)
+    assert calls["metrics"]["n_failures"] == len(failures)
+    assert calls["metrics"]["deflated_sharpe"] == report["deflated_sharpe"]
+    # Artifact carries the report + reasons, minus the raw per-window returns.
+    artifact = calls["dicts"]["gate_report.json"]
+    assert artifact["failures"] == failures
+    assert artifact["passes"] is passed
+    assert "_strat_rets" not in artifact
+
+
+def test_gate_endpoint_returns_verdict_and_tracks_only_with_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("api.main.RedisKV", lambda url: FakeKV())
+    calls: list[dict] = []
+
+    def fake_track(symbol, report, failures, **kw):  # type: ignore[no-untyped-def]
+        calls.append({"symbol": symbol, "failures": failures})
+        return "run-1"
+
+    monkeypatch.setattr("api.main.track_gate_report", fake_track)
+
+    with TestClient(app) as client:
+        kv = client.app.state.kv
+        for window in _feature_windows(150):
+            kv.push_json("feature:crypto:5m:BTCUSDT", window, maxlen=200)
+
+        # Without the flag: verdict served, no tracking run.
+        resp = client.get("/api/market/gate/btcusdt")
+        assert resp.status_code == 200
+        gate = resp.json()["gate"]
+        assert gate is not None
+        assert isinstance(gate["passes"], bool)
+        assert isinstance(gate["failures"], list)
+        assert "ic" in gate and "deflated_sharpe" in gate
+        assert "_strat_rets" not in gate
+        assert calls == []
+
+        # With the flag: exactly one tracked run with the same verdict.
+        resp = client.get("/api/market/gate/btcusdt?track=true")
+        assert resp.json()["gate"]["passes"] == gate["passes"]
+        assert len(calls) == 1
+        assert calls[0]["symbol"] == "BTCUSDT"
+
+
+def test_gate_endpoint_disabled_without_stream(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("api.main.RedisKV", lambda url: None)
+    with TestClient(app) as client:
+        resp = client.get("/api/market/gate/btcusdt")
+    assert resp.json() == {"symbol": "BTCUSDT", "enabled": False, "gate": None}

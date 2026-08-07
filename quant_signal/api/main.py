@@ -26,7 +26,8 @@ from config.settings import csv_list, get_settings
 from scripts.pead_backtest import compute_pead
 from stream.kv import KVStore, RedisKV
 from stream.materializer import feature_key
-from stream.mlflow_tracking import track_validation
+from stream.mlflow_tracking import track_gate_report, track_validation
+from stream.predictive_eval import evaluate_predictor, passes_gate
 from stream.predictor import prediction_key, strategy_key
 from stream.simulation import simulation_key
 from stream.strategy_mc import StrategyMonteCarlo
@@ -252,6 +253,61 @@ def market_validation(symbol: str, track: bool = Query(default=False)) -> dict:
             n_sims=settings.stream_validation_sims,
         )
     return {"symbol": symbol.upper(), "enabled": True, "validation": validation}
+
+
+@app.get("/api/market/gate/{symbol}")
+def market_gate(symbol: str, track: bool = Query(default=False)) -> dict:
+    """Promotion-gate verdict for the symbol's online model.
+
+    Replays the predictor's exact learn-then-predict loop over the stored
+    feature-window history (oldest first) and scores it against the validation
+    gate: enough scored windows, positive skill vs both naive baselines, IC
+    and direction accuracy above floor, conformal coverage near nominal,
+    strategy return clearing buy-and-hold after taker costs, and a Deflated
+    Sharpe (multiple-testing-corrected) above the significance floor.
+
+    Until ``gate.passes`` is true the live model may learn but must not emit
+    tradeable directions — it is not a strategy, it is a guess wearing a
+    number (see the research note in ``stream/predictive_eval.py``).
+
+    ``track=true`` logs this run to MLflow Tracking (default off, so the
+    Signal Terminal's 15s polling never spams runs; pass it explicitly for a
+    recorded run).
+    """
+    kv = _kv()
+    if kv is None:
+        return {"symbol": symbol.upper(), "enabled": False, "gate": None}
+    rows = kv.list_json(
+        feature_key(settings.stream_redis_feature_prefix, symbol.upper()),
+        reverse=False,  # oldest first: progressive validation is chronological
+        maxlen=settings.stream_redis_feature_maxlen,
+    )
+    if not rows:
+        return {"symbol": symbol.upper(), "enabled": True, "gate": None}
+    report = evaluate_predictor(
+        rows,
+        alpha=settings.stream_prediction_alpha,
+        gamma=settings.stream_prediction_gamma,
+        residual_window=settings.stream_prediction_residual_window,
+        taker_cost=settings.stream_gate_taker_cost,
+    )
+    passes, failures = passes_gate(report, settings, n_trials=settings.stream_gate_n_trials)
+    if track:
+        track_gate_report(
+            symbol.upper(),
+            report,
+            failures,
+            n_trials=settings.stream_gate_n_trials,
+            taker_cost=settings.stream_gate_taker_cost,
+            alpha=settings.stream_prediction_alpha,
+            gamma=settings.stream_prediction_gamma,
+            residual_window=settings.stream_prediction_residual_window,
+        )
+    # The raw per-window strategy returns are internal to the DSR; strip them
+    # from the wire payload and attach the rejection reasons for the UI.
+    gate = {k: v for k, v in report.items() if k != "_strat_rets"}
+    gate["failures"] = failures
+    return {"symbol": symbol.upper(), "enabled": True, "gate": gate}
 
 
 def _default_live_symbol() -> str:

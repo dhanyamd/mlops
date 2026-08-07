@@ -5,15 +5,17 @@ Production-grade quant signal platform: **Snowflake-backed pipelines** with
 quant research houses (Two Sigma / Man AHL patterns) actually run data
 infrastructure.
 
-> Status: **M0–M1 + M3 — foundations, live data, dashboard, and a real-time
-> streaming stack.** Config, Snowflake client, structured logging, idempotent
-> bootstrap, dbt with enforced contracts, real ingestion
-> (Yahoo/EDGAR/FRED/Binance) into Bronze→Silver→Gold with latency telemetry,
-> the PEAD event study, and a read-only FastAPI + Next.js dashboard. M3 adds a
-> production streaming layer — Redpanda (Kafka API) → Flink SQL (5m event-time
-> windows) → Redis online store → API — for real-time crypto features. No code
-> is hardcoded: every credential and connection value comes from the
-> environment.
+> Status: **Full build — M0–M5 plus the prediction promotion gate.** Config,
+> Snowflake client, structured logging, idempotent bootstrap, dbt with enforced
+> contracts, real ingestion (Yahoo/EDGAR/FRED/Binance/Alpaca) into
+> Bronze→Silver→Gold with latency telemetry, the PEAD event study, and a
+> read-only FastAPI + Next.js dashboard. A production streaming layer — Redpanda
+> (Kafka API) → Flink SQL (5m event-time windows) → Redis online store → API —
+> powers real-time crypto features, online prediction with conformal intervals,
+> Monte Carlo simulation, and QuantPad-style strategy validation. A **promotion
+> gate** (progressive validation + Deflated Sharpe) replays real feature
+> history and decides, honestly, whether a model may actually trade. No code is
+> hardcoded: every credential and connection value comes from the environment.
 
 ## Non-negotiables
 
@@ -68,6 +70,11 @@ quant_signal/
 ├── stream/                 # M3 streaming stack (all bus/KV logic testable via fakes)
 │   ├── producer.py         # standalone Binance minute-bar producer → Kafka
 │   ├── materializer.py     # Kafka → Redis online store (live bars + 5m features)
+│   ├── predictor.py        # online River model + conformal intervals → Redis
+│   ├── predictive_eval.py  # promotion gate: progressive validation + Deflated Sharpe
+│   ├── mlflow_tracking.py  # MLflow tracking for validation + gate runs (optional extra)
+│   ├── simulation.py       # Monte Carlo forward fan chart (percentiles, VaR/ES)
+│   ├── strategy_mc.py      # QuantPad-style strategy pass-probability bootstrap
 │   ├── bus.py              # MessageBus (KafkaBus / FakeBus for hermetic tests)
 │   ├── kv.py               # KVStore (RedisKV / FakeKV)
 │   ├── bars.py             # provider DataFrames → JSON bar payloads
@@ -125,7 +132,9 @@ make ui    # Next.js on :3000 — proxies /api/* to :8000, so browsers stay same
 
 Open `http://localhost:3000`. The API is also directly usable:
 `curl localhost:8000/api/pead`, `/api/market/AAPL?days=750`, `/api/fundamentals/AAPL`,
-`/api/metrics/pipeline`, `/api/macro?series=VIXCLS`. The PEAD endpoint recomputes
+`/api/metrics/pipeline`, `/api/macro?series=VIXCLS`,
+`/api/market/gate/BTCUSDT`, and `/api/market/validation/BTCUSDT?track=true`
+(track logs the run to MLflow). The PEAD endpoint recomputes
 the ~10s event study at most once per 60s (env `API_PEAD_CACHE_TTL_SECONDS`).
 
 ### Live market stream (near-real-time showcase)
@@ -193,6 +202,31 @@ Notes:
 - The old M2 in-API poller is demo-grade; the standalone `stream-producer` +
   Kafka path is the production ingestion route. Streaming writes to Snowflake
   only best-effort today (Kafka → Snowflake via Snowpipe Streaming is planned).
+
+### Prediction promotion gate (validation before trading)
+
+The research literature is blunt: single-asset, next-window return prediction
+is the *weakest* return-prediction setting (Gu, Kelly & Xiu 2020), and naive
+backtesting is "the most dangerous tool in finance" (López de Prado). So before
+the live predictor is allowed to emit LONG/SHORT, `stream/predictive_eval.py`
+replays its exact learn-then-predict loop over the stored feature-window
+history and scores it honestly:
+
+- **progressive validation** (test-then-train, River's canonical protocol);
+- **transaction-cost-adjusted P&L** — taker cost charged per position flip, vs
+  buy-and-hold;
+- **IC + direction accuracy**; **naive baselines** (predict-zero and
+  persistence) reported as MASE skill;
+- **conformal coverage** vs nominal alpha (the ACI contract);
+- **stability across contiguous blocks** (signal must not be one lucky period);
+- **Deflated Sharpe Ratio** charged for the number of trials the model has gone
+  through — the multiple-testing correction (Bailey & López de Prado).
+
+The verdict is `passes_gate()`: a model may learn but must not trade until it
+clears every check. It is served by `/api/market/gate/{symbol}` and recorded to
+MLflow with `?track=true` (filterable by a `passes` 0/1 metric). All thresholds
+are env-driven (`STREAM_GATE_*` in `config/settings.py`); the default is
+deliberately strict — most real models will fail, which is the point.
 
 ## Notes
 
