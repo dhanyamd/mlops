@@ -39,6 +39,12 @@ api = [
 spark = [
     "pyspark>=3.5.0",
 ]
+# Experiment tracking (MLflow) for offline validation runs — the served models
+# are online learners (River) + MC, so only *tracking* is used, not the model
+# registry. Optional: without it, tracking is a no-op.
+mlflow = [
+    "mlflow>=2.14.0",
+]
 dev = [
     "pytest>=8.2.0",
     "pytest-cov>=5.0.0",

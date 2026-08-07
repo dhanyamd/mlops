@@ -26,6 +26,7 @@ from config.settings import csv_list, get_settings
 from scripts.pead_backtest import compute_pead
 from stream.kv import KVStore, RedisKV
 from stream.materializer import feature_key
+from stream.mlflow_tracking import track_validation
 from stream.predictor import prediction_key, strategy_key
 from stream.simulation import simulation_key
 from stream.strategy_mc import StrategyMonteCarlo
@@ -220,9 +221,14 @@ def market_strategy(symbol: str) -> dict:
 
 
 @app.get("/api/market/validation/{symbol}")
-def market_validation(symbol: str) -> dict:
+def market_validation(symbol: str, track: bool = Query(default=False)) -> dict:
     """QuantPad-style pass probability: bootstrap the strategy's realized
-    returns into simulated futures and score them against prop-firm rules."""
+    returns into simulated futures and score them against prop-firm rules.
+
+    ``track=true`` logs this run to MLflow Tracking (params/metrics/artifacts).
+    It defaults to off so the Signal Terminal's 15s polling never spams runs;
+    pass it explicitly (one-off / automation) when you want a recorded run.
+    """
     kv = _kv()
     if kv is None:
         return {"symbol": symbol.upper(), "enabled": False, "validation": None}
@@ -236,6 +242,15 @@ def market_validation(symbol: str) -> dict:
         seed=settings.stream_validation_seed,
     )
     validation = mc.validate(strategy["strategy_equity"])
+    if track and validation is not None:
+        track_validation(
+            symbol.upper(),
+            validation,
+            target=settings.stream_validation_target,
+            max_drawdown=settings.stream_validation_max_drawdown,
+            seed=settings.stream_validation_seed,
+            n_sims=settings.stream_validation_sims,
+        )
     return {"symbol": symbol.upper(), "enabled": True, "validation": validation}
 
 

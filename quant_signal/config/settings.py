@@ -159,6 +159,15 @@ class Settings(BaseSettings):
     stream_validation_target: float = 0.06
     stream_validation_seed: int = 42
 
+    # ── MLflow experiment tracking (offline validation runs) ────────────────
+    # The served models are online learners (River) + MC, so we use MLflow
+    # *tracking* (params/metrics/artifacts per validation run), not the model
+    # registry. Optional `mlflow` extra; without it, tracking is a no-op.
+    # Tracking is explicit (?track=true) so the 15s UI poll never spams runs.
+    mlflow_tracking_enabled: bool = False
+    mlflow_tracking_uri: str = "./mlruns"
+    mlflow_experiment_name: str = "quant_signal"
+
     @field_validator("snowflake_account")
     @classmethod
     def _validate_account(cls, value: str) -> str:

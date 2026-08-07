@@ -187,10 +187,12 @@ BinanceProducer → Redpanda (crypto.bars.raw) → Flink SQL 5m TUMBLE (checkpoi
    into Snowflake without batch best-effort writes (documented connector path,
    see `docs/snowpipe_streaming.md`; the Snowpipe Streaming SDK and Kafka
    connector paths are written up, implementation is parked).
-5. **MLflow** experiment tracking + model registry for forecasting/fraud
-   models (the sibling `fraud_detection/` project). Parked while the served
-   models are online learners (River) + MC, which don't map to classic
-   train/register loops; revisit if a batch-trained model is added.
+5. **MLflow tracking (M5)** — done: every strategy-validation run is
+   recorded to MLflow Tracking (params/metrics + terminal/drawdown histogram
+   artifacts, `stream/mlflow_tracking.py`, explicit `?track=true` so the 15s
+   UI poll never spams runs). The **model registry** stays parked while the
+   served models are online learners (River) + MC, which have no classic
+   train/register loop; revisit if a batch-trained model is added.
 
 System-level view (latency budgets, bottlenecks, target architecture, infra-first
 roadmap): see `docs/system_design.md`.
