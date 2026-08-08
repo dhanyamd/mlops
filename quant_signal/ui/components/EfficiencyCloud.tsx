@@ -56,6 +56,12 @@ export function EfficiencyCloud({
   const target = validation.target ?? 0;
   const ddRule = validation.max_drawdown_rule;
 
+  // Fixed axis domains so the gap between the path cluster and the target/DD
+  // rule is immediately visible — auto-scaling would cram everything into a
+  // tiny box near (0,0) and hide the honest story.
+  const xMax = Math.max(target, ...points.map((p) => p.x)) * 1.2;
+  const yMax = Math.max(ddRule, ...points.map((p) => p.y)) * 1.2;
+
   const dataSets = Object.entries({ hasPassed, hasBusted, hasNeutral }).flatMap(
     ([outcome, present]) =>
       present
@@ -76,7 +82,7 @@ export function EfficiencyCloud({
           <XAxis
             type="number"
             dataKey="x"
-            domain={["dataMin", "dataMax"]}
+            domain={["-10%", xMax]}
             tick={{ fontSize: 11 }}
             tickLine={false}
             axisLine={false}
@@ -93,7 +99,7 @@ export function EfficiencyCloud({
           <YAxis
             type="number"
             dataKey="y"
-            domain={[0, "dataMax"]}
+            domain={[0, yMax]}
             tick={{ fontSize: 11 }}
             tickLine={false}
             axisLine={false}

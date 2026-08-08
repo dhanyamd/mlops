@@ -39,7 +39,7 @@ def df_to_bars(df: pd.DataFrame) -> list[dict[str, Any]]:
                 "low": _num(row.get("low")),
                 "close": _num(row.get("close")),
                 "volume": _num(row.get("volume")),
-                "provider": str(row.get("provider") or "binance"),
+                "provider": str(row.get("provider") or "unknown"),
             }
         )
     return bars

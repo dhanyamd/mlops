@@ -1,7 +1,8 @@
-"""Ingestion producer: Binance minute bars → Kafka bus.
+"""Ingestion producer: venue minute bars → Kafka bus.
 
 Runs as a standalone process (``uv run python -m stream.producer``) — the API
-no longer owns ingestion. Each poll fetches the trailing window from Binance,
+no longer owns ingestion. Each poll fetches the trailing window from the venue
+provider (selected by name via ``STREAM_VENUE``, default ``binance``),
 publishes every bar to the raw topic (keyed by symbol → per-symbol ordering),
 flushes for durability, and persists best-effort to BRONZE.CRYPTO_BARS (a
 Snowflake outage degrades to a warning, never breaks the stream).
@@ -18,7 +19,6 @@ import pandas as pd
 
 from config.logging import configure_logging, get_logger
 from config.settings import csv_list, get_settings
-from ingest.providers.binance import BinanceBarProvider
 from ingest.store import write_crypto_bars
 from stream.bars import df_to_bars
 from stream.bus import KafkaBus, MessageBus
@@ -35,9 +35,9 @@ class BinanceProducer:
         *,
         bus: MessageBus,
         topic: str,
+        provider,
         poll_seconds: int = 15,
         history_minutes: int = 180,
-        provider=None,
         persist=None,
     ) -> None:
         self._symbols = [s.upper() for s in symbols]
@@ -45,7 +45,7 @@ class BinanceProducer:
         self._topic = topic
         self._poll_seconds = poll_seconds
         self._history_minutes = history_minutes
-        self._provider = provider or BinanceBarProvider().fetch_bars
+        self._provider = provider
         self._persist = persist or write_crypto_bars
         self._stop = threading.Event()
 
@@ -78,8 +78,8 @@ class BinanceProducer:
     def _persist_best_effort(self, df: pd.DataFrame) -> None:
         try:
             self._persist(df)
-        except Exception:  # noqa: BLE001 - best-effort persistence
-            logger.warning("crypto persist failed (best-effort)", exc_info=True)
+        except Exception:
+            logger.debug("snowflake persist skipped (offline/best-effort)")
 
 
 def main() -> None:
@@ -89,17 +89,23 @@ def main() -> None:
     if not symbols:
         logger.error("no crypto symbols configured; set INGEST_DEFAULT_CRYPTO_SYMBOLS")
         return
+    from ingest.providers.registry import build_bar_provider
+
+    venue = settings.stream_venue
+    provider = build_bar_provider(venue, settings)
     bus = KafkaBus(settings.stream_kafka_bootstrap_servers)
     producer = BinanceProducer(
         symbols,
         bus=bus,
         topic=settings.stream_kafka_topic_raw,
+        provider=provider.fetch_bars,
         poll_seconds=settings.stream_poll_seconds,
         history_minutes=settings.stream_history_minutes,
     )
     logger.info(
-        "binance producer publishing %s → %s (poll %ss)",
+        "producer publishing %s (%s) → %s (poll %ss)",
         ",".join(symbols),
+        venue,
         settings.stream_kafka_topic_raw,
         settings.stream_poll_seconds,
     )

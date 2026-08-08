@@ -41,6 +41,10 @@ _PERCENTILES = [10, 25, 50, 75, 90]
 # Bins for the terminal-return histogram (a display resolution, not a model knob).
 _HIST_BINS = 24
 
+# Steps for the 3D density surface: the density is computed per forward step,
+# so the UI can render the "probability mountain" forming in real time.
+_SURFACE_STEPS = 12
+
 # Number of raw paths shipped to the UI for the QuantPad-style "all paths"
 # fan-chart spaghetti. The percentile statistics always use *all* paths; this
 # is purely how many thin lines the browser renders (a display resolution).
@@ -120,6 +124,19 @@ class MonteCarloEngine:
         prob_up = float(np.mean(returns > 0.0))
         hist_counts, hist_edges = np.histogram(returns, bins=_HIST_BINS)
 
+        # Per-step return density across ALL paths (not the UI sample): the 3D
+        # "probability surface" bins every forward step over a shared return
+        # grid, so the mountain is built from the full 10k-path ensemble and
+        # every step row sums to n_paths (no paths fall outside the grid).
+        surface_steps = min(self._horizon_steps, _SURFACE_STEPS)
+        step_returns = paths[1 : surface_steps + 1] / s0 - 1.0  # (steps, n_paths)
+        surface_edges = np.linspace(
+            float(step_returns.min()), float(step_returns.max()), _HIST_BINS + 1
+        )
+        surface = np.zeros((surface_steps, _HIST_BINS), dtype=int)
+        for i in range(surface_steps):
+            surface[i], _ = np.histogram(step_returns[i], bins=surface_edges)
+
         # Evenly-spaced subsample of the raw paths for the QuantPad-style
         # "all paths (N)" fan-chart spaghetti — stats always use every path.
         sample_idx = np.linspace(0, self._n_paths - 1, self._sample_paths, dtype=int)
@@ -142,6 +159,11 @@ class MonteCarloEngine:
             "returns_histogram": {
                 "counts": [int(c) for c in hist_counts],
                 "edges": [round(float(e), 6) for e in hist_edges],
+            },
+            "surface_grid": {
+                "steps": surface_steps,
+                "edges": [round(float(e), 6) for e in surface_edges],
+                "counts": [[int(c) for c in row] for row in surface],
             },
             "confidence_interval": {
                 "p10": bands["10"][-1],
@@ -173,8 +195,16 @@ def run(
     if payload is None:
         return None
     payload["symbol"] = symbol
+    payload["window_end_ms"] = features[-1].get("window_end_ms") if features else None
+    payload["updated_at"] = _now_iso()
     kv.set_json(simulation_key(simulation_prefix, symbol), payload)
     return payload
+
+
+def _now_iso() -> str:
+    from datetime import UTC, datetime
+
+    return datetime.now(UTC).isoformat()
 
 
 class SimulationConsumer:

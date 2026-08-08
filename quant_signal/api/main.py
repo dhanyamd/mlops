@@ -27,6 +27,7 @@ from scripts.pead_backtest import compute_pead
 from stream.kv import KVStore, RedisKV
 from stream.materializer import feature_key
 from stream.mlflow_tracking import track_gate_report, track_validation
+from stream.pipeline_health import pipeline_summary
 from stream.predictive_eval import evaluate_predictor, passes_gate
 from stream.predictor import prediction_key, strategy_key
 from stream.simulation import simulation_key
@@ -168,6 +169,31 @@ def market_live(symbol: str) -> dict:
         return {"symbol": symbol.upper(), "enabled": False, "count": 0, "bars": []}
     bars = stream.hub.snapshot(symbol)
     return {"symbol": symbol.upper(), "enabled": True, "count": len(bars), "bars": bars}
+
+
+@app.get("/api/market/health/summary")
+def market_health_summary() -> dict:
+    """Per-stage pipeline freshness, derived from *event* timestamps only.
+
+    Every artifact tags the feature window it came from (``window_end_ms``);
+    ages compare those tags against the latest feature window, never the host
+    clock (which drifts ~5h on this machine). The same event-time delta the
+    watchdog alerts on, served to the UI.
+    """
+    kv = _kv()
+    if kv is None:
+        return {"enabled": False, "healthy": None, "stages": []}
+    summary = pipeline_summary(
+        kv,
+        symbols=csv_list(settings.ingest_default_crypto_symbols),
+        live_prefix=settings.stream_redis_live_prefix,
+        feature_prefix=settings.stream_redis_feature_prefix,
+        prediction_prefix=settings.stream_redis_prediction_prefix,
+        simulation_prefix=settings.stream_redis_simulation_prefix,
+        strategy_prefix=settings.stream_redis_strategy_prefix,
+        staleness_threshold=settings.stream_watchdog_staleness_threshold_seconds,
+    )
+    return {"enabled": True, **summary}
 
 
 @app.get("/api/market/features/{symbol}")

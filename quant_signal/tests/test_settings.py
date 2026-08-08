@@ -37,6 +37,18 @@ def test_defaults_applied(monkeypatch: pytest.MonkeyPatch) -> None:
     assert s.snowflake_role == "ACCOUNTADMIN"
 
 
+def test_stream_venue_and_watchdog_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SNOWFLAKE_ACCOUNT", "acct123")
+    monkeypatch.setenv("SNOWFLAKE_USER", "devuser")
+    monkeypatch.setenv("SNOWFLAKE_PASSWORD", "p")
+    s = Settings(_env_file=None)
+
+    assert s.stream_venue == "binance"
+    assert s.stream_watchdog_staleness_threshold_seconds == 900.0
+    assert s.stream_flink_consumer_group == "flink-crypto-features"
+    assert s.stream_flink_sql_path == "/opt/flink/jobs/crypto_features.sql"
+
+
 def test_key_pair_auth_detected(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SNOWFLAKE_ACCOUNT", "acct123")
     monkeypatch.setenv("SNOWFLAKE_USER", "devuser")

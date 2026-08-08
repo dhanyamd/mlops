@@ -99,6 +99,9 @@ stream-simulator: ## Run the Monte Carlo forward simulator to Redis
 stream-seed: ## Publish synthetic demo bars (fast E2E without waiting on Binance)
 	$(ENV) $(PYTHON) python -m scripts.seed_stream_demo
 
+stream-watchdog: ## Detect a stalled Flink pipeline (features behind raw bars); --fix heals it
+	$(ENV) $(PYTHON) python -m scripts.stream_watchdog --interval 60 --fix
+
 ## Dashboard ─────────────────────────────────────────────────────────────────
 
 api: ## Run the read-only dashboard API (FastAPI) on :8000

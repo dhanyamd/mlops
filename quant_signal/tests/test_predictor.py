@@ -114,6 +114,12 @@ def test_mc_risk_metrics_present() -> None:
     hist = forecast["returns_histogram"]
     assert len(hist["counts"]) == len(hist["edges"]) - 1  # bins vs boundaries
     assert sum(hist["counts"]) == forecast["n_paths"]  # every path lands in a bin
+    surface = forecast["surface_grid"]
+    assert surface["steps"] == forecast["horizon_steps"]
+    assert len(surface["counts"]) == surface["steps"]  # one row per forward step
+    assert all(len(row) == len(hist["counts"]) for row in surface["counts"])
+    # Every step's density uses the full path ensemble, so rows sum to n_paths.
+    assert all(sum(row) == forecast["n_paths"] for row in surface["counts"])
 
 
 def test_mc_engine_needs_enough_history() -> None:
@@ -176,6 +182,7 @@ def test_predictor_tracks_strategy_equity_vs_buyhold() -> None:
     stored = kv.get_json(strategy_key("strategy:crypto:5m", "BTCUSDT"))
     assert stored is not None
     assert stored["symbol"] == "BTCUSDT"
+    assert stored["window_end_ms"] == 60 * 300_000  # event-time provenance tag
     assert stored["n_windows"] == 59  # 60 windows → 59 matured periods
     assert len(stored["strategy_equity"]) == len(stored["buyhold_equity"]) == 60
     # Each price step is +0.5 absolute on a ~100 base → ~+0.5% per window.
@@ -219,6 +226,8 @@ def test_simulation_consumer_lands_forecast_from_feature_stream() -> None:
     assert stored["symbol"] == "ETHUSDT"
     assert stored["base_price"] > 0.0
     assert len(stored["percentiles"]["50"]) == stored["horizon_steps"] + 1
+    assert stored["window_end_ms"] == 50 * 300_000  # event-time provenance tag
+    assert "updated_at" in stored
 
     # QuantPad-style "all paths (N)" fan chart: subsampled raw paths shipped
     # for display, percentiles always computed from every path.

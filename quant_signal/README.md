@@ -14,7 +14,11 @@ infrastructure.
 > powers real-time crypto features, online prediction with conformal intervals,
 > Monte Carlo simulation, and QuantPad-style strategy validation. A **promotion
 > gate** (progressive validation + Deflated Sharpe) replays real feature
-> history and decides, honestly, whether a model may actually trade. No code is
+> history and decides, honestly, whether a model may actually trade. The Signal
+> Terminal renders the full Monte Carlo visualization stack: a forward fan
+> chart with the 10k-simulated path spaghetti (QuantPad "all paths"), an
+> outcome-colored equity fan, an efficiency-cloud pass-probability landscape
+> (pain vs. gain scatter), and terminal / drawdown distributions. No code is
 > hardcoded: every credential and connection value comes from the environment.
 
 ## Non-negotiables

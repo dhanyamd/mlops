@@ -125,6 +125,21 @@ class Settings(BaseSettings):
     stream_redis_feature_prefix: str = "feature:crypto:5m"
     # Windows of Flink features kept per symbol (RPUSH + LTRIM bound).
     stream_redis_feature_maxlen: int = 200
+    # Staleness gate for the watchdog and the API's pipeline-status endpoint:
+    # "healthy" means the latest feature window ended no more than this many
+    # seconds before the latest raw bar (event-time delta, so the host clock
+    # drifting is irrelevant). Sized to > one 5m window + watermark + slack.
+    stream_watchdog_staleness_threshold_seconds: float = 900.0
+    # Venue (source exchange) for the live stream: the provider built by name
+    # from the registry and stamped on every raw bar's ``provider`` field.
+    stream_venue: str = "binance"
+    # Flink infrastructure the watchdog heals by name — the daemon never
+    # hardcodes container ids, consumer groups, or job paths.
+    stream_flink_jobmanager_container: str = "quant_signal-flink-jobmanager-1"
+    stream_flink_taskmanager_container: str = "quant_signal-flink-taskmanager-1"
+    stream_redpanda_container: str = "quant_signal-redpanda-1"
+    stream_flink_consumer_group: str = "flink-crypto-features"
+    stream_flink_sql_path: str = "/opt/flink/jobs/crypto_features.sql"
 
     # ── Prediction layer (M3.5): River + conformal intervals + Monte Carlo ───
     # Online store prefixes for the predictor and simulator outputs.

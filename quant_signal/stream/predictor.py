@@ -235,7 +235,7 @@ class OnlinePredictor:
             },
         )
         if self._strategy_prefix:
-            self._write_strategy(state, symbol)
+            self._write_strategy(state, symbol, window_end)
 
     def _record_period(self, state: _SymbolState, direction: str | None, realized: float) -> None:
         """Compound equity after the previous window's prediction matures.
@@ -261,13 +261,14 @@ class OnlinePredictor:
         if len(state.equity_buyhold) > self._strategy_maxlen:
             del state.equity_buyhold[: -self._strategy_maxlen]
 
-    def _write_strategy(self, state: _SymbolState, symbol: str) -> None:
+    def _write_strategy(self, state: _SymbolState, symbol: str, window_end: int | None) -> None:
         eq_strat = state.equity_strategy
         eq_buy = state.equity_buyhold
         self._kv.set_json(
             strategy_key(self._strategy_prefix or "", symbol),
             {
                 "symbol": symbol,
+                "window_end_ms": window_end,
                 "n_windows": state.n_windows,
                 "n_trades": state.n_trades,
                 "n_wins": state.n_wins,

@@ -72,5 +72,17 @@ def test_validation_payload_shapes() -> None:
     assert result["expected_return"] == round(result["expected_terminal"] - 1.0, 6)
 
 
+def test_sample_paths_carry_outcome_and_stats() -> None:
+    result = StrategyMonteCarlo(n_sims=5_000, seed=3).validate(_PROFITABLE)
+    assert result is not None
+    sp = result["sample_paths"]
+    assert len(sp) == 100  # capped at _SAMPLE_PATHS
+    for p in sp:
+        assert "equity" in p and "outcome" in p
+        assert "terminal_return" in p and "max_drawdown" in p
+        assert p["outcome"] in ("passed", "busted", "neutral")
+        assert len(p["equity"]) == len(_PROFITABLE)  # steps incl. start
+
+
 def test_validation_needs_enough_history() -> None:
     assert StrategyMonteCarlo(n_sims=100).validate([1.0, 1.001, 1.002]) is None

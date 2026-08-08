@@ -75,6 +75,11 @@ export type Simulation = {
   es95: number;
   prob_up: number;
   returns_histogram: { counts: number[]; edges: number[] };
+  surface_grid?: {
+    steps: number;
+    edges: number[];
+    counts: number[][];
+  };
   confidence_interval: { p10: number; p90: number };
 };
 
@@ -125,6 +130,24 @@ export type Validation = {
     edges: number[];
   };
   drawdown_histogram: { counts: number[]; edges: number[] };
+};
+
+export type HealthStatus = "healthy" | "stale" | "warming";
+
+export type HealthStage = {
+  name: "produce" | "features" | "predict" | "simulate" | "strategy";
+  symbol: string;
+  status: HealthStatus;
+  age_seconds: number | null;
+  venue?: string | null;
+  detail: string;
+};
+
+export type HealthSummary = {
+  enabled: boolean;
+  healthy: boolean | null;
+  threshold_seconds: number;
+  stages: HealthStage[];
 };
 
 export type FeatureWindow = {
@@ -197,4 +220,5 @@ export const api = {
     get<{ symbol: string; enabled: boolean; count: number; features: FeatureWindow[] }>(
       `/api/market/features/${encodeURIComponent(symbol)}?limit=${limit}`
     ),
+  healthSummary: () => get<HealthSummary>("/api/market/health/summary"),
 };

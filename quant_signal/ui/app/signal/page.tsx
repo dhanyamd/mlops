@@ -15,6 +15,9 @@ import {
 import { Card } from "@/components/Card";
 import { EfficiencyCloud } from "@/components/EfficiencyCloud";
 import { FanChart } from "@/components/FanChart";
+import { PathDrawIn } from "@/components/PathDrawIn";
+import { LiveBadge, PipelineHealth } from "@/components/PipelineHealth";
+import { ProbSurface3D } from "@/components/ProbSurface3D";
 import { Select } from "@/components/Select";
 import { StrategyFan } from "@/components/StrategyFan";
 import { api, type FeatureWindow, type Prediction, type Simulation, type Strategy, type Validation } from "@/lib/api";
@@ -499,8 +502,10 @@ export default function SignalPage() {
   const strategy = useQuery([symbol, tick], () => api.strategy(symbol));
   const features = useQuery([symbol, tick], () => api.features(symbol, 12));
   const validation = useQuery([symbol, tick], () => api.validation(symbol));
+  const health = useQuery([tick], () => api.healthSummary());
 
-  const error = prediction.error ?? simulation.error ?? strategy.error ?? features.error ?? validation.error;
+  const error =
+    prediction.error ?? simulation.error ?? strategy.error ?? features.error ?? validation.error ?? health.error;
   const pred = prediction.data?.prediction ?? null;
   const sim = simulation.data?.simulation ?? null;
   const strat = strategy.data?.strategy ?? null;
@@ -518,6 +523,7 @@ export default function SignalPage() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-4">
+          <LiveBadge summary={health.data} symbol={symbol} />
           <Select
             label="Symbol"
             value={symbol}
@@ -536,6 +542,8 @@ export default function SignalPage() {
           {error}
         </div>
       ) : null}
+
+      <PipelineHealth summary={health.data} symbol={symbol} />
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <Card title="Signal" subtitle={pred ? `${pred.symbol} · ${pred.direction}` : "warming up"}>
@@ -561,10 +569,39 @@ export default function SignalPage() {
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2">
           <Card
+            title="Probability surface"
+            subtitle={
+              sim
+                ? `return density per forward step · ${sim.n_paths.toLocaleString()} paths · base ${sim.base_price.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+                : "Monte Carlo return density"
+            }
+          >
+            {sim?.surface_grid ? (
+              <ProbSurface3D surface={sim.surface_grid} basePrice={sim.base_price} height={300} />
+            ) : (
+              <p className="py-12 text-center text-sm text-zinc-500">Warming up…</p>
+            )}
+          </Card>
+        </div>
+        <Card
+          title="Path draw-in"
+          subtitle={sim ? `${sim.sample_paths?.length ?? 0} sampled paths · continuous replay` : "Monte Carlo path reveal"}
+        >
+          {sim?.sample_paths?.length ? (
+            <PathDrawIn paths={sim.sample_paths} basePrice={sim.base_price} height={300} />
+          ) : (
+            <p className="py-12 text-center text-sm text-zinc-500">Warming up…</p>
+          )}
+        </Card>
+      </div>
+
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        <div className="lg:col-span-2">
+          <Card
             title="Forward fan chart"
             subtitle={
               sim
-                ? `${sim.n_paths.toLocaleString()} simulated paths · ${sim.sample_paths?.length ?? 0} drawn · base ${sim.base_price.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+                ? `${sim.n_paths.toLocaleString()} simulated paths · percentile band 10–25–50–75–90`
                 : "Monte Carlo percentile fan"
             }
           >
@@ -572,7 +609,6 @@ export default function SignalPage() {
               <FanChart
                 percentiles={sim.percentiles}
                 medianPath={sim.median_path}
-                paths={sim.sample_paths}
                 horizonSteps={sim.horizon_steps}
                 height={280}
               />
