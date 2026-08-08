@@ -220,6 +220,7 @@ class SimulationConsumer:
         vol_windows: int = 40,
         drift: bool = False,
         seed: int | None = None,
+        sample_paths: int = _SAMPLE_PATHS,
     ) -> None:
         self._kv = kv
         self._simulation_prefix = simulation_prefix
@@ -229,6 +230,7 @@ class SimulationConsumer:
             vol_windows=vol_windows,
             drift=drift,
             seed=seed,
+            sample_paths=sample_paths,
         )
         self._history: dict[str, deque[dict]] = {}
         self._maxlen = vol_windows * 2
@@ -281,6 +283,7 @@ def main() -> None:
         n_paths=settings.stream_simulation_paths,
         horizon_steps=settings.stream_simulation_horizon_steps,
         vol_windows=settings.stream_simulation_vol_windows,
+        sample_paths=settings.stream_simulation_sample_paths,
     )
     from config.settings import csv_list
     from stream.materializer import feature_key

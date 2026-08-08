@@ -9,11 +9,26 @@ it never opens a connection, so tests stay hermetic.
 from __future__ import annotations
 
 import json
+import logging
 import threading
+import time
 from collections.abc import Iterator, Mapping, Sequence
-from typing import Protocol
+from typing import Any, Protocol
 
 from confluent_kafka import Consumer, KafkaError, KafkaException, Producer
+
+logger = logging.getLogger(__name__)
+
+# librdkafka keeps dead TCP sockets undetected by default (keepalive off) on
+# macOS, so a half-open connection to redpanda silently wedges the consumer's
+# fetch for minutes. Explicit socket.timeout.ms (≥ session.timeout.ms 45s +1s,
+# per librdkafka#2363/#1915) + keepalive bound the hang, and the deadlines below
+# abandon+recreate a consumer that still stalls.
+_CONSUMER_SOCKET_TIMEOUT_MS = 60_000
+_CONSUMER_POLL_DEADLINE_SECONDS = 30.0
+# Safely above the 5-minute feature cadence: no message for this long means the
+# connection is wedged, not merely idle between windows.
+_CONSUMER_MAX_IDLE_SECONDS = 900.0
 
 
 def _serialize(value: Mapping) -> bytes:
@@ -64,6 +79,8 @@ class KafkaBus:
                 "linger.ms": 50,
                 "acks": "all",
                 "retries": 5,
+                "socket.keepalive.enable": True,
+                "socket.timeout.ms": _CONSUMER_SOCKET_TIMEOUT_MS,
             }
         )
 
@@ -78,36 +95,110 @@ class KafkaBus:
         if self._producer is not None:
             self._producer.flush(timeout)
 
-    def iter_consume(
-        self,
-        topics: str | Sequence[str],
-        group_id: str,
-        stop: threading.Event | None = None,
-    ) -> Iterator[tuple[str, dict]]:
-        consumer = Consumer(
+    def recreate(self) -> "KafkaBus":
+        """Fresh client state — called after a wedged poll cycle is abandoned.
+
+        confluent-kafka's Producer is not safe for concurrent use, so the old
+        (possibly still-blocked) producer must not be reused by the next poll.
+        """
+        return KafkaBus(self._bootstrap_servers, client_id=self._client_id)
+
+    def _new_consumer(self, group_id: str) -> Consumer:
+        return Consumer(
             {
                 "bootstrap.servers": self._bootstrap_servers,
                 "group.id": group_id,
                 "client.id": f"{self._client_id}-{group_id}",
                 "auto.offset.reset": "latest",
                 "enable.auto.commit": True,
+                "auto.commit.interval.ms": 2000,
+                "socket.keepalive.enable": True,
+                "socket.timeout.ms": _CONSUMER_SOCKET_TIMEOUT_MS,
             }
         )
-        consumer.subscribe([topics] if isinstance(topics, str) else list(topics))
-        try:
-            while True:
-                if stop is not None and stop.is_set():
-                    return
-                msg = consumer.poll(timeout=1.0)
-                if msg is None:
-                    continue
-                if msg.error():
-                    if msg.error().code() == KafkaError._PARTITION_EOF:
+
+    @staticmethod
+    def _bounded_poll(
+        consumer: Consumer, timeout: float, deadline: float
+    ) -> tuple[Any, str | Exception | None]:
+        """Poll on a daemon thread so a wedged socket cannot stall the loop.
+
+        Returns ``(msg, None)`` normally, ``(None, exc)`` when the poll raises,
+        or ``(None, "WEDGED")`` when the poll outlives ``deadline`` — the
+        connection is abandoned and the caller recreates the consumer.
+        """
+        result: list[Any] = []
+
+        def _run() -> None:
+            try:
+                result.append(consumer.poll(timeout=timeout))
+            except Exception as exc:  # noqa: BLE001 - surfaced to the caller
+                result.append(exc)
+
+        thread = threading.Thread(target=_run, name="kafka-poll", daemon=True)
+        thread.start()
+        thread.join(timeout=deadline)
+        if thread.is_alive():
+            return None, "WEDGED"
+        value = result[0] if result else None
+        if isinstance(value, Exception):
+            return None, value
+        return value, None
+
+    def iter_consume(
+        self,
+        topics: str | Sequence[str],
+        group_id: str,
+        stop: threading.Event | None = None,
+    ) -> Iterator[tuple[str, dict]]:
+        topics_list = [topics] if isinstance(topics, str) else list(topics)
+        while True:
+            if stop is not None and stop.is_set():
+                return
+            consumer = self._new_consumer(group_id)
+            consumer.subscribe(topics_list)
+            wedged = False
+            last_message = time.monotonic()
+            try:
+                while True:
+                    if stop is not None and stop.is_set():
+                        return
+                    idle = time.monotonic() - last_message
+                    if idle > _CONSUMER_MAX_IDLE_SECONDS:
+                        logger.critical(
+                            "consumer %s idle %.0fs (no message); recreating to clear a "
+                            "wedged connection",
+                            group_id,
+                            idle,
+                        )
+                        wedged = True
+                        break
+                    msg, err = self._bounded_poll(
+                        consumer, timeout=1.0, deadline=_CONSUMER_POLL_DEADLINE_SECONDS
+                    )
+                    if err == "WEDGED":
+                        logger.critical(
+                            "consumer %s poll exceeded %.0fs deadline; abandoning wedged consumer",
+                            group_id,
+                            _CONSUMER_POLL_DEADLINE_SECONDS,
+                        )
+                        wedged = True
+                        break
+                    if isinstance(err, Exception):
+                        logger.warning("consumer %s poll raised %r; recreating", group_id, err)
+                        wedged = True
+                        break
+                    if msg is None:
                         continue
-                    raise KafkaException(msg.error())
-                yield msg.topic(), _deserialize(msg.value())
-        finally:
-            consumer.close()
+                    if msg.error():
+                        if msg.error().code() == KafkaError._PARTITION_EOF:
+                            continue
+                        raise KafkaException(msg.error())
+                    last_message = time.monotonic()
+                    yield msg.topic(), _deserialize(msg.value())
+            finally:
+                if not wedged:
+                    consumer.close()
 
 
 class FakeBus:

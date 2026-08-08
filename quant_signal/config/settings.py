@@ -107,6 +107,7 @@ class Settings(BaseSettings):
     # topic and fans deltas out over /ws/market. Disable for a pure query API.
     stream_enabled: bool = True
     stream_poll_seconds: int = 15
+    stream_poll_timeout_seconds: float = 45
     # Ring-buffer depth kept per symbol for WebSocket snapshots.
     stream_history_minutes: int = 180
 
@@ -163,6 +164,10 @@ class Settings(BaseSettings):
     stream_simulation_paths: int = 10_000
     stream_simulation_horizon_steps: int = 12
     stream_simulation_vol_windows: int = 40
+    # Raw paths shipped to the UI for the all-paths fan (thin canvas lines);
+    # percentile statistics always use *all* paths — this is purely how many
+    # strokes the browser renders per window.
+    stream_simulation_sample_paths: int = 1000
     # Strategy validation Monte Carlo (QuantPad-style pass probability):
     # bootstrap the realized signal returns into simulated futures and score
     # them against prop-firm-style rules (max drawdown breach + profit target,

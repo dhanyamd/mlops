@@ -37,6 +37,7 @@ class BinanceProducer:
         topic: str,
         provider,
         poll_seconds: int = 15,
+        poll_timeout_seconds: float | None = None,
         history_minutes: int = 180,
         persist=None,
     ) -> None:
@@ -44,6 +45,11 @@ class BinanceProducer:
         self._bus = bus
         self._topic = topic
         self._poll_seconds = poll_seconds
+        self._poll_timeout = (
+            poll_timeout_seconds
+            if poll_timeout_seconds is not None
+            else max(30.0, poll_seconds * 3)
+        )
         self._history_minutes = history_minutes
         self._provider = provider
         self._persist = persist or write_crypto_bars
@@ -54,12 +60,42 @@ class BinanceProducer:
         stop = stop or self._stop
         minutes = self._history_minutes
         while not stop.is_set():
-            try:
-                self._poll_once(minutes)
-            except Exception:  # noqa: BLE001 - a producer must never die silently
-                logger.exception("binance producer poll failed")
+            self._poll_with_deadline(minutes)
             minutes = max(3, int(self._poll_seconds / 60) + 1)
             stop.wait(self._poll_seconds)
+
+    def _poll_with_deadline(self, minutes: int) -> int:
+        """Run one poll cycle under a hard deadline.
+
+        The venue fetch has a per-request timeout, but a wedged DNS/connect can
+        outlive it and freeze the whole stream (observed: a 20-minute stall that
+        froze Flink event time and every downstream panel). The poll body runs
+        on a daemon worker thread and is abandoned if it exceeds the deadline; a
+        fresh bus is installed so the next cycle can't inherit wedged state.
+        """
+        holder: dict[str, int] = {}
+
+        def worker() -> None:
+            try:
+                holder["result"] = self._poll_once(minutes)
+            except Exception:  # noqa: BLE001 - a producer must never die silently
+                logger.exception("binance producer poll failed")
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        thread.join(self._poll_timeout)
+        if thread.is_alive():
+            logger.critical(
+                "poll exceeded %.1fs deadline; abandoning wedged cycle", self._poll_timeout
+            )
+            self._recreate_bus()
+            return -1
+        return holder.get("result", 0)
+
+    def _recreate_bus(self) -> None:
+        recreate = getattr(self._bus, "recreate", None)
+        if callable(recreate):
+            self._bus = recreate()
 
     def _poll_once(self, minutes: int) -> int:
         # ``fetch_bars(symbols, days, minutes=None)``: pass minutes as a keyword
@@ -100,6 +136,7 @@ def main() -> None:
         topic=settings.stream_kafka_topic_raw,
         provider=provider.fetch_bars,
         poll_seconds=settings.stream_poll_seconds,
+        poll_timeout_seconds=settings.stream_poll_timeout_seconds,
         history_minutes=settings.stream_history_minutes,
     )
     logger.info(

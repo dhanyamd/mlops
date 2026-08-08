@@ -126,3 +126,27 @@ def test_producer_run_forever_loops_until_stop() -> None:
         stop.set()
         thread.join(timeout=5.0)
     assert not thread.is_alive()
+
+
+def test_producer_poll_deadline_abandons_hung_cycle() -> None:
+    """A wedged provider (hung DNS/connect) must not freeze the stream — the
+    cycle is abandoned at the deadline and the next poll still runs cleanly."""
+
+    release = threading.Event()
+    calls: list[int] = []
+
+    def stuck_provider(symbols: list[str], days: int = 0, minutes: int = 0) -> pd.DataFrame:
+        calls.append(minutes)
+        release.wait(timeout=10.0)  # simulates a network call that never returns
+        return _bar_df(symbols, n_minutes=1)
+
+    bus = FakeBus()
+    producer = _producer(bus, provider=stuck_provider, poll_timeout_seconds=0.05)
+
+    start = time.monotonic()
+    assert producer._poll_with_deadline(minutes=10) == -1  # abandoned, not frozen
+    assert time.monotonic() - start < 2.0  # returned promptly despite the hang
+    assert calls == [10]
+
+    release.set()  # let the abandoned worker finish
+    assert producer._poll_with_deadline(minutes=10) == 1  # loop still works after
