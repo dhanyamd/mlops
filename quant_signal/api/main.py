@@ -252,6 +252,12 @@ def market_validation(symbol: str, track: bool = Query(default=False)) -> dict:
     """QuantPad-style pass probability: bootstrap the strategy's realized
     returns into simulated futures and score them against prop-firm rules.
 
+    The Monte Carlo is seeded from the latest feature window's event time
+    (``window_end_ms``), so every 5m window resamples the futures differently
+    while staying reproducible per window — the seed is echoed in the payload
+    for audit (prod-grade: reproducible, never OS-entropy, never frozen at a
+    fixed seed).
+
     ``track=true`` logs this run to MLflow Tracking (params/metrics/artifacts).
     It defaults to off so the Signal Terminal's 15s polling never spams runs;
     pass it explicitly (one-off / automation) when you want a recorded run.
@@ -262,11 +268,12 @@ def market_validation(symbol: str, track: bool = Query(default=False)) -> dict:
     strategy = kv.get_json(strategy_key(settings.stream_redis_strategy_prefix, symbol.upper()))
     if not strategy or not strategy.get("strategy_equity"):
         return {"symbol": symbol.upper(), "enabled": True, "validation": None}
+    seed = strategy.get("window_end_ms") or settings.stream_validation_seed
     mc = StrategyMonteCarlo(
         n_sims=settings.stream_validation_sims,
         max_drawdown=settings.stream_validation_max_drawdown,
         target=settings.stream_validation_target,
-        seed=settings.stream_validation_seed,
+        seed=seed,
     )
     validation = mc.validate(strategy["strategy_equity"])
     if track and validation is not None:
@@ -275,10 +282,16 @@ def market_validation(symbol: str, track: bool = Query(default=False)) -> dict:
             validation,
             target=settings.stream_validation_target,
             max_drawdown=settings.stream_validation_max_drawdown,
-            seed=settings.stream_validation_seed,
+            seed=seed,
             n_sims=settings.stream_validation_sims,
         )
-    return {"symbol": symbol.upper(), "enabled": True, "validation": validation}
+    return {
+        "symbol": symbol.upper(),
+        "enabled": True,
+        "seed": seed,
+        "window_end_ms": strategy.get("window_end_ms"),
+        "validation": validation,
+    }
 
 
 @app.get("/api/market/validation/{symbol}/geometry")
@@ -290,6 +303,10 @@ def market_validation_geometry(symbol: str) -> dict:
     insight (PropSim/QuantPad): trailing-DD rules are path-dependent, so two
     traders with identical edge can have 90% vs 10% pass rates.
 
+    Seeded from the latest feature window's event time (``window_end_ms``) so
+    each 5m window resamples the Monte Carlo differently — the curve and grid
+    visibly move — while staying reproducible per window; the seed is echoed in
+    the payload for audit.
     """
     kv = _kv()
     if kv is None:
@@ -300,11 +317,12 @@ def market_validation_geometry(symbol: str) -> dict:
     from stream.strategy_mc import strategy_returns_from_equity
 
     returns = strategy_returns_from_equity(strategy["strategy_equity"])
+    seed = strategy.get("window_end_ms") or settings.stream_validation_seed
     mc = StrategyMonteCarlo(
         n_sims=settings.stream_validation_sims,
         max_drawdown=settings.stream_validation_max_drawdown,
         target=settings.stream_validation_target,
-        seed=settings.stream_validation_seed,
+        seed=seed,
     )
     grid = mc.geometry_sweep(
         returns=returns,
@@ -315,7 +333,13 @@ def market_validation_geometry(symbol: str) -> dict:
         sweep_cols=7,
         n_sims=1000,
     )
-    return {"symbol": symbol.upper(), "enabled": True, "grid": grid}
+    return {
+        "symbol": symbol.upper(),
+        "enabled": True,
+        "seed": seed,
+        "window_end_ms": strategy.get("window_end_ms"),
+        "grid": grid,
+    }
 
 
 @app.get("/api/market/gate/{symbol}")

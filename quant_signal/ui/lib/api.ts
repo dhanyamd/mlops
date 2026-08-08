@@ -154,6 +154,11 @@ export type EdgeSweep = {
   edges_bps: number[];
   pass: number[];
   current_edge_bps: number;
+  breakeven_edge_bps: number;
+  n_periods?: number;
+  target?: number;
+  max_drawdown?: number;
+  seed?: number | null;
 };
 
 export type GeometryGrid = {
@@ -162,6 +167,7 @@ export type GeometryGrid = {
   rr_axis: number[];
   ev: number;
   sigma?: number;
+  seed?: number | null;
   edge_sweep?: EdgeSweep;
 };
 

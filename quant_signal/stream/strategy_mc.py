@@ -156,6 +156,7 @@ class StrategyMonteCarlo:
             "ev": round(base_ev, 6),
             "sigma": round(sigma, 6),
             "edge_sweep": edge_sweep,
+            "seed": self._seed,
         }
 
     def _edge_sweep(
@@ -175,6 +176,10 @@ class StrategyMonteCarlo:
         challenge flips from 'no geometry passes' to 'passable' — the honest
         answer for a currently-negative-EV strategy, which otherwise renders as
         an all-zero heat grid.
+
+        Also interpolates the *breakeven edge* — the per-period edge (bps) at
+        which pass probability crosses 50% — the single number a PM reads first:
+        'how much edge does my current volatility and drawdown rule demand?'
         """
         edges_bps = np.linspace(-12, 12, 25)
         passes: list[float] = []
@@ -189,10 +194,27 @@ class StrategyMonteCarlo:
             hit_target = steps[:, -1] >= (1.0 + target)
             passed = (max_dd_sim < max_drawdown) & hit_target
             passes.append(round(float(np.mean(passed)), 4))
+
+        break_even: float | None = None
+        for i in range(1, len(passes)):
+            if passes[i - 1] < 0.5 <= passes[i]:
+                x0, x1 = edges_bps[i - 1], edges_bps[i]
+                p0, p1 = passes[i - 1], passes[i]
+                frac = (0.5 - p0) / (p1 - p0) if p1 != p0 else 0.0
+                break_even = round(float(x0 + frac * (x1 - x0)), 3)
+                break
+        if break_even is None:
+            break_even = round(float(edges_bps[0] if passes[-1] < 0.5 else edges_bps[-1]), 3)
+
         return {
             "edges_bps": [round(float(e), 2) for e in edges_bps],
             "pass": passes,
             "current_edge_bps": round(base_ev * 10000, 3),
+            "breakeven_edge_bps": break_even,
+            "n_periods": n_periods,
+            "target": target,
+            "max_drawdown": max_drawdown,
+            "seed": self._seed,
         }
 
     def validate(self, equity: list[float]) -> dict | None:
