@@ -19,6 +19,7 @@ import { NextWindowCountdown } from "@/components/NextWindowCountdown";
 import { PathDrawIn } from "@/components/PathDrawIn";
 import { LiveBadge, PipelineHealth } from "@/components/PipelineHealth";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { ExecutionPanel } from "@/components/ExecutionPanel";
 import { GeometryOptimizer } from "@/components/GeometryOptimizer";
 import { ProbSurface3D } from "@/components/ProbSurface3D";
 import { RealizedReturns } from "@/components/RealizedReturns";
@@ -512,6 +513,8 @@ export default function SignalPage() {
   const features = useQuery([symbol, tick], () => api.features(symbol, 12));
   const validation = useQuery([symbol, tick], () => api.validation(symbol));
   const geometry = useQuery(["geometry", symbol, tick], () => api.geometry(symbol));
+  const execution = useQuery([symbol, tick], () => api.execution(symbol));
+  const portfolio = useQuery([tick], () => api.portfolio());
   const health = useQuery([tick], () => api.healthSummary());
 
   const error =
@@ -521,6 +524,8 @@ export default function SignalPage() {
     features.error ??
     validation.error ??
     geometry.error ??
+    execution.error ??
+    portfolio.error ??
     health.error;
   const pred = prediction.data?.prediction ?? null;
   const sim = simulation.data?.simulation ?? null;
@@ -649,6 +654,20 @@ export default function SignalPage() {
           {sim ? <ReturnsHistogram simulation={sim} /> : <p className="py-12 text-center text-sm text-zinc-500">Warming up…</p>}
         </Card>
       </div>
+
+      <Card
+        title="Paper execution"
+        subtitle={
+          execution.data?.execution
+            ? `${execution.data.execution.symbol} · simulated fills on live signals · adverse-side slippage ${execution.data.execution.slippage_bps}bps · taker ${execution.data.execution.taker_fee_bps}bps · last ${execution.data.execution.fills.length} fills`
+            : "paper book on the predictor's real signals — first position opens at the close of the window after a signal appears"
+        }
+      >
+        <ExecutionPanel
+          execution={execution.data?.execution ?? null}
+          portfolio={portfolio.data ?? null}
+        />
+      </Card>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2">

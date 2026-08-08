@@ -135,7 +135,7 @@ export type Validation = {
 export type HealthStatus = "healthy" | "stale" | "warming";
 
 export type HealthStage = {
-  name: "produce" | "features" | "predict" | "simulate" | "strategy";
+  name: "produce" | "features" | "predict" | "simulate" | "strategy" | "execute";
   symbol: string;
   status: HealthStatus;
   age_seconds: number | null;
@@ -182,6 +182,86 @@ export type FeatureWindow = {
   volume: number;
   vwap?: number | null;
   bar_count?: number | null;
+};
+
+export type ExecutionPosition = {
+  side: "LONG" | "SHORT";
+  entry_price: number;
+  qty: number;
+  entry_fees: number;
+  entry_window_end_ms: number;
+  mark_price: number | null;
+  unrealized_pnl: number | null;
+  unrealized_pnl_pct: number | null;
+} | null;
+
+export type ExecutionFill = {
+  window_end_ms: number;
+  side: "LONG" | "SHORT";
+  entry_price: number;
+  exit_price: number;
+  qty: number;
+  fees: number;
+  gross_pnl: number;
+  net_pnl: number;
+  net_pnl_pct: number;
+  bars_held: number;
+};
+
+export type Execution = {
+  symbol: string;
+  window_end_ms: number | null;
+  notional_usd: number;
+  slippage_bps: number;
+  taker_fee_bps: number;
+  n_trades: number;
+  n_wins: number;
+  win_rate: number | null;
+  realized_pnl: number;
+  unrealized_pnl: number;
+  net_pnl: number;
+  gross_pnl: number;
+  gross_volume: number;
+  total_fees: number;
+  fees_pct_of_gross_pnl: number | null;
+  signals_skipped: number;
+  total_return: number;
+  equity: number[];
+  position: ExecutionPosition;
+  fills: ExecutionFill[];
+  assumptions?: Record<string, unknown>;
+  updated_at?: string | null;
+};
+
+export type PortfolioRow = {
+  symbol: string;
+  present: boolean;
+  n_trades?: number;
+  win_rate?: number | null;
+  realized_pnl?: number;
+  unrealized_pnl?: number;
+  total_pnl?: number;
+  total_fees?: number;
+  fees_pct_of_gross_pnl?: number | null;
+  gross_volume?: number;
+  total_return?: number;
+  signals_skipped?: number;
+  position?: ExecutionPosition;
+};
+
+export type Portfolio = {
+  enabled: boolean;
+  symbols: string[];
+  total_realized_pnl: number | null;
+  total_unrealized_pnl: number | null;
+  total_pnl: number | null;
+  total_fees: number | null;
+  fees_pct_of_gross_pnl: number | null;
+  gross_volume: number | null;
+  n_trades: number | null;
+  n_wins: number | null;
+  win_rate: number | null;
+  rows: PortfolioRow[];
 };
 
 async function get<T>(path: string): Promise<T> {
@@ -233,6 +313,11 @@ export const api = {
     get<{ symbol: string; enabled: boolean; strategy: Strategy | null }>(
       `/api/market/strategy/${encodeURIComponent(symbol)}`
     ),
+  execution: (symbol: string) =>
+    get<{ symbol: string; enabled: boolean; execution: Execution | null }>(
+      `/api/market/execution/${encodeURIComponent(symbol)}`
+    ),
+  portfolio: () => get<Portfolio>("/api/market/portfolio"),
   validation: (symbol: string) =>
     get<{ symbol: string; enabled: boolean; validation: Validation | null }>(
       `/api/market/validation/${encodeURIComponent(symbol)}`

@@ -24,6 +24,7 @@ from api.stream import MarketStream, start_stream, stop_stream
 from config.logging import configure_logging
 from config.settings import csv_list, get_settings
 from scripts.pead_backtest import compute_pead
+from stream.execution import execution_key
 from stream.kv import KVStore, RedisKV
 from stream.materializer import feature_key
 from stream.mlflow_tracking import track_gate_report, track_validation
@@ -103,6 +104,80 @@ def macro_series_list() -> dict:
 def market_symbols() -> dict:
     """Tracked crypto symbols — never hardcoded, sourced from env."""
     return {"symbols": csv_list(settings.ingest_default_crypto_symbols)}
+
+
+@app.get("/api/market/portfolio")
+def market_portfolio() -> dict:
+    """Aggregate the paper book across all tracked symbols.
+
+    Total realized P&L (and fees), trade count, win rate, and the open
+    positions marked to market — the portfolio-management half of the signal
+    terminal. Defined above /api/market/{symbol} so it is never shadowed by
+    the symbol catch-all.
+    """
+    kv = _kv()
+    symbols = csv_list(settings.ingest_default_crypto_symbols)
+    if kv is None:
+        return {"enabled": False, "symbols": symbols, "total_pnl": None, "rows": []}
+
+    rows: list[dict] = []
+    total_pnl = 0.0
+    total_fees = 0.0
+    total_volume = 0.0
+    n_trades = 0
+    n_wins = 0
+    for symbol in symbols:
+        execution = kv.get_json(execution_key(settings.stream_redis_execution_prefix, symbol))
+        if not execution:
+            rows.append({"symbol": symbol, "present": False})
+            continue
+        position = execution.get("position")
+        pnl = float(execution.get("realized_pnl", 0.0))
+        unrealized = float(position.get("unrealized_pnl") or 0.0) if position else 0.0
+        total_pnl += pnl
+        total_fees += float(execution.get("total_fees", 0.0))
+        total_volume += float(execution.get("gross_volume", 0.0))
+        n_trades += int(execution.get("n_trades", 0))
+        n_wins += int(execution.get("n_wins", 0))
+        rows.append(
+            {
+                "symbol": symbol,
+                "present": True,
+                "n_trades": execution.get("n_trades"),
+                "win_rate": execution.get("win_rate"),
+                "realized_pnl": execution.get("realized_pnl"),
+                "unrealized_pnl": round(unrealized, 2),
+                "total_pnl": round(pnl + unrealized, 2),
+                "total_fees": execution.get("total_fees"),
+                "fees_pct_of_gross_pnl": execution.get("fees_pct_of_gross_pnl"),
+                "gross_volume": execution.get("gross_volume"),
+                "total_return": execution.get("total_return"),
+                "signals_skipped": execution.get("signals_skipped"),
+                "position": position,
+            }
+        )
+
+    gross = sum(float(r.get("gross_volume") or 0.0) for r in rows if r.get("present"))
+    return {
+        "enabled": True,
+        "symbols": symbols,
+        "total_realized_pnl": round(total_pnl, 2),
+        "total_unrealized_pnl": round(
+            sum(float(r.get("unrealized_pnl") or 0.0) for r in rows if r.get("present")), 2
+        ),
+        "total_pnl": round(
+            total_pnl
+            + sum(float(r.get("unrealized_pnl") or 0.0) for r in rows if r.get("present")),
+            2,
+        ),
+        "total_fees": round(total_fees, 2),
+        "fees_pct_of_gross_pnl": (round(total_fees / gross * 100.0, 2) if gross else None),
+        "gross_volume": round(total_volume, 2),
+        "n_trades": n_trades,
+        "n_wins": n_wins,
+        "win_rate": (round(n_wins / n_trades, 4) if n_trades else None),
+        "rows": rows,
+    }
 
 
 @app.get("/api/market/{symbol}")
@@ -191,6 +266,7 @@ def market_health_summary() -> dict:
         prediction_prefix=settings.stream_redis_prediction_prefix,
         simulation_prefix=settings.stream_redis_simulation_prefix,
         strategy_prefix=settings.stream_redis_strategy_prefix,
+        execution_prefix=settings.stream_redis_execution_prefix,
         staleness_threshold=settings.stream_watchdog_staleness_threshold_seconds,
     )
     return {"enabled": True, **summary}
@@ -245,6 +321,21 @@ def market_strategy(symbol: str) -> dict:
         return {"symbol": symbol.upper(), "enabled": False, "strategy": None}
     strategy = kv.get_json(strategy_key(settings.stream_redis_strategy_prefix, symbol.upper()))
     return {"symbol": symbol.upper(), "enabled": True, "strategy": strategy}
+
+
+@app.get("/api/market/execution/{symbol}")
+def market_execution(symbol: str) -> dict:
+    """Paper-execution book: fills, realized/unrealized P&L, position, ledger.
+
+    The execution engine consumes the predictor's *realized* directions and
+    simulates fills at the next window's close with slippage + taker fees — no
+    lookahead, deterministic by construction (see ``stream/execution.py``).
+    """
+    kv = _kv()
+    if kv is None:
+        return {"symbol": symbol.upper(), "enabled": False, "execution": None}
+    execution = kv.get_json(execution_key(settings.stream_redis_execution_prefix, symbol.upper()))
+    return {"symbol": symbol.upper(), "enabled": True, "execution": execution}
 
 
 @app.get("/api/market/validation/{symbol}")

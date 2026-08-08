@@ -9,6 +9,7 @@ age of each stage without ever trusting the host clock (which drifts):
     predict   age = prediction window_end_ms − latest feature window_end_ms
     simulate  age = simulation window_end_ms − latest feature window_end_ms
     strategy  age = strategy window_end_ms    − latest feature window_end_ms
+    execute   age = execution window_end_ms   − latest feature window_end_ms
 
 A stage whose tag equals the latest window is fresh (age 0); one or more
 windows behind has a positive age; a missing artifact reports ``None``
@@ -18,7 +19,10 @@ layer never hardcodes a store key.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from scripts.stream_watchdog import staleness_seconds
+from stream.execution import execution_key
 from stream.kv import KVStore
 from stream.materializer import feature_key, live_key
 from stream.predictor import prediction_key, strategy_key
@@ -33,7 +37,7 @@ def _latest_window_end(kv: KVStore, feature_prefix: str, symbol: str) -> int | N
     return int(end) if isinstance(end, (int, float)) else None
 
 
-def _artifact_age(artifact: dict | None, latest_end: int | None) -> float | None:
+def _artifact_age(artifact: Mapping | None, latest_end: int | None) -> float | None:
     """Seconds the artifact's tagged window lags the latest feature window.
 
     None when there is no artifact or it carries no event-time tag. A negative
@@ -62,6 +66,7 @@ def pipeline_summary(
     prediction_prefix: str,
     simulation_prefix: str,
     strategy_prefix: str,
+    execution_prefix: str,
     staleness_threshold: float,
 ) -> dict:
     """Per-symbol stage freshness, derived entirely from event timestamps."""
@@ -81,6 +86,7 @@ def pipeline_summary(
         prediction = kv.get_json(prediction_key(prediction_prefix, symbol))
         simulation = kv.get_json(simulation_key(simulation_prefix, symbol))
         strategy = kv.get_json(strategy_key(strategy_prefix, symbol))
+        execution = kv.get_json(execution_key(execution_prefix, symbol))
 
         feature_stage = {
             "name": "features",
@@ -113,6 +119,7 @@ def pipeline_summary(
             ("predict", prediction),
             ("simulate", simulation),
             ("strategy", strategy),
+            ("execute", execution),
         ):
             age = _artifact_age(artifact, latest_end)
             status = _status(age, staleness_threshold)
@@ -132,7 +139,7 @@ def pipeline_summary(
         any_stale = (
             any_stale
             or feature_stage["status"] == "stale"
-            or any(s["status"] == "stale" for s in stages[-3:])
+            or any(s["status"] == "stale" for s in stages[-4:])
         )
 
     return {

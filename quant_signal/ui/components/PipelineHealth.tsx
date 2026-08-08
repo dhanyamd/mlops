@@ -9,6 +9,7 @@ const STAGE_ORDER: HealthStage["name"][] = [
   "predict",
   "simulate",
   "strategy",
+  "execute",
 ];
 
 const STAGE_LABEL: Record<HealthStage["name"], string> = {
@@ -17,6 +18,7 @@ const STAGE_LABEL: Record<HealthStage["name"], string> = {
   predict: "predict",
   simulate: "simulate",
   strategy: "strategy",
+  execute: "execute",
 };
 
 const DOT: Record<string, string> = {
@@ -131,7 +133,7 @@ export function PipelineHealth({ summary, symbol }: { summary: HealthSummary | n
           key={pulseKey}
           className="pulse-travel pointer-events-none absolute inset-y-0 left-0 z-10 w-1/3"
         />
-        <div className="grid grid-cols-2 gap-px bg-zinc-200 sm:grid-cols-3 lg:grid-cols-5 dark:bg-zinc-800">
+        <div className="grid grid-cols-2 gap-px bg-zinc-200 sm:grid-cols-3 lg:grid-cols-6 dark:bg-zinc-800">
           {stages.map((stage, i) => (
             <StageCell key={`${stage?.name ?? i}-${i}`} stage={stage} />
           ))}

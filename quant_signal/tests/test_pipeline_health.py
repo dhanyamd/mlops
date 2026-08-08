@@ -26,6 +26,7 @@ _PREFIXES = dict(
     prediction_prefix="prediction:crypto:5m",
     simulation_prefix="simulation:crypto:5m",
     strategy_prefix="strategy:crypto:5m",
+    execution_prefix="execution:crypto:5m",
 )
 
 
@@ -45,6 +46,12 @@ def _populate(kv: FakeKV, *, feature_end: int = _TS, artifacts_end: int = _TS) -
         kv.set_json(
             key_builder(prefix, "BTCUSDT"), {"symbol": "BTCUSDT", "window_end_ms": artifacts_end}
         )
+    from stream.execution import execution_key
+
+    kv.set_json(
+        execution_key("execution:crypto:5m", "BTCUSDT"),
+        {"symbol": "BTCUSDT", "window_end_ms": artifacts_end},
+    )
 
 
 def _by_name(stages: list[dict], symbol: str) -> dict[str, dict]:
@@ -59,7 +66,7 @@ def test_summary_all_stages_healthy() -> None:
 
     assert summary["healthy"] is True
     by_name = _by_name(summary["stages"], "BTCUSDT")
-    assert set(by_name) == {"produce", "features", "predict", "simulate", "strategy"}
+    assert set(by_name) == {"produce", "features", "predict", "simulate", "strategy", "execute"}
     assert all(by_name[n]["status"] == "healthy" for n in by_name)
     assert by_name["features"]["age_seconds"] == 0.0
     assert by_name["predict"]["age_seconds"] == 0.0
@@ -91,6 +98,7 @@ def test_summary_marks_stale_downstream_artifact() -> None:
     assert by_name["predict"]["status"] == "stale"
     assert by_name["simulate"]["status"] == "stale"
     assert by_name["strategy"]["status"] == "stale"
+    assert by_name["execute"]["status"] == "stale"
     assert by_name["predict"]["age_seconds"] == 1_800.0  # 30 minutes, in seconds
 
 
@@ -116,7 +124,7 @@ def test_health_summary_endpoint_reads_redis(monkeypatch) -> None:
     assert body["healthy"] is True
     assert body["threshold_seconds"] == _THRESHOLD
     btc = _by_name(body["stages"], "BTCUSDT")
-    assert set(btc) == {"produce", "features", "predict", "simulate", "strategy"}
+    assert set(btc) == {"produce", "features", "predict", "simulate", "strategy", "execute"}
 
 
 def test_health_summary_endpoint_disabled_without_stream(monkeypatch) -> None:

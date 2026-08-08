@@ -3,7 +3,7 @@ DBT := cd dbt && uv run dbt
 # dbt reads profiles/dbt_project from the dbt/ dir; credentials come from ./.env
 ENV := set -a; . ./.env; set +a;
 
-.PHONY: setup lint test check dbt-setup dbt-deps dbt-debug dbt-run dbt-parse bootstrap ping ingest ingest-macro ingest-fundamentals api ui-setup ui stream-infra stream-topics stream-flink-submit stream-flink-status stream-producer stream-materializer stream-predictor stream-simulator stream-seed
+.PHONY: setup lint test check dbt-setup dbt-deps dbt-debug dbt-run dbt-parse bootstrap ping ingest ingest-macro ingest-fundamentals api ui-setup ui stream-infra stream-topics stream-flink-submit stream-flink-status stream-producer stream-materializer stream-predictor stream-simulator stream-execution stream-seed
 
 ## Environment ────────────────────────────────────────────────────────────────
 
@@ -95,6 +95,9 @@ stream-predictor: ## Train the online model + emit conformal predictions to Redi
 
 stream-simulator: ## Run the Monte Carlo forward simulator to Redis
 	$(ENV) $(PYTHON) python -m stream.simulation
+
+stream-execution: ## Run the paper-execution engine (fills, slippage, fees, ledger) to Redis
+	$(ENV) $(PYTHON) python -m stream.execution
 
 stream-seed: ## Publish synthetic demo bars (fast E2E without waiting on Binance)
 	$(ENV) $(PYTHON) python -m scripts.seed_stream_demo

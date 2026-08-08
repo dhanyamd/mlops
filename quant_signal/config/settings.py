@@ -212,6 +212,28 @@ class Settings(BaseSettings):
     # Taker cost charged per position flip against the strategy (5bps default).
     stream_gate_taker_cost: float = 0.0005
 
+    # ── Paper execution layer (M3.6): simulated fills on real signals ────────
+    # The execution simulator turns the predictor's realized directions into
+    # filled trades: market order at the *next* window's close (no lookahead),
+    # fixed-bps slippage on both legs, taker fee on entry and exit, and a fill
+    # ledger. Deterministic by construction — fills are next-close + fixed bps,
+    # so there is no PRNG to seed; ``window_end_ms`` is echoed for audit.
+    stream_redis_execution_prefix: str = "execution:crypto:5m"
+    # 5m window cadence in ms — the fill/exit rhythm of the paper book (must
+    # mirror the Flink 5m feature windows; configurable so nothing is baked in).
+    stream_window_ms: int = 300_000
+    # Notional deployed per trade (USD) — a fixed-size paper book.
+    stream_execution_notional_usd: float = 1000.0
+    # Pessimistic market-fill slippage in bps (pay the spread's adverse side).
+    stream_execution_slippage_bps: float = 2.0
+    # Taker fee in bps (Binance-style), charged on both entry and exit.
+    stream_execution_taker_fee_bps: float = 10.0
+    # Fill-ledger cap kept per symbol (older fills are trimmed for the UI).
+    stream_execution_ledger_maxlen: int = 50
+    # Max closed trades per symbol before new entries halt (book keeps marking
+    # to market and closing the open position — no more new risk).
+    stream_execution_max_trades: int = 100
+
     @field_validator("snowflake_account")
     @classmethod
     def _validate_account(cls, value: str) -> str:
