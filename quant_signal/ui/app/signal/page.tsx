@@ -18,6 +18,7 @@ import { LiveTape } from "@/components/LiveTape";
 import { NextWindowCountdown } from "@/components/NextWindowCountdown";
 import { PathDrawIn } from "@/components/PathDrawIn";
 import { LiveBadge, PipelineHealth } from "@/components/PipelineHealth";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { ProbSurface3D } from "@/components/ProbSurface3D";
 import { RealizedReturns } from "@/components/RealizedReturns";
 import { Select } from "@/components/Select";
@@ -557,7 +558,7 @@ export default function SignalPage() {
         <Card title="Monte Carlo" subtitle="10,000 paths · geometric Brownian motion">
           {sim ? <McGauge simulation={sim} /> : <p className="py-12 text-center text-sm text-zinc-500">Warming up — needs a few realized windows to calibrate volatility.</p>}
         </Card>
-        <Card title="Risk" subtitle="per-window, horizon-{horizon} risk stats">
+        <Card title="Risk" subtitle={`per-window, horizon ${sim?.horizon_steps ?? 12}×5m risk stats`}>
           {sim ? (
             <div className="grid grid-cols-2 gap-3">
               <Stat label="base price" value={sim.base_price.toLocaleString(undefined, { maximumFractionDigits: 0 })} />
@@ -582,7 +583,9 @@ export default function SignalPage() {
             }
           >
             {sim?.surface_grid ? (
-              <ProbSurface3D surface={sim.surface_grid} basePrice={sim.base_price} height={300} />
+              <ErrorBoundary fallback={<p className="py-12 text-center text-sm text-zinc-500">WebGL unavailable — 2D fan above still rendering.</p>}>
+                <ProbSurface3D surface={sim.surface_grid} basePrice={sim.base_price} height={300} />
+              </ErrorBoundary>
             ) : (
               <p className="py-12 text-center text-sm text-zinc-500">Warming up…</p>
             )}

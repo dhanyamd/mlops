@@ -1,6 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  allowedDevOrigins: ["127.0.0.1", "localhost"],
   async rewrites() {
     // Proxy all /api/* calls to the FastAPI backend during development. Keeps
     // the browser same-origin (no CORS at all); the API also allows :3000 for
