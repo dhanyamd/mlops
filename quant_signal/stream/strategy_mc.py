@@ -102,21 +102,12 @@ class StrategyMonteCarlo:
             return {"grid": [], "wr_axis": [], "rr_axis": [], "ev": 0.0}
 
         # Calibrate fixed edge: mean and std of realized returns
-        win_mask = returns > 0
         loss_mask = returns <= 0
-        avg_win = float(np.mean(returns[win_mask])) if win_mask.any() else 0.01
         avg_loss = abs(float(np.mean(returns[loss_mask]))) if loss_mask.any() else 0.01
         base_ev = float(np.mean(returns))  # daily edge held constant
 
-        # Sweep win rates from 40% → 80%, solve for R to hold EV constant
-        wr_values = np.linspace(0.40, 0.80, sweep_cols)
-        rr_values = []
-        for wr in wr_values:
-            # EV = wr * avg_win_sweep - (1-wr) * avg_loss_sweep
-            # Hold base_ev. If avg_loss is the "unit", R = avg_win / avg_loss
-            # wr*R - (1-wr)*1 = base_ev / avg_loss_unit
-            r = (base_ev / avg_loss + (1 - wr)) / wr if wr > 0 and avg_loss > 0 else 1.0
-            rr_values.append(round(float(r), 3))
+        # Sweep R:R values across realistic trading geometries
+        rr_values = [0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0]
 
         rng = np.random.default_rng(self._seed)
 
@@ -152,14 +143,6 @@ class StrategyMonteCarlo:
             "rr_axis": [round(float(r), 3) for r in rr_values],
             "ev": round(base_ev, 6),
         }
-        if self._target is not None:
-            hit_target = np.max(steps, axis=1) >= (1.0 + self._target)
-        else:
-            hit_target = steps[:, -1] >= 1.0
-        passed = never_broke & hit_target
-        busted = ~never_broke
-        neutral = never_broke & ~hit_target
-        return passed, busted, neutral
 
     def validate(self, equity: list[float]) -> dict | None:
         """Full validation payload from an equity curve, or None if too short."""

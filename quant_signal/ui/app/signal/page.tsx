@@ -19,11 +19,12 @@ import { NextWindowCountdown } from "@/components/NextWindowCountdown";
 import { PathDrawIn } from "@/components/PathDrawIn";
 import { LiveBadge, PipelineHealth } from "@/components/PipelineHealth";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { GeometryOptimizer } from "@/components/GeometryOptimizer";
 import { ProbSurface3D } from "@/components/ProbSurface3D";
 import { RealizedReturns } from "@/components/RealizedReturns";
 import { Select } from "@/components/Select";
 import { StrategyFan } from "@/components/StrategyFan";
-import { api, type FeatureWindow, type Prediction, type Simulation, type Strategy, type Validation } from "@/lib/api";
+import { api, type FeatureWindow, type GeometryGrid, type Prediction, type Simulation, type Strategy, type Validation } from "@/lib/api";
 import { useQuery } from "@/lib/useQuery";
 
 const POLL_MS = 15000;
@@ -322,7 +323,7 @@ function DrawdownHistogram({ validation }: { validation: Validation }) {
   );
 }
 
-function ValidationPanel({ validation }: { validation: Validation }) {
+function ValidationPanel({ validation, geometry }: { validation: Validation; geometry: GeometryGrid | null }) {
   const rulePct = pct(validation.max_drawdown_rule);
   const targetPct = validation.target == null ? "—" : pct(validation.target);
   const ret = validation.expected_return;
@@ -363,7 +364,7 @@ function ValidationPanel({ validation }: { validation: Validation }) {
         <Card title="Max drawdown" subtitle={`distribution of worst peak-to-trough · rule ${rulePct}`}>
           <DrawdownHistogram validation={validation} />
         </Card>
-      </div>
+       </div>
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-5">
         <Stat
           label="expected return"
@@ -375,6 +376,12 @@ function ValidationPanel({ validation }: { validation: Validation }) {
         <Stat label="best 10% terminal" value={`+${pct(validation.best10_terminal - 1)}`} tone="text-emerald-500" />
         <Stat label="worst 10% terminal" value={pct(validation.worst10_terminal - 1)} tone="text-red-500" />
       </div>
+      <Card
+        title="Geometry optimizer"
+        subtitle="pass probability across R:R configurations · same edge, different shape"
+      >
+        <GeometryOptimizer grid={geometry} height={320} />
+      </Card>
     </div>
   );
 }
@@ -499,15 +506,23 @@ export default function SignalPage() {
   const strategy = useQuery([symbol, tick], () => api.strategy(symbol));
   const features = useQuery([symbol, tick], () => api.features(symbol, 12));
   const validation = useQuery([symbol, tick], () => api.validation(symbol));
+  const geometry = useQuery(["geometry", symbol, tick], () => api.geometry(symbol));
   const health = useQuery([tick], () => api.healthSummary());
 
   const error =
-    prediction.error ?? simulation.error ?? strategy.error ?? features.error ?? validation.error ?? health.error;
+    prediction.error ??
+    simulation.error ??
+    strategy.error ??
+    features.error ??
+    validation.error ??
+    geometry.error ??
+    health.error;
   const pred = prediction.data?.prediction ?? null;
   const sim = simulation.data?.simulation ?? null;
   const strat = strategy.data?.strategy ?? null;
   const feat = features.data?.features ?? null;
   const val = validation.data?.validation ?? null;
+  const geo = geometry.data?.grid ?? null;
   const lastUpdated = pred?.updated_at ?? strat?.updated_at ?? null;
 
   return (
@@ -654,7 +669,7 @@ export default function SignalPage() {
       </div>
 
       {val ? (
-        <ValidationPanel validation={val} />
+        <ValidationPanel validation={val} geometry={geo} />
       ) : (
         <Card title="Strategy validation" subtitle="QuantPad-style pass probability">
           <p className="py-12 text-center text-sm text-zinc-500">

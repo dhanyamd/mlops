@@ -150,6 +150,13 @@ export type HealthSummary = {
   stages: HealthStage[];
 };
 
+export type GeometryGrid = {
+  grid: number[][];
+  wr_axis: number[];
+  rr_axis: number[];
+  ev: number;
+};
+
 export type FeatureWindow = {
   symbol: string;
   window_start_ms: number;
@@ -221,4 +228,8 @@ export const api = {
       `/api/market/features/${encodeURIComponent(symbol)}?limit=${limit}`
     ),
   healthSummary: () => get<HealthSummary>("/api/market/health/summary"),
+  geometry: (symbol: string) =>
+    get<{ symbol: string; enabled: boolean; grid: GeometryGrid | null }>(
+      `/api/market/validation/${encodeURIComponent(symbol)}/geometry`
+    ),
 };
