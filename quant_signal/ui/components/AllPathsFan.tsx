@@ -7,6 +7,7 @@ type AllPathsFanProps = {
   percentiles: Record<string, number[]>;
   basePrice: number;
   height?: number;
+  animate?: boolean;
 };
 
 const BAND_ORDER: [string, string, string][] = [
@@ -26,6 +27,7 @@ export function AllPathsFan({
   percentiles,
   basePrice,
   height = 280,
+  animate = true,
 }: AllPathsFanProps) {
   const ref = useRef<HTMLCanvasElement>(null);
 
@@ -64,73 +66,99 @@ export function AllPathsFan({
     const x = (i: number) => 8 + (i / steps) * (w() - 16);
     const y = (v: number) => 10 + (1 - (v - minPrice) / (maxPrice - minPrice)) * (h() - 20);
 
-    ctx.clearRect(0, 0, w(), h());
+    let frame = 0;
+    const totalFrames = animate ? 45 : 1;
 
-    // base price reference
-    ctx.strokeStyle = "rgba(128,128,128,0.15)";
-    ctx.lineWidth = 1;
-    ctx.setLineDash([3, 4]);
-    ctx.beginPath();
-    ctx.moveTo(0, y(basePrice));
-    ctx.lineTo(w(), y(basePrice));
-    ctx.stroke();
-    ctx.setLineDash([]);
+    const draw = () => {
+      ctx.clearRect(0, 0, w(), h());
 
-    // percentile bands
-    for (const [loKey, hiKey, fill] of BAND_ORDER) {
-      const lo = percentiles[loKey];
-      const hi = percentiles[hiKey];
-      if (!lo || !hi) continue;
-      ctx.fillStyle = fill;
+      // base price reference
+      ctx.strokeStyle = "rgba(128,128,128,0.15)";
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 4]);
       ctx.beginPath();
-      ctx.moveTo(x(0), y(lo[0]));
-      for (let i = 1; i <= steps; i++) ctx.lineTo(x(i), y(lo[i]));
-      for (let i = steps; i >= 0; i--) ctx.lineTo(x(i), y(hi[i]));
-      ctx.closePath();
-      ctx.fill();
-    }
-
-    // all raw paths, faint
-    ctx.lineWidth = 1;
-    for (const p of paths) {
-      ctx.strokeStyle = "rgba(96,165,250,0.16)";
-      ctx.beginPath();
-      for (let i = 0; i <= steps; i++) {
-        const px = x(i);
-        const py = y(p[i]);
-        if (i === 0) ctx.moveTo(px, py);
-        else ctx.lineTo(px, py);
-      }
+      ctx.moveTo(0, y(basePrice));
+      ctx.lineTo(w(), y(basePrice));
       ctx.stroke();
-    }
+      ctx.setLineDash([]);
 
-    // median
-    const median = percentiles["50"];
-    if (median) {
-      ctx.strokeStyle = "rgba(251,113,133,0.95)";
-      ctx.lineWidth = 1.8;
-      ctx.beginPath();
-      for (let i = 0; i <= steps; i++) {
-        const px = x(i);
-        const py = y(median[i]);
-        if (i === 0) ctx.moveTo(px, py);
-        else ctx.lineTo(px, py);
+      // percentile bands
+      for (const [loKey, hiKey, fill] of BAND_ORDER) {
+        const lo = percentiles[loKey];
+        const hi = percentiles[hiKey];
+        if (!lo || !hi) continue;
+        ctx.fillStyle = fill;
+        ctx.beginPath();
+        const frac = animate ? Math.min(1, frame / totalFrames) : 1;
+        const drawSteps = Math.ceil(frac * (steps + 1));
+        ctx.moveTo(x(0), y(lo[0]));
+        for (let i = 1; i < drawSteps; i++) ctx.lineTo(x(i), y(lo[i]));
+        ctx.lineTo(x(drawSteps - 1), y(hi[drawSteps - 1]));
+        for (let i = drawSteps - 1; i >= 0; i--) ctx.lineTo(x(i), y(hi[i]));
+        ctx.closePath();
+        ctx.fill();
       }
-      ctx.stroke();
-    }
 
-    ctx.fillStyle = "rgba(161,161,170,0.9)";
-    ctx.font = "11px ui-monospace, SFMono-Regular, Menlo, monospace";
-    ctx.fillText(
-      `${paths.length} paths · bands 10–90 / 25–75 · median`,
-      8,
-      h() - 8
-    );
+      // all raw paths, drawn progressively
+      ctx.lineWidth = 1;
+      const frac = animate ? Math.min(1, frame / totalFrames) : 1;
+      const drawPaths = Math.min(paths.length, Math.ceil(frac * paths.length));
+      for (let pi = 0; pi < drawPaths; pi++) {
+        const p = paths[pi];
+        ctx.strokeStyle = `rgba(59,130,246,${frac >= 1 ? 0.16 : 0.24})`;
+        ctx.beginPath();
+        const pathSteps = Math.ceil(frac * (steps + 1));
+        for (let i = 0; i < pathSteps; i++) {
+          const px = x(i);
+          const py = y(p[i]);
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        }
+        ctx.stroke();
+      }
+
+      // median (draw last so it's always visible)
+      const median = percentiles["50"];
+      if (median) {
+        ctx.strokeStyle = "rgba(251,113,133,0.95)";
+        ctx.lineWidth = 1.8;
+        ctx.beginPath();
+        for (let i = 0; i <= steps; i++) {
+          const px = x(i);
+          const py = y(median[i]);
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        }
+        ctx.stroke();
+      }
+
+      ctx.fillStyle = "rgba(161,161,170,0.9)";
+      ctx.font = "11px ui-monospace, SFMono-Regular, Menlo, monospace";
+      ctx.fillText(
+        `${paths.length} paths · bands 10–90 / 25–75 · median`,
+        8,
+        h() - 8
+      );
+
+      frame++;
+      if (frame <= totalFrames) {
+        requestAnimationFrame(draw);
+      } else if (animate) {
+        // idle pulse: re-draw every ~2s with subtle median glow
+        setTimeout(() => (frame = 1), 2000);
+      }
+    };
+
+    if (animate) requestAnimationFrame(draw);
+    else draw();
 
     const onResize = () => layout();
     window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, [paths, percentiles, basePrice]);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    };
+  }, [paths, percentiles, basePrice, animate]);
 
   return (
     <div style={{ height }} className="w-full">
