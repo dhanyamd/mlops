@@ -13,11 +13,13 @@ import {
   YAxis,
 } from "recharts";
 import { Card } from "@/components/Card";
-import { EfficiencyCloud } from "@/components/EfficiencyCloud";
-import { FanChart } from "@/components/FanChart";
+import { AllPathsFan } from "@/components/AllPathsFan";
+import { LiveTape } from "@/components/LiveTape";
+import { NextWindowCountdown } from "@/components/NextWindowCountdown";
 import { PathDrawIn } from "@/components/PathDrawIn";
 import { LiveBadge, PipelineHealth } from "@/components/PipelineHealth";
 import { ProbSurface3D } from "@/components/ProbSurface3D";
+import { RealizedReturns } from "@/components/RealizedReturns";
 import { Select } from "@/components/Select";
 import { StrategyFan } from "@/components/StrategyFan";
 import { api, type FeatureWindow, type Prediction, type Simulation, type Strategy, type Validation } from "@/lib/api";
@@ -350,12 +352,6 @@ function ValidationPanel({ validation }: { validation: Validation }) {
         </div>
       </div>
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <Card
-          title="Efficiency cloud"
-          subtitle={`pain vs. gain across futures · ${validation.sample_paths?.length ?? 0} paths shown`}
-        >
-          <EfficiencyCloud validation={validation} height={280} />
-        </Card>
         <div className="lg:col-span-2">
           <Card title="Terminal outcomes" subtitle="final equity across futures, colored by verdict">
             <OutcomeHistogram validation={validation} />
@@ -532,7 +528,9 @@ export default function SignalPage() {
           />
           <div className="text-right font-mono text-xs text-zinc-500 dark:text-zinc-400">
             <div>{lastUpdated ? new Date(lastUpdated).toLocaleTimeString() : "—"}</div>
-            <div className="text-zinc-400 dark:text-zinc-600">updates every 5m</div>
+            <div className="text-zinc-400 dark:text-zinc-600">
+              updates every 5m · <NextWindowCountdown />
+            </div>
           </div>
         </div>
       </div>
@@ -544,6 +542,13 @@ export default function SignalPage() {
       ) : null}
 
       <PipelineHealth summary={health.data} symbol={symbol} />
+
+      <Card
+        title="Live minute tape"
+        subtitle="raw Binance 1m bars straight off the Kafka stream · re-forms every ~20s, independent of the 5m windows below"
+      >
+        <LiveTape symbol={symbol} height={200} />
+      </Card>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <Card title="Signal" subtitle={pred ? `${pred.symbol} · ${pred.direction}` : "warming up"}>
@@ -598,18 +603,18 @@ export default function SignalPage() {
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2">
           <Card
-            title="Forward fan chart"
+            title="All simulated futures"
             subtitle={
               sim
-                ? `${sim.n_paths.toLocaleString()} simulated paths · percentile band 10–25–50–75–90`
-                : "Monte Carlo percentile fan"
+                ? `${(sim.sample_paths?.length ?? 0).toLocaleString()} raw paths · percentile bands 10–90 / 25–75 · median`
+                : "Monte Carlo all-paths fan"
             }
           >
-            {sim ? (
-              <FanChart
+            {sim && sim.sample_paths?.length ? (
+              <AllPathsFan
+                paths={sim.sample_paths}
                 percentiles={sim.percentiles}
-                medianPath={sim.median_path}
-                horizonSteps={sim.horizon_steps}
+                basePrice={sim.base_price}
                 height={280}
               />
             ) : (
@@ -628,9 +633,21 @@ export default function SignalPage() {
             {strat ? <PnLStrip strategy={strat} /> : <p className="py-12 text-center text-sm text-zinc-500">Warming up — equity compounds from realized signals.</p>}
           </Card>
         </div>
-        <Card title="Latest window features" subtitle="Flink 5m aggregates from Redis">
-          {feat ? <FeaturePanel features={feat} /> : <p className="py-12 text-center text-sm text-zinc-500">No feature windows yet.</p>}
-        </Card>
+        <div className="space-y-6">
+          <Card title="Latest window features" subtitle="Flink 5m aggregates from Redis">
+            {feat ? <FeaturePanel features={feat} /> : <p className="py-12 text-center text-sm text-zinc-500">No feature windows yet.</p>}
+          </Card>
+          <Card
+            title="Realized 5m returns"
+            subtitle="actual moves each window — the market the model is reacting to"
+          >
+            {feat && feat.length >= 2 ? (
+              <RealizedReturns features={feat} height={200} />
+            ) : (
+              <p className="py-12 text-center text-sm text-zinc-500">Need at least two feature windows.</p>
+            )}
+          </Card>
+        </div>
       </div>
 
       {val ? (
