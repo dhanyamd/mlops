@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as echarts from "echarts/core";
 import { Bar3DChart } from "echarts-gl/charts";
 import { Grid3DComponent } from "echarts-gl/components";
@@ -39,8 +39,15 @@ export function ProbSurface3D({
   const ref = useRef<HTMLDivElement>(null);
   const chartRef = useRef<echarts.ECharts | null>(null);
 
+  const [hasGl] = useState(() => {
+    if (typeof window === "undefined") return false;
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("webgl") ?? canvas.getContext("webgl2");
+    return !!ctx;
+  });
+
   useEffect(() => {
-    if (!ref.current) return;
+    if (!hasGl || !ref.current) return;
     const chart = echarts.init(ref.current);
     chartRef.current = chart;
     const onResize = () => chart.resize();
@@ -50,7 +57,7 @@ export function ProbSurface3D({
       chart.dispose();
       chartRef.current = null;
     };
-  }, []);
+  }, [hasGl]);
 
   useEffect(() => {
     const chart = chartRef.current;
@@ -137,13 +144,21 @@ export function ProbSurface3D({
 
   return (
     <div className="w-full">
-      <div ref={ref} style={{ height }} className="w-full" />
-      <div className="mt-1 flex items-center justify-between text-[11px] text-zinc-500 dark:text-zinc-400">
-        <span>
-          return density per forward step · base {basePrice.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-        </span>
-        <span className="font-mono">{surface.steps}×5m horizon</span>
-      </div>
+         {!hasGl ? (
+        <div className="py-12 text-center text-sm text-zinc-500" style={{ height }}>
+          WebGL unavailable in this browser context
+        </div>
+      ) : (
+        <>
+          <div ref={ref} style={{ height }} className="w-full" />
+          <div className="mt-1 flex items-center justify-between text-[11px] text-zinc-500 dark:text-zinc-400">
+            <span>
+              return density per forward step · base {basePrice.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+            </span>
+            <span className="font-mono">{surface.steps}×5m horizon</span>
+          </div>
+        </>
+      )}
     </div>
   );
 }
