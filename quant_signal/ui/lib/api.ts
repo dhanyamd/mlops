@@ -150,11 +150,19 @@ export type HealthSummary = {
   stages: HealthStage[];
 };
 
+export type EdgeSweep = {
+  edges_bps: number[];
+  pass: number[];
+  current_edge_bps: number;
+};
+
 export type GeometryGrid = {
   grid: number[][];
   wr_axis: number[];
   rr_axis: number[];
   ev: number;
+  sigma?: number;
+  edge_sweep?: EdgeSweep;
 };
 
 export type FeatureWindow = {

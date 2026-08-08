@@ -29,13 +29,18 @@ function fmtPct(v: number) {
  * QuantPad-style equity fan: percentile bands with the actual simulated
  * futures overlaid as outcome-colored thin lines (green = passed the prop-firm
  * rules, red = busted on max drawdown, gray = survived but missed the target),
- * plus the red max-drawdown bust line and green profit-target line.
+ * plus the red max-drawdown bust line and green profit-target line. When a
+ * realized equity curve is passed, it is drawn as a solid cyan line on the same
+ * step grid so the viewer sees where the live strategy currently sits inside
+ * the simulated fan (CrossTrade/Strateda equity-band overlay pattern).
  */
 export function StrategyFan({
   validation,
+  realized,
   height = 320,
 }: {
   validation: Validation;
+  realized?: number[];
   height?: number;
 }) {
   const steps = validation.equity_fan["50"].length;
@@ -48,6 +53,7 @@ export function StrategyFan({
   if (hiRef != null) values.push(hiRef);
   for (const k of ["10", "25", "50", "75", "90"]) values.push(...validation.equity_fan[k]);
   for (const s of samples) values.push(...s.equity);
+  if (realized && realized.length >= steps) values.push(...realized.slice(0, steps));
 
   let lo = Math.min(...values);
   let hi = Math.max(...values);
@@ -64,6 +70,7 @@ export function StrategyFan({
     row.p90 = validation.equity_fan["90"][step];
     row.outer = row.p90 - row.p10;
     row.inner = row.p75 - row.p25;
+    if (realized && realized.length > step) row.realized = realized[step];
     samples.forEach((s, i) => {
       row[`s${i}`] = s.equity[step];
     });
@@ -143,6 +150,16 @@ export function StrategyFan({
           <Area type="monotone" dataKey="p25" stackId="inner" stroke="none" fill="transparent" isAnimationActive={false} />
           <Area type="monotone" dataKey="inner" stackId="inner" stroke="none" fill="url(#vfan-inner)" isAnimationActive={false} />
           <Area type="monotone" dataKey="p50" stroke="#3b82f6" strokeWidth={2} fill="none" dot={false} isAnimationActive={false} />
+          {realized && (
+            <Line
+              type="monotone"
+              dataKey="realized"
+              stroke="#06b6d4"
+              strokeWidth={2}
+              dot={false}
+              isAnimationActive={false}
+            />
+          )}
         </AreaChart>
       </ResponsiveContainer>
     </div>

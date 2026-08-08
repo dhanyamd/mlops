@@ -164,6 +164,10 @@ class Settings(BaseSettings):
     stream_simulation_paths: int = 10_000
     stream_simulation_horizon_steps: int = 12
     stream_simulation_vol_windows: int = 40
+    # MLE drift toggle: when true, mu = mean(log returns) + sigma^2/2 (MLE for
+    # GBM per-5m log returns), so the median fan path and P(up) track the real
+    # trailing trend instead of hovering at 50% under a driftless martingale.
+    stream_simulation_drift: bool = True
     # Raw paths shipped to the UI for the all-paths fan (thin canvas lines);
     # percentile statistics always use *all* paths — this is purely how many
     # strokes the browser renders per window.

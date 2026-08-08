@@ -323,7 +323,7 @@ function DrawdownHistogram({ validation }: { validation: Validation }) {
   );
 }
 
-function ValidationPanel({ validation, geometry }: { validation: Validation; geometry: GeometryGrid | null }) {
+function ValidationPanel({ validation, geometry, realized }: { validation: Validation; geometry: GeometryGrid | null; realized?: number[] }) {
   const rulePct = pct(validation.max_drawdown_rule);
   const targetPct = validation.target == null ? "—" : pct(validation.target);
   const ret = validation.expected_return;
@@ -338,7 +338,7 @@ function ValidationPanel({ validation, geometry }: { validation: Validation; geo
             title="Simulated futures"
             subtitle={`${validation.n_periods} realized windows resampled · ${rulePct} max DD · ${targetPct} target`}
           >
-            <StrategyFan validation={validation} height={280} />
+            <StrategyFan validation={validation} realized={realized} height={280} />
             <div className="mt-2 flex flex-wrap items-center justify-end gap-4 text-xs text-zinc-500 dark:text-zinc-400">
               <span className="flex items-center gap-1.5">
                 <span className="h-0.5 w-4 bg-emerald-500" /> passed (hit target, no DD breach)
@@ -349,6 +349,11 @@ function ValidationPanel({ validation, geometry }: { validation: Validation; geo
               <span className="flex items-center gap-1.5">
                 <span className="h-0.5 w-4 bg-zinc-500" /> neutral
               </span>
+              {realized && (
+                <span className="flex items-center gap-1.5">
+                  <span className="h-0.5 w-4 bg-cyan-500" /> realized equity
+                </span>
+              )}
             </div>
           </Card>
         </div>
@@ -669,7 +674,7 @@ export default function SignalPage() {
       </div>
 
       {val ? (
-        <ValidationPanel validation={val} geometry={geo} />
+        <ValidationPanel validation={val} geometry={geo} realized={strat?.strategy_equity} />
       ) : (
         <Card title="Strategy validation" subtitle="QuantPad-style pass probability">
           <p className="py-12 text-center text-sm text-zinc-500">

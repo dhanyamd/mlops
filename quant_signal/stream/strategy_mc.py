@@ -101,31 +101,34 @@ class StrategyMonteCarlo:
         if len(returns) < 2:
             return {"grid": [], "wr_axis": [], "rr_axis": [], "ev": 0.0}
 
-        # Calibrate fixed edge: mean and std of realized returns
+        base_ev = float(np.mean(returns))
         loss_mask = returns <= 0
         avg_loss = abs(float(np.mean(returns[loss_mask]))) if loss_mask.any() else 0.01
-        base_ev = float(np.mean(returns))  # daily edge held constant
+        sigma = float(np.std(returns))
 
-        # Sweep R:R values across realistic trading geometries
-        rr_values = [0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0]
-
-        rng = np.random.default_rng(self._seed)
-
-        # Build full grid: rows = R:R values, cols = win rates
-        # R:R axis sweeps across reasonable trading geometries
         rr_values = [0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0]
         wr_values = np.linspace(0.40, 0.80, sweep_cols)
         loss_unit = avg_loss if avg_loss > 0 else 0.01
+
+        rng = np.random.default_rng(self._seed)
+        n_trades = n_periods
 
         full_grid: list[list[float]] = []
         for rr in rr_values:
             row: list[float] = []
             for wr in wr_values:
-                # win_avg derived from R and loss_unit; daily EV = wr*win_avg - (1-wr)*loss_unit
-                win_avg = rr * loss_unit
-                outcomes = rng.random((n_sims, n_periods))
-                wins = outcomes < wr
-                path_returns = np.where(wins, win_avg, -loss_unit)
+                win_size = rr * loss_unit
+                denom = rr * wr - (1.0 - wr)
+                if denom <= 0:
+                    row.append(0.0)
+                    continue
+                loss_size = base_ev / denom
+                if loss_size <= 0:
+                    row.append(0.0)
+                    continue
+                draws = rng.random((n_sims, n_trades))
+                wins = draws < wr
+                path_returns = np.where(wins, win_size, -loss_size)
                 steps = np.concatenate(
                     [np.ones((n_sims, 1)), np.cumprod(1.0 + path_returns, axis=1)], axis=1
                 )
@@ -137,11 +140,59 @@ class StrategyMonteCarlo:
                 row.append(round(float(np.mean(passed)), 4))
             full_grid.append(row)
 
+        edge_sweep = self._edge_sweep(
+            sigma,
+            base_ev,
+            n_periods=n_trades,
+            target=target,
+            max_drawdown=max_drawdown,
+            n_sims=n_sims,
+        )
+
         return {
             "grid": full_grid,
             "wr_axis": [round(float(w), 3) for w in wr_values],
             "rr_axis": [round(float(r), 3) for r in rr_values],
             "ev": round(base_ev, 6),
+            "sigma": round(sigma, 6),
+            "edge_sweep": edge_sweep,
+        }
+
+    def _edge_sweep(
+        self,
+        sigma: float,
+        base_ev: float,
+        *,
+        n_periods: int,
+        target: float,
+        max_drawdown: float,
+        n_sims: int,
+    ) -> dict:
+        """Pass probability vs per-period edge (prop-ev style sweep).
+
+        Holds the strategy's realized volatility constant and sweeps the edge
+        from strongly negative to strongly positive, so you can see where the
+        challenge flips from 'no geometry passes' to 'passable' — the honest
+        answer for a currently-negative-EV strategy, which otherwise renders as
+        an all-zero heat grid.
+        """
+        edges_bps = np.linspace(-12, 12, 25)
+        passes: list[float] = []
+        rng = np.random.default_rng(self._seed)
+        for eb in edges_bps:
+            edge = eb / 10000
+            per = rng.normal(edge, sigma, size=(n_sims, n_periods))
+            steps = np.concatenate([np.ones((n_sims, 1)), np.cumprod(1.0 + per, axis=1)], axis=1)
+            peak = np.maximum.accumulate(steps, axis=1)
+            dd = (peak - steps) / peak
+            max_dd_sim = np.max(dd, axis=1)
+            hit_target = steps[:, -1] >= (1.0 + target)
+            passed = (max_dd_sim < max_drawdown) & hit_target
+            passes.append(round(float(np.mean(passed)), 4))
+        return {
+            "edges_bps": [round(float(e), 2) for e in edges_bps],
+            "pass": passes,
+            "current_edge_bps": round(base_ev * 10000, 3),
         }
 
     def validate(self, equity: list[float]) -> dict | None:

@@ -56,7 +56,11 @@ def simulation_key(prefix: str, symbol: str) -> str:
 
 
 class MonteCarloEngine:
-    """Deterministic-seed GBM path simulator with percentile + VaR/ES stats."""
+    """GBM Monte Carlo path simulator with percentile + VaR/ES stats.
+
+    Uses a time-based rolling seed derived from the feature window_end_ms so
+    each new 5m window produces reproducible paths unique to that window — no
+    fixed global seed that would make every window look identical."""
 
     def __init__(
         self,
@@ -75,10 +79,10 @@ class MonteCarloEngine:
         self._seed = seed
         self._sample_paths = sample_paths
 
-    def calibrate(self, closes: list[float]) -> tuple[float, float] | None:
-        """Per-step ``(mu, sigma)`` of log returns over the trailing windows.
+    def calibrate(self, closes):
+        """Per-step (mu, sigma) of log returns over the trailing windows.
 
-        Returns None when there aren't enough closes to estimate volatility.
+        Returns None when there are not enough closes to estimate volatility.
         """
         if len(closes) < 2:
             return None
@@ -90,27 +94,26 @@ class MonteCarloEngine:
         mu = (mean(tail) + sigma * sigma / 2) if self._drift else 0.0
         return mu, sigma
 
-    def paths(self, s0: float, mu: float, sigma: float) -> np.ndarray:
-        """``(horizon_steps + 1)`` × ``n_paths`` GBM price paths (S0 first).
+    def paths(self, s0: float, mu: float, sigma: float, seed: int | None = None) -> np.ndarray:
+        """(horizon_steps + 1) x n_paths GBM price paths (S0 first).
 
-        All paths are simulated in a single vectorized call (SIMD-parallel —
-        the same trick QuantPad's "10k parallel simulations" relies on), so
-        the whole fan chart costs microseconds rather than a Python loop.
+        Vectorized simulation of all paths in one numpy call.
         """
-        rng = np.random.default_rng(self._seed)
+        rng = np.random.default_rng(seed if seed is not None else self._seed)
         half_var = sigma * sigma / 2.0
         shocks = rng.normal(0.0, 1.0, size=(self._horizon_steps, self._n_paths))
         increments = np.exp((mu - half_var) + sigma * shocks)
         return s0 * np.vstack([np.ones(self._n_paths), np.cumprod(increments, axis=0)])
 
-    def forecast(self, closes: list[float]) -> dict | None:
+    def forecast(self, closes: list[float], window_end_ms: int | None = None) -> dict | None:
         """Full forecast payload from trailing closes, or None if uncalibrated."""
         calibrated = self.calibrate(closes)
         if calibrated is None:
             return None
         mu, sigma = calibrated
         s0 = closes[-1]
-        paths = self.paths(s0, mu, sigma)
+        seed = window_end_ms if window_end_ms is not None else self._seed
+        paths = self.paths(s0, mu, sigma, seed=seed)
 
         band_rows = np.percentile(paths, _PERCENTILES, axis=1)  # (5, steps)
         bands = {
@@ -191,11 +194,13 @@ def run(
     simulation_prefix: str,
 ) -> dict | None:
     """Forecast from the feature history and land it in the online store."""
-    payload = engine.forecast(_closes_from_features(features))
+    closes = _closes_from_features(features)
+    window_end_ms = features[-1].get("window_end_ms") if features else None
+    payload = engine.forecast(closes, window_end_ms=window_end_ms)
     if payload is None:
         return None
     payload["symbol"] = symbol
-    payload["window_end_ms"] = features[-1].get("window_end_ms") if features else None
+    payload["window_end_ms"] = window_end_ms
     payload["updated_at"] = _now_iso()
     kv.set_json(simulation_key(simulation_prefix, symbol), payload)
     return payload
@@ -208,7 +213,7 @@ def _now_iso() -> str:
 
 
 class SimulationConsumer:
-    """Consume the 5m feature stream and refresh the MC forecast per symbol."""
+    """Consume the 5-minute feature stream and refresh the MC forecast per symbol."""
 
     def __init__(
         self,
@@ -283,6 +288,7 @@ def main() -> None:
         n_paths=settings.stream_simulation_paths,
         horizon_steps=settings.stream_simulation_horizon_steps,
         vol_windows=settings.stream_simulation_vol_windows,
+        drift=settings.stream_simulation_drift,
         sample_paths=settings.stream_simulation_sample_paths,
     )
     from config.settings import csv_list
