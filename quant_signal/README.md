@@ -18,7 +18,10 @@ infrastructure.
 > Terminal renders the full Monte Carlo visualization stack: a forward fan
 > chart with the 10k-simulated path spaghetti (QuantPad "all paths"), an
 > outcome-colored equity fan, an efficiency-cloud pass-probability landscape
-> (pain vs. gain scatter), and terminal / drawdown distributions. No code is
+> (pain vs. gain scatter), and terminal / drawdown distributions. A **stream
+> watchdog** auto-heals a stalled Flink feature pipeline and a **pipeline-health
+> strip** (event-time, per-stage maturity) keeps the terminal honest about what
+> is actually fresh. No code is
 > hardcoded: every credential and connection value comes from the environment.
 
 ## Non-negotiables
@@ -78,13 +81,14 @@ quant_signal/
 │   ├── predictive_eval.py  # promotion gate: progressive validation + Deflated Sharpe
 │   ├── mlflow_tracking.py  # MLflow tracking for validation + gate runs (optional extra)
 │   ├── simulation.py       # Monte Carlo forward fan chart (percentiles, VaR/ES)
+│   ├── pipeline_health.py  # event-time per-stage freshness summary (health strip)
 │   ├── strategy_mc.py      # QuantPad-style strategy pass-probability bootstrap
 │   ├── bus.py              # MessageBus (KafkaBus / FakeBus for hermetic tests)
 │   ├── kv.py               # KVStore (RedisKV / FakeKV)
 │   ├── bars.py             # provider DataFrames → JSON bar payloads
 │   └── flink/              # Dockerfile + crypto_features.sql (5m event-time windows)
 ├── docker-compose.yml      # redpanda + redis + flink-jobmanager/taskmanager
-├── scripts/                # ping.py, run_dbt.py, pead_backtest.py, seed_stream_demo.py
+├── scripts/                # ping.py, run_dbt.py, pead_backtest.py, seed_stream_demo.py, stream_watchdog.py
 ├── ui/                     # Next.js dashboard (Market/Fundamentals/PEAD/...)
 ├── tests/                  # config + connection-param + API tests (no live DB)
 └── Makefile                # setup / lint / test / bootstrap / dbt / api / ui / stream-*
@@ -206,6 +210,22 @@ Notes:
 - The old M2 in-API poller is demo-grade; the standalone `stream-producer` +
   Kafka path is the production ingestion route. Streaming writes to Snowflake
   only best-effort today (Kafka → Snowflake via Snowpipe Streaming is planned).
+
+### Pipeline health + self-healing watchdog (observability)
+
+The live stack watches itself:
+
+- `GET /api/market/health/summary` reports per-stage freshness — produce /
+  features / predict / simulate / strategy — as true ages in seconds computed
+  from the live artifact timestamps in Redis. The Signal Terminal renders it as
+  a 6-stage LED strip (`stream/pipeline_health.py`).
+- `scripts/stream_watchdog.py` runs on a timer, detects a stalled pipeline
+  (window features falling behind raw bars), and with `--fix` restarts the
+  Flink jobmanager/taskmanager and resubmits the SQL job:
+  `make stream-watchdog` (or run directly with `--interval 60 --fix`).
+
+Both are hermetic-unit-tested (`tests/test_pipeline_health.py`,
+`tests/test_stream_watchdog.py`), including the ms-as-seconds unit regression.
 
 ### Prediction promotion gate (validation before trading)
 

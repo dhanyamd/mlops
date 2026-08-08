@@ -7,11 +7,11 @@ ENV := set -a; . ./.env; set +a;
 
 ## Environment ────────────────────────────────────────────────────────────────
 
-setup: ## Create venv + install runtime + dev deps
-	uv sync --extra dev
+setup: ## Create venv + install all extras (runtime, dev, dbt, api, spark, mlflow)
+	uv sync --all-extras
 
 dbt-setup: ## Install dbt-core + dbt-snowflake adapter (with dev tools)
-	uv sync --extra dev --extra dbt
+	uv sync --all-extras
 
 ## Quality gates ──────────────────────────────────────────────────────────────
 
@@ -50,8 +50,8 @@ ingest-fundamentals: ## Land REAL SEC EDGAR fundamentals (keyless, needs EDGAR_U
 features: ## Compute rolling/as-of features over BRONZE bars -> GOLD.FEATURES (no Java needed)
 	$(ENV) $(PYTHON) python flows/feature_engineering.py --source pandas
 
-features-spark: ## Same batch via PySpark (needs Java + the spark-snowflake connector)
-	$(ENV) $(PYTHON) --extra spark python flows/feature_engineering.py --source snowflake
+features-spark: ## Same batch via PySpark (needs Java 17+; connector JAR auto-fetched by Spark)
+	$(ENV) $(PYTHON) python flows/feature_engineering.py --source snowflake
 
 ## dbt ────────────────────────────────────────────────────────────────────────
 

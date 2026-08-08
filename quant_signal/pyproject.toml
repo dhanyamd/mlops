@@ -54,7 +54,7 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["config*", "db*", "ingest*", "api*", "scripts*"]
+include = ["config*", "db*", "ingest*", "flows*", "api*", "scripts*"]
 
 [tool.ruff]
 line-length = 100

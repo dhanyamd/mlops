@@ -28,6 +28,7 @@ every consumer see one stable schema regardless of how the batch ran.
 from __future__ import annotations
 
 import argparse
+import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -61,6 +62,11 @@ OUTPUT_COLUMNS = [
     "loaded_at",
 ]
 
+# spark-snowflake connector JAR (Maven artifact pulled via spark.jars.packages).
+# 3.2.1-spark_4.1 is the newest release with Spark 4.x support (Scala 2.13,
+# JDK 17+); verified to run on the Spark 4.2 wheel this project pins.
+SPARK_SNOWFLAKE_CONNECTOR = "net.snowflake:spark-snowflake_2.13:3.2.1-spark_4.1"
+
 
 def _read_bronze(client: "SnowflakeClient", schema: str) -> pd.DataFrame:
     """Union the BRONZE bar tables (equity + crypto) into one feature frame.
@@ -70,7 +76,7 @@ def _read_bronze(client: "SnowflakeClient", schema: str) -> pd.DataFrame:
     """
     return client.query_df(
         f'SELECT * FROM "{schema}".{BAR_TABLE} UNION ALL SELECT * FROM "{schema}".{CRYPTO_TABLE}'
-    )
+    ).rename(columns=str.lower)
 
 
 def _finalize(features: pd.DataFrame) -> pd.DataFrame:
@@ -102,7 +108,8 @@ def _pandas_run(schema: str, gold_schema: str, window: int) -> int:
 def _spark_run(schema: str, gold_schema: str, window: int) -> int:
     """Spark path: BRONZE via spark-snowflake, features via a grouped pandas UDF."""
     from pyspark.sql import SparkSession
-    from pyspark.sql.functions import current_timestamp, pandas_udf
+    from pyspark.sql import functions as F
+    from pyspark.sql.functions import current_timestamp
     from pyspark.sql.types import (
         DoubleType,
         StringType,
@@ -114,19 +121,36 @@ def _spark_run(schema: str, gold_schema: str, window: int) -> int:
     from flows.features import compute_features
 
     settings = get_settings()
-    snowflake_options = {
-        "sfUrl": f"https://{settings.snowflake_account}.snowflakecomputing.com",
-        "sfUser": settings.snowflake_user,
-        "sfPassword": settings.snowflake_password or "",
-        "sfDatabase": settings.snowflake_database,
-        "sfWarehouse": settings.snowflake_warehouse,
-        "sfRole": settings.snowflake_role,
-    }
+    key_file = settings.snowflake_private_key_file
+    if key_file is not None:
+        with open(key_file) as f:
+            pem = f.read()
+        # The connector expects the unencrypted PKCS8 DER key base64-encoded
+        # without the PEM armor — same key the Python connector loads from file.
+        pem_private_key = re.sub(r"-----BEGIN [^-]+-----|-----END [^-]+-----|\s", "", pem)
+        snowflake_options = {
+            "sfUrl": f"https://{settings.snowflake_account}.snowflakecomputing.com",
+            "sfUser": settings.snowflake_user,
+            "pem_private_key": pem_private_key,
+            "sfDatabase": settings.snowflake_database,
+            "sfWarehouse": settings.snowflake_warehouse,
+            "sfRole": settings.snowflake_role,
+        }
+    else:
+        snowflake_options = {
+            "sfUrl": f"https://{settings.snowflake_account}.snowflakecomputing.com",
+            "sfUser": settings.snowflake_user,
+            "sfPassword": settings.snowflake_password or "",
+            "sfDatabase": settings.snowflake_database,
+            "sfWarehouse": settings.snowflake_warehouse,
+            "sfRole": settings.snowflake_role,
+        }
 
     spark = (
         SparkSession.builder.appName("quant_signal_feature_engineering")
         .master("local[*]")
         .config("spark.sql.session.timeZone", "UTC")
+        .config("spark.jars.packages", SPARK_SNOWFLAKE_CONNECTOR)
         .getOrCreate()
     )
 
@@ -145,7 +169,10 @@ def _spark_run(schema: str, gold_schema: str, window: int) -> int:
             .option("dbtable", CRYPTO_TABLE)
             .load()
         )
-        bars = bars.unionByName(crypto).drop("provider", "loaded_at")
+        bars = bars.unionByName(crypto)
+        bars = bars.select([F.col(c).alias(c.lower()) for c in bars.columns]).drop(
+            "provider", "loaded_at"
+        )
 
         # Grouped-map pandas UDF output: OUTPUT_COLUMNS minus loaded_at (stamped
         # in Spark below, not in the UDF, so both paths produce identical rows).
@@ -162,12 +189,13 @@ def _spark_run(schema: str, gold_schema: str, window: int) -> int:
             ]
         )
 
-        @pandas_udf(out_schema)
         def _features_udf(group: pd.DataFrame) -> pd.DataFrame:
             return compute_features(group, window=window)[[c.name for c in out_schema.fields]]
 
         featured = (
-            bars.groupBy("symbol").apply(_features_udf).withColumn("loaded_at", current_timestamp())
+            bars.groupBy("symbol")
+            .applyInPandas(_features_udf, schema=out_schema)
+            .withColumn("loaded_at", current_timestamp())
         )
 
         featured.write.format("snowflake").options(**snowflake_options).option(

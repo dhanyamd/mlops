@@ -6,7 +6,7 @@ features topic stopped advancing for many hours while every downstream
 consumer kept serving the last window. Nothing surfaced — the API still
 returned 200s, so the dashboard just looked "same" until someone noticed.
 
-This watchdog measures staleness from *Binance event timestamps* (never the
+This watchdog measures staleness from *venue event timestamps* (never the
 host clock, which drifts on this machine):
 
     staleness = latest raw bar ts  −  latest feature window_end_ms

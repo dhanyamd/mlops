@@ -178,7 +178,20 @@ BinanceProducer → Redpanda (crypto.bars.raw) → Flink SQL 5m TUMBLE (checkpoi
   runs `dbt parse` on every PR (no Snowflake connection) and a secret-gated
   `dbt-build` job against an isolated `CI_*` schema (see
   `.github/workflows/quant-signal-ci.yml`). Prefect orchestration and Snowpipe
-  Streaming persistence are parked.
+  Streaming persistence are parked. **Verified end-to-end (2026-08-08)**:
+  both run modes read `BRONZE` and land `GOLD.FEATURES` (651k+ rows, 30
+  symbols) against the live trial account using key-pair JWT auth — the Spark
+  path via the connector's `pem_private_key` option, with the connector JAR
+  fetched at runtime by Spark.
+- **M3.6 — Pipeline health + self-healing watchdog (2026-08-08, DONE).**
+  `stream/pipeline_health.py` computes a per-stage health summary (produce /
+  features / predict / simulate / strategy) with true age in seconds per
+  artifact, served by `/api/market/health/summary` and rendered as a 6-stage
+  LED strip in the Signal Terminal. `scripts/stream_watchdog.py` runs on a
+  timer, detects a stalled pipeline (features falling behind raw bars), and
+  with `--fix` restarts the Flink jobmanager/taskmanager and resubmits the SQL
+  job — run it live with `make stream-watchdog`. Hermetic tests cover both,
+  including the ms-as-seconds unit regression.
 
 ## M4+ roadmap
 
@@ -265,7 +278,7 @@ and compute EPS-based surprises.
 
 ## Quality gates
 
-- `make check` = `ruff` + `pytest` (171 tests, offline — all network/DB mocked).
+- `make check` = `ruff` + `pytest` (182 tests, offline — all network/DB mocked).
 - `make dbt-parse` validates models/contracts without a Snowflake connection.
 - CI (`.github/workflows/quant-signal-ci.yml`) runs lint + test + dbt parse on
   every PR touching `quant_signal/`.
