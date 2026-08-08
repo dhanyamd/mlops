@@ -281,6 +281,43 @@ def market_validation(symbol: str, track: bool = Query(default=False)) -> dict:
     return {"symbol": symbol.upper(), "enabled": True, "validation": validation}
 
 
+@app.get("/api/market/validation/{symbol}/geometry")
+def market_validation_geometry(symbol: str) -> dict:
+    """Geometry Optimizer heat grid.
+
+    Holds the strategy's realized daily EV constant while sweeping win-rate × R:R
+    shape, showing pass-probability across 49 configurations. Research-backed
+    insight (PropSim/QuantPad): trailing-DD rules are path-dependent, so two
+    traders with identical edge can have 90% vs 10% pass rates.
+
+    """
+    kv = _kv()
+    if kv is None:
+        return {"symbol": symbol.upper(), "enabled": False, "grid": None}
+    strategy = kv.get_json(strategy_key(settings.stream_redis_strategy_prefix, symbol.upper()))
+    if not strategy or not strategy.get("strategy_equity"):
+        return {"symbol": symbol.upper(), "enabled": True, "grid": None}
+    from stream.strategy_mc import strategy_returns_from_equity
+
+    returns = strategy_returns_from_equity(strategy["strategy_equity"])
+    mc = StrategyMonteCarlo(
+        n_sims=settings.stream_validation_sims,
+        max_drawdown=settings.stream_validation_max_drawdown,
+        target=settings.stream_validation_target,
+        seed=settings.stream_validation_seed,
+    )
+    grid = mc.geometry_sweep(
+        returns=returns,
+        n_periods=len(returns),
+        target=settings.stream_validation_target,
+        max_drawdown=settings.stream_validation_max_drawdown,
+        sweep_rows=7,
+        sweep_cols=7,
+        n_sims=1000,
+    )
+    return {"symbol": symbol.upper(), "enabled": True, "grid": grid}
+
+
 @app.get("/api/market/gate/{symbol}")
 def market_gate(symbol: str, track: bool = Query(default=False)) -> dict:
     """Promotion-gate verdict for the symbol's online model.

@@ -75,6 +75,92 @@ class StrategyMonteCarlo:
         neutral = never_broke & ~hit_target
         return passed, busted, neutral
 
+    def geometry_sweep(
+        self,
+        returns: np.ndarray,
+        n_periods: int,
+        target: float,
+        max_drawdown: float,
+        sweep_rows: int = 7,
+        sweep_cols: int = 7,
+        n_sims: int = 1_000,
+    ) -> dict:
+        """Pass-probability heat grid across R:R configurations.
+
+        Holds the strategy's *expected daily return* constant while sweeping the
+        win-rate × R:R shape (research-backed insight from PropSim/QuantPad: path-
+        dependent trailing-DD rules make geometry matter more than edge):
+
+        - Each cell holds the daily EV constant: wr × avg_win + (1-wr) × avg_loss
+          is constant across the grid, so we only move probability mass around.
+        - Returns a heat grid of pass probabilities plus the win-rate/R:R for each
+          cell, so the UI can show exactly where a trader's geometry sits.
+
+        ``returns`` is the per-period realized returns (for calibrating avg size).
+        """
+        if len(returns) < 2:
+            return {"grid": [], "wr_axis": [], "rr_axis": [], "ev": 0.0}
+
+        # Calibrate fixed edge: mean and std of realized returns
+        win_mask = returns > 0
+        loss_mask = returns <= 0
+        avg_win = float(np.mean(returns[win_mask])) if win_mask.any() else 0.01
+        avg_loss = abs(float(np.mean(returns[loss_mask]))) if loss_mask.any() else 0.01
+        base_ev = float(np.mean(returns))  # daily edge held constant
+
+        # Sweep win rates from 40% → 80%, solve for R to hold EV constant
+        wr_values = np.linspace(0.40, 0.80, sweep_cols)
+        rr_values = []
+        for wr in wr_values:
+            # EV = wr * avg_win_sweep - (1-wr) * avg_loss_sweep
+            # Hold base_ev. If avg_loss is the "unit", R = avg_win / avg_loss
+            # wr*R - (1-wr)*1 = base_ev / avg_loss_unit
+            r = (base_ev / avg_loss + (1 - wr)) / wr if wr > 0 and avg_loss > 0 else 1.0
+            rr_values.append(round(float(r), 3))
+
+        rng = np.random.default_rng(self._seed)
+
+        # Build full grid: rows = R:R values, cols = win rates
+        # R:R axis sweeps across reasonable trading geometries
+        rr_values = [0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0]
+        wr_values = np.linspace(0.40, 0.80, sweep_cols)
+        loss_unit = avg_loss if avg_loss > 0 else 0.01
+
+        full_grid: list[list[float]] = []
+        for rr in rr_values:
+            row: list[float] = []
+            for wr in wr_values:
+                # win_avg derived from R and loss_unit; daily EV = wr*win_avg - (1-wr)*loss_unit
+                win_avg = rr * loss_unit
+                outcomes = rng.random((n_sims, n_periods))
+                wins = outcomes < wr
+                path_returns = np.where(wins, win_avg, -loss_unit)
+                steps = np.concatenate(
+                    [np.ones((n_sims, 1)), np.cumprod(1.0 + path_returns, axis=1)], axis=1
+                )
+                peak = np.maximum.accumulate(steps, axis=1)
+                dd = (peak - steps) / peak
+                max_dd_sim = np.max(dd, axis=1)
+                hit_target = steps[:, -1] >= (1.0 + target)
+                passed = (max_dd_sim < max_drawdown) & hit_target
+                row.append(round(float(np.mean(passed)), 4))
+            full_grid.append(row)
+
+        return {
+            "grid": full_grid,
+            "wr_axis": [round(float(w), 3) for w in wr_values],
+            "rr_axis": [round(float(r), 3) for r in rr_values],
+            "ev": round(base_ev, 6),
+        }
+        if self._target is not None:
+            hit_target = np.max(steps, axis=1) >= (1.0 + self._target)
+        else:
+            hit_target = steps[:, -1] >= 1.0
+        passed = never_broke & hit_target
+        busted = ~never_broke
+        neutral = never_broke & ~hit_target
+        return passed, busted, neutral
+
     def validate(self, equity: list[float]) -> dict | None:
         """Full validation payload from an equity curve, or None if too short."""
         returns = strategy_returns_from_equity(equity)
