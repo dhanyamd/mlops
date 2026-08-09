@@ -363,10 +363,16 @@ def test_demo_close_unfilled_keeps_position_and_retries() -> None:
 
 def test_execution_venue_settings_default_to_paper() -> None:
     """Out of the box the venue is paper and the demo keys are unset — the
-    honest, no-key default."""
-    from config.settings import get_settings
+    honest, no-key default. Built without the local ``.env`` so a developer's
+    live demo credentials in that file can't leak into the assertion."""
+    from config.settings import Settings
 
-    settings = get_settings()
+    settings = Settings(
+        _env_file=None,
+        snowflake_account="test",
+        snowflake_user="test",
+        snowflake_password="test",
+    )
     assert settings.stream_execution_venue == "paper"
     assert settings.bybit_demo_api_key is None
     assert settings.bybit_demo_api_secret is None

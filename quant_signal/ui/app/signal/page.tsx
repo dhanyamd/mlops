@@ -17,10 +17,9 @@ import { AllPathsFan } from "@/components/AllPathsFan";
 import { LiveTape } from "@/components/LiveTape";
 import { NextWindowCountdown } from "@/components/NextWindowCountdown";
 import { LiveBadge, PipelineHealth } from "@/components/PipelineHealth";
-import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { ExecutionPanel } from "@/components/ExecutionPanel";
 import { GeometryOptimizer } from "@/components/GeometryOptimizer";
-import { ProbSurface3D } from "@/components/ProbSurface3D";
+
 import { RealityCheck } from "@/components/RealityCheck";
 import { RealizedReturns } from "@/components/RealizedReturns";
 import { Select } from "@/components/Select";
@@ -746,29 +745,16 @@ export default function SignalPage() {
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2">
           <Card
-            title="Probability surface"
-            subtitle={
-              sim
-                ? `${simTag}return density per forward step · ${sim.n_paths.toLocaleString()} paths · base ${sim.base_price.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
-                : "Monte Carlo return density"
-            }
+            title="Realized 5m returns"
+            subtitle="actual moves each window — the market the model is reacting to"
           >
-            {sim?.surface_grid ? (
-              <ErrorBoundary fallback={<p className="py-12 text-center text-sm text-zinc-500">WebGL unavailable — 2D fan above still rendering.</p>}>
-                <ProbSurface3D surface={sim.surface_grid} basePrice={sim.base_price} height={300} />
-              </ErrorBoundary>
+            {feat && feat.length >= 2 ? (
+              <RealizedReturns features={feat} height={300} />
             ) : (
-              <p className="py-12 text-center text-sm text-zinc-500">Warming up…</p>
+              <p className="py-12 text-center text-sm text-zinc-500">Need at least two feature windows.</p>
             )}
           </Card>
         </div>
-        <Card title="Realized 5m returns" subtitle="actual moves each window — the market the model is reacting to">
-          {feat && feat.length >= 2 ? (
-            <RealizedReturns features={feat} height={300} />
-          ) : (
-            <p className="py-12 text-center text-sm text-zinc-500">Need at least two feature windows.</p>
-          )}
-        </Card>
       </div>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
@@ -834,7 +820,7 @@ export default function SignalPage() {
         />
       </Card>
 
-      <Card title="Live P&L vs buy-and-hold" subtitle={strat ? `${strat.n_windows} windows · ${strat.n_trades} trades` : "compounded from realized 5m signals"}>
+      <Card title="Model curve · no fees · point-in-time replay" subtitle={strat ? `${strat.n_windows} windows · ${strat.n_trades} trades` : "compounded from realized 5m signals"}>
         {strat ? <PnLStrip strategy={strat} /> : <p className="py-12 text-center text-sm text-zinc-500">Warming up — equity compounds from realized signals.</p>}
       </Card>
 

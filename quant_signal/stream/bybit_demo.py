@@ -11,8 +11,10 @@ Research-backed constraints (Bybit v5 Open API Demo docs; pybit issue #203):
   - ``pybit HTTP(demo=True)`` routes to ``api-demo.bybit.com`` and expects keys
     created under the *Demo* account; mainnet keys fail with ErrCode 10003.
   - WebSocket Trade is NOT supported on the demo venue, so fills are read back
-    over REST from the order response (``avgPrice`` / ``cumExecQty`` /
-    ``cumExecFee``) and reconciled against the open-position list each window.
+    over REST: ``place_order`` echoes only the ``orderId``, so each fill is
+    confirmed by polling ``get_order_history`` (``avgPrice`` / ``cumExecQty`` /
+    ``cumExecFee``/``cumFeeDetail``) and reconciled against the open-position
+    list each window.
   - USDT perpetuals (category "linear", one-way mode) support both LONG and
     SHORT — matching the paper engine's position model — with a lot-size step
     read from the instrument info (``lotSizeFilter.qtyStep``), never hardcoded.
@@ -24,6 +26,7 @@ than fabricating a fill, so the caller can skip the bar honestly.
 from __future__ import annotations
 
 import logging
+import time
 
 from pybit.unified_trading import HTTP
 
@@ -33,6 +36,31 @@ logger = logging.getLogger(__name__)
 # runtime via instruments-info; this is only the floor used if that call fails.
 _FALLBACK_QTY_STEP = 0.001
 _FALLBACK_MIN_QTY = 0.001
+
+# Fill confirmation: a demo ``place_order`` echoes only the ``orderId``, so
+# fills are read back from order history (Bybit v5 order creation is
+# asynchronous). Market/IOC orders fill at placement, so a short poll suffices;
+# if it is still not Filled we return None and the engine skips the bar.
+_FILL_POLLS = 6
+_FILL_POLL_INTERVAL_S = 0.4
+
+
+def _fill_fee(row: dict) -> float:
+    """Maker/taker fee on a linear order history record.
+
+    ``cumFeeDetail`` supersedes ``cumExecFee`` for linear/spot (Bybit v5 docs);
+    sum its coin values and fall back to ``cumExecFee`` when it is absent.
+    """
+    detail = row.get("cumFeeDetail")
+    if isinstance(detail, dict):
+        try:
+            return sum(float(v) for v in detail.values() if v)
+        except (TypeError, ValueError):
+            return 0.0
+    try:
+        return float(row.get("cumExecFee") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 class BybitDemoVenue:
@@ -123,7 +151,14 @@ class BybitDemoVenue:
         except Exception:
             logger.exception("bybit demo: open market order failed for %s %s", symbol, side)
             return None
-        return self._fill_from_order(result, qty)
+        if result.get("retCode") != 0:
+            logger.warning("bybit demo: open order rejected: %s", result.get("retMsg"))
+            return None
+        order_id = (result.get("result") or {}).get("orderId")
+        if not order_id:
+            logger.warning("bybit demo: open order returned no orderId; fill unconfirmable")
+            return None
+        return self._fill_from_order(symbol, order_id, qty)
 
     def close_market(self, symbol: str, side: str, qty: float) -> dict | None:
         """Market reduce-only order to close an open position. None when not
@@ -141,28 +176,64 @@ class BybitDemoVenue:
         except Exception:
             logger.exception("bybit demo: close market order failed for %s %s", symbol, side)
             return None
-        return self._fill_from_order(result, qty)
+        if result.get("retCode") != 0:
+            logger.warning("bybit demo: close order rejected: %s", result.get("retMsg"))
+            return None
+        order_id = (result.get("result") or {}).get("orderId")
+        if not order_id:
+            logger.warning("bybit demo: close order returned no orderId; fill unconfirmable")
+            return None
+        return self._fill_from_order(symbol, order_id, qty)
 
-    @staticmethod
-    def _fill_from_order(result: dict, qty: float) -> dict | None:
-        """Fill from a place-order response, or None if the market order did
-        not fully execute immediately (it may be resting/pending)."""
-        if not result.get("retCode") == 0:
-            logger.warning("bybit demo: order rejected: %s", result.get("retMsg"))
-            return None
-        row = result.get("result", {})
-        if row.get("orderStatus") != "Filled":
-            logger.warning("bybit demo: order not filled yet (status=%s)", row.get("orderStatus"))
-            return None
-        try:
-            fill_price = float(row.get("avgPrice") or 0.0)
-            fill_qty = float(row.get("cumExecQty") or qty)
-            fees = float(row.get("cumExecFee") or 0.0)
-        except (TypeError, ValueError):
-            return None
-        if fill_price <= 0.0:
-            return None
-        return {"fill_price": fill_price, "qty": fill_qty, "fees": fees}
+    def _fill_from_order(self, symbol: str, order_id: str, qty: float) -> dict | None:
+        """Fill for a placed market order, read back from order history.
+
+        ``place_order`` only echoes the ``orderId``; the executed average price,
+        filled qty and fees arrive on the order-history record once the order
+        fills (order creation is asynchronous on Bybit v5, so poll briefly).
+        Returns None when the order is not confirmed Filled — the caller skips
+        the bar honestly rather than guessing a price.
+        """
+        for attempt in range(_FILL_POLLS):
+            try:
+                history = self._http.get_order_history(
+                    category="linear", symbol=symbol, orderId=order_id
+                )
+            except Exception:
+                logger.warning(
+                    "bybit demo: order-history read failed (attempt %s/%s)",
+                    attempt + 1,
+                    _FILL_POLLS,
+                )
+                time.sleep(_FILL_POLL_INTERVAL_S)
+                continue
+            if history.get("retCode") != 0:
+                logger.warning("bybit demo: order-history rejected: %s", history.get("retMsg"))
+                return None
+            rows = history.get("result", {}).get("list", [])
+            if not rows:
+                time.sleep(_FILL_POLL_INTERVAL_S)
+                continue
+            row = rows[0]
+            if row.get("orderStatus") != "Filled":
+                logger.warning(
+                    "bybit demo: order not filled yet (status=%s)", row.get("orderStatus")
+                )
+                time.sleep(_FILL_POLL_INTERVAL_S)
+                continue
+            try:
+                fill_price = float(row.get("avgPrice") or 0.0)
+                fill_qty = float(row.get("cumExecQty") or qty)
+                fees = _fill_fee(row)
+            except (TypeError, ValueError):
+                return None
+            if fill_price <= 0.0:
+                return None
+            return {"fill_price": fill_price, "qty": fill_qty, "fees": fees}
+        logger.warning(
+            "bybit demo: order %s not confirmed filled after %s polls", order_id, _FILL_POLLS
+        )
+        return None
 
     # ── account / position reconciliation ───────────────────────────────────
 
