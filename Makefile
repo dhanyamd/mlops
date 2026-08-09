@@ -20,12 +20,12 @@ infra-up:
 	@echo "  Kafka UI:     http://localhost:8080"
 	@echo "  ClickHouse:   http://localhost:8123"
 	@echo "  Qdrant:       http://localhost:6333/dashboard"
-	@echo "  MLflow:       http://localhost:5000"
-	@echo "  Spark UI:     http://localhost:8081"
+	@echo "  MLflow:       http://localhost:5001"
+	@echo "  Spark UI:     http://localhost:18080"
 	@echo "  Prefect:      http://localhost:4200"
 	@echo "  MinIO:        http://localhost:9001"
 	@echo "  Prometheus:   http://localhost:9090"
-	@echo "  Grafana:      http://localhost:3000  (admin/admin)"
+	@echo "  Grafana:      http://localhost:3001  (admin/admin)"
 	@echo "  Jaeger:       http://localhost:16686"
 
 infra-down:

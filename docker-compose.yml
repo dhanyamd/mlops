@@ -52,7 +52,7 @@ services:
         soft: 262144
         hard: 262144
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8123/ping"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8123/ping"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -117,15 +117,19 @@ services:
       "
 
   # ── Model registry ───────────────────────────────────────────────────────
+  # -full image ships DB drivers (psycopg2) + boto3; base v2.x has neither.
+  # Verified 2026-08-10: ghcr.io/mlflow/mlflow:v3.15.1-full == latest-full (3.15.1),
+  # v2.14.1-full does not exist. Pinned for reproducibility.
+  # Backend URI uses explicit +psycopg2 driver (MLflow 3.x removed implicit default).
   mlflow:
-    image: ghcr.io/mlflow/mlflow:v2.14.1
+    image: ghcr.io/mlflow/mlflow:v3.15.1-full
     depends_on:
       postgres:
         condition: service_healthy
       minio:
         condition: service_healthy
     ports:
-      - "5000:5000"
+      - "5001:5000"   # 5000 on the host is owned by a system service (ControlCenter)
     environment:
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-minioadmin}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
@@ -134,7 +138,7 @@ services:
       mlflow server
       --host 0.0.0.0
       --port 5000
-      --backend-store-uri postgresql://${POSTGRES_USER:-mlops}:${POSTGRES_PASSWORD:-mlops}@postgres:5432/${POSTGRES_DB:-mlops}
+      --backend-store-uri postgresql+psycopg2://${POSTGRES_USER:-mlops}:${POSTGRES_PASSWORD:-mlops}@postgres:5432/${POSTGRES_DB:-mlops}
       --default-artifact-root s3://mlflow-artifacts/
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
@@ -198,43 +202,40 @@ services:
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
       KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
 
-  # ── Spark cluster (Structured Streaming) ───────────────────────────────────
+  # ── Spark cluster (standalone) ─────────────────────────────────────────────
+  # The official apache/spark image (Bitnami's was removed from Docker Hub, so
+  # SPARK_MODE no longer exists). Bitnami daemonized master/worker via wrapper
+  # scripts; the official image backgrounds them too unless SPARK_NO_DAEMONIZE
+  # is set — without it the container would exit immediately (PID-1 trap). We
+  # run the daemons in the foreground and mount the quant_signal batch flows.
   spark-master:
-    image: bitnami/spark:3.5.1
+    image: apache/spark:3.5.1-python3
+    command: /opt/spark/sbin/start-master.sh
     environment:
-      SPARK_MODE: master
-      SPARK_RPC_AUTHENTICATION_ENABLED: "no"
-      SPARK_RPC_ENCRYPTION_ENABLED: "no"
-      SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED: "no"
-      SPARK_SSL_ENABLED: "no"
-      # feature_streaming.py pushes to the Feast online store from the driver — it needs
-      # `feast` + `pandas` on the image and Redis reachable in-network. Install feast into
-      # the running container before submitting, e.g.:
-      #   docker compose exec spark-master pip install "feast[redis]==0.64.0" pandas
-      REDIS_HOST: redis
-      FEATURE_REPO_PATH: /opt/feature_repo
+      SPARK_NO_DAEMONIZE: "true"
+      SPARK_MASTER_HOST: spark-master
+      SPARK_MASTER_PORT: 7077
+      SPARK_MASTER_WEBUI_PORT: 8080
+      # SPARK_RPC_* / SPARK_LOCAL_STORAGE_ENCRYPTION / SPARK_SSL defaults are
+      # fine unset — the standalone cluster stays on the private compose net.
     ports:
-      - "8081:8080"
-      - "7077:7077"
+      - "18080:8080"   # master web UI (moved off 8081 — the live Flink jobmanager owns it)
+      - "7077:7077"    # spark://spark-master:7077
     volumes:
-      - ./fraud_detection/spark/jobs:/opt/spark/jobs:ro
-      - ./fraud_detection/feature_repo:/opt/feature_repo
+      - ./quant_signal/flows:/opt/spark/jobs:ro
 
   spark-worker:
-    image: bitnami/spark:3.5.1
+    image: apache/spark:3.5.1-python3
+    command: /opt/spark/sbin/start-worker.sh spark://spark-master:7077
     depends_on:
       - spark-master
     environment:
-      SPARK_MODE: worker
-      SPARK_MASTER_URL: spark://spark-master:7077
+      SPARK_NO_DAEMONIZE: "true"
       SPARK_WORKER_MEMORY: 2G
       SPARK_WORKER_CORES: 2
-      SPARK_RPC_AUTHENTICATION_ENABLED: "no"
-      SPARK_RPC_ENCRYPTION_ENABLED: "no"
-      SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED: "no"
-      SPARK_SSL_ENABLED: "no"
+      SPARK_WORKER_WEBUI_PORT: 8081
     volumes:
-      - ./fraud_detection/spark/jobs:/opt/spark/jobs:ro
+      - ./quant_signal/flows:/opt/spark/jobs:ro
 
   # ── Batch orchestration ────────────────────────────────────────────────────
   prefect:
@@ -267,7 +268,7 @@ services:
   grafana:
     image: grafana/grafana:10.4.2
     ports:
-      - "3000:3000"
+      - "3001:3000"   # 3000 on the host belongs to the Next.js Signal Terminal
     depends_on:
       - prometheus
     environment:
