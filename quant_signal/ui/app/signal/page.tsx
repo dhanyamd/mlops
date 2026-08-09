@@ -719,7 +719,7 @@ export default function SignalPage() {
         <Card title="Signal" subtitle={pred ? `${pred.symbol} · ${pred.direction}` : "warming up"}>
           {pred ? <SignalGauge prediction={pred} /> : <p className="py-12 text-center text-sm text-zinc-500">No prediction yet — waiting for the next 5m window.</p>}
         </Card>
-        <Card title="Monte Carlo" subtitle={`${simTag}10,000 paths simulated · ${sim?.sample_paths?.length ?? 0} drawn · t+EWMA · ${mcDistLabel}`}>
+        <Card title="Monte Carlo" subtitle={`${simTag}${sim?.n_paths?.toLocaleString() ?? "…"} simulated futures on live 5m closes · RQMC (Sobol) · ${sim?.sample_paths?.length ?? 0} drawn · t+EWMA · ${mcDistLabel}`}>
           {sim ? (
             <div>
               <McGauge simulation={sim} />
@@ -777,7 +777,7 @@ export default function SignalPage() {
             title="Monte Carlo · all simulated futures"
             subtitle={
               sim
-                ? `${simTag}${sim.n_paths.toLocaleString()} simulated · ${(sim.sample_paths?.length ?? 0).toLocaleString()} drawn · bands 10–90 / 25–75 · median · ghost = prev window · ${volLabel} · ${mcDistLabel}`
+                ? `${simTag}${sim.n_paths.toLocaleString()} simulated · live 5m closes · ${sim.sampler === "crude" ? "crude MC" : "RQMC (Sobol)"} · ${(sim.sample_paths?.length ?? 0).toLocaleString()} drawn · bands 10–90 / 25–75 · median · ghost = prev window · ${volLabel} · ${mcDistLabel}`
                 : "Monte Carlo all-paths fan"
             }
           >

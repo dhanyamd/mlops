@@ -15,6 +15,7 @@ import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
+import api.main as api_main
 import api.stream as stream_mod
 from api.main import app
 from api.stream import MarketHub, MarketStream
@@ -226,8 +227,7 @@ def test_market_features_endpoint_reads_redis(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_market_features_endpoint_disabled_without_stream(monkeypatch: pytest.MonkeyPatch) -> None:
-    settings = stream_mod.get_settings()
-    monkeypatch.setattr(settings, "stream_enabled", False)
+    monkeypatch.setattr(api_main.settings, "stream_enabled", False)
     with TestClient(app) as client:
         resp = client.get("/api/market/features/btcusdt")
     body = resp.json()
@@ -254,8 +254,7 @@ def test_market_predict_endpoint_reads_redis(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_market_predict_endpoint_disabled_without_stream(monkeypatch: pytest.MonkeyPatch) -> None:
-    settings = stream_mod.get_settings()
-    monkeypatch.setattr(settings, "stream_enabled", False)
+    monkeypatch.setattr(api_main.settings, "stream_enabled", False)
     with TestClient(app) as client:
         resp = client.get("/api/market/predict/btcusdt")
     assert resp.json()["enabled"] is False
@@ -281,8 +280,7 @@ def test_market_simulation_endpoint_reads_redis(monkeypatch: pytest.MonkeyPatch)
 def test_market_simulation_endpoint_disabled_without_stream(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    settings = stream_mod.get_settings()
-    monkeypatch.setattr(settings, "stream_enabled", False)
+    monkeypatch.setattr(api_main.settings, "stream_enabled", False)
     with TestClient(app) as client:
         resp = client.get("/api/market/simulation/btcusdt")
     assert resp.json()["enabled"] is False
@@ -349,8 +347,7 @@ def test_market_validation_endpoint_reads_redis(monkeypatch: pytest.MonkeyPatch)
 def test_market_validation_endpoint_disabled_without_stream(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    settings = stream_mod.get_settings()
-    monkeypatch.setattr(settings, "stream_enabled", False)
+    monkeypatch.setattr(api_main.settings, "stream_enabled", False)
     with TestClient(app) as client:
         resp = client.get("/api/market/validation/btcusdt")
     assert resp.json()["enabled"] is False

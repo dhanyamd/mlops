@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
+import api.main as api_main
 from api.main import app
 from stream.kv import FakeKV
 from stream.materializer import feature_key, live_key
@@ -128,10 +129,7 @@ def test_health_summary_endpoint_reads_redis(monkeypatch) -> None:
 
 
 def test_health_summary_endpoint_disabled_without_stream(monkeypatch) -> None:
-    from config.settings import get_settings
-
-    settings = get_settings()
-    monkeypatch.setattr(settings, "stream_enabled", False)
+    monkeypatch.setattr(api_main.settings, "stream_enabled", False)
     with TestClient(app) as client:
         resp = client.get("/api/market/health/summary")
     body = resp.json()

@@ -14,6 +14,13 @@ from collections.abc import Iterator
 # log handler warns on every log line. Documented in Prefect's test docs.
 os.environ.setdefault("PREFECT_LOGGING_TO_API_WHEN_MISSING_FLOW", "ignore")
 
+# prefect_test_harness() backs the ephemeral server with a temp SQLite DB; with
+# analytics left on, Prefect's background telemetry heartbeat writes to that DB
+# at teardown and can trip "database is locked" noise in the summary. Off =
+# no telemetry, no lock contention, hermetic runs. (Prefect's own documented
+# toggle for send_telemetry_heartbeat.)
+os.environ.setdefault("PREFECT_SERVER_ANALYTICS_ENABLED", "false")
+
 import pytest
 from prefect.testing.utilities import prefect_test_harness
 

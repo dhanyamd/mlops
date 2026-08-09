@@ -53,11 +53,14 @@ function fmtTime(ms: number | null | undefined) {
 }
 
 /**
- * Paper-execution book for one symbol: simulated fills on the predictor's real
- * signals (market fill at the next window's close, adverse-side slippage,
- * taker fee both legs). P&L is honest — labeled simulated, not live — and the
- * fill ledger is the primary artifact, per the Sequence/ordersim research
- * ("the stream is the research object").
+ * Execution book for one symbol: fills on the predictor's real signals. On the
+ * "paper" venue fills are simulated (market fill at the next window's close,
+ * adverse-side slippage, taker fee both legs) and honestly labeled "not live".
+ * On the "bybit-demo" venue the same state machine drives real market orders
+ * on Bybit's free Demo account (virtual USDT) — fill prices/fees come from the
+ * venue, still not live money. P&L is always honest about which venue it came
+ * from; the fill ledger is the primary artifact, per the Sequence/ordersim
+ * research ("the stream is the research object").
  */
 export function ExecutionPanel({
   execution,
@@ -66,6 +69,7 @@ export function ExecutionPanel({
   execution: Execution | null;
   portfolio: Portfolio | null;
 }) {
+  const venueDemo = execution?.venue === "bybit-demo";
   const equityData = useMemo(
     () =>
       (execution?.equity ?? [1.0]).map((e, i) => ({
@@ -91,7 +95,7 @@ export function ExecutionPanel({
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="inline-flex items-center gap-2 rounded-md bg-cyan-100 px-2.5 py-1 font-mono text-[11px] font-bold uppercase tracking-widest text-cyan-700 dark:bg-cyan-950 dark:text-cyan-300">
-          Simulated · not live
+          {venueDemo ? "Bybit Demo · virtual funds · not live money" : "Simulated · not live"}
         </span>
         <span className="font-mono text-[11px] text-zinc-500 dark:text-zinc-400">
           {execution
@@ -102,7 +106,7 @@ export function ExecutionPanel({
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
         <Stat
-          label="net P&L (simulated)"
+          label={venueDemo ? "net P&L (demo)" : "net P&L (simulated)"}
           value={money(execution?.net_pnl)}
           tone={netTone}
         />
@@ -133,8 +137,11 @@ export function ExecutionPanel({
           </span>
         )}
         <span className="ml-auto font-mono text-xs text-zinc-500 dark:text-zinc-400">
-          notional ${execution?.notional_usd.toLocaleString()} · slip{" "}
-          {execution?.slippage_bps}bps · taker {execution?.taker_fee_bps}bps
+          {venueDemo
+            ? `notional $${execution?.notional_usd.toLocaleString()} · venue Bybit Demo · actual fees`
+            : `notional $${execution?.notional_usd.toLocaleString()} · slip ${
+                execution?.slippage_bps
+              }bps · taker ${execution?.taker_fee_bps}bps`}
         </span>
       </div>
 
@@ -202,17 +209,18 @@ export function ExecutionPanel({
 
       <div className="rounded-lg border border-cyan-200 bg-cyan-50 px-3 py-2 text-[11px] leading-relaxed text-cyan-800 dark:border-cyan-900 dark:bg-cyan-950/40 dark:text-cyan-200">
         <span className="font-semibold text-cyan-900 dark:text-cyan-100">
-          Simulated execution — not live orders.
+          {venueDemo
+            ? "Real market orders on Bybit Demo (virtual funds) — not live money."
+            : "Simulated execution — not live orders."}
         </span>{" "}
         {execution
           ? `${execution.assumptions?.fill_timing ?? "Market fills at the next window's close"}. ${
               execution.assumptions?.cost_model ?? "Adverse-side slippage plus a taker fee on both legs"
             }.`
           : "Market fills at the next window's close; adverse-side slippage plus a taker fee on both legs."}{" "}
-        Trades are not actually executed, so these results may over- or under-compensate for market
-        factors such as lack of liquidity. No representation is made that any account will or is
-        likely to achieve profits or losses similar to these. Not modeled: margin, funding, partial
-        fills, queue position, and market impact.
+        {venueDemo
+          ? "Orders are placed against Bybit's Demo order book with virtual USDT, so no real money is at risk and results are demo only. Rejected or unfilled orders are skipped and counted."
+          : "Trades are not actually executed, so these results may over- or under-compensate for market factors such as lack of liquidity. No representation is made that any account will or is likely to achieve profits or losses similar to these. Not modeled: margin, funding, partial fills, queue position, and market impact."}
       </div>
     </div>
   );

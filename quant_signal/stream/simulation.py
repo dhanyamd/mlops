@@ -6,6 +6,16 @@ fan-chart percentile bands plus tail risk metrics:
 
   S_{t+1} = S_t * exp((mu - sigma^2 / 2) + sigma * Z_t),  Z_t ~ std-t(nu)
 
+Sampling: paths are drawn with a scrambled Sobol low-discrepancy sequence
+(RQMC) instead of crude pseudo-random numbers, so the fan bands, VaR/ES and
+the decision-layer edge metrics converge near O((log N)^s / N) rather than the
+O(N^-1/2) of crude Monte Carlo (Sobol 1967; Bratley & Fox 1988; Joe & Kuo
+2008; Niederreiter 1992). The scramble (Owen 1997/2003) keeps the estimate
+unbiased so the reality-check monitor stays meaningful, and the per-window
+seed makes each 5m forecast reproducible. The inverse-CDF transform (t.ppf /
+norm.ppf) preserves the low-discrepancy ordering (Glasserman 2003, ch.5).
+The crude ``default_rng`` path remains for back-compat and A/B comparison.
+
 Two model upgrades over a plain Normal-GBM (both research-backed):
 
   EWMA volatility   sigma_t^2 = lam * sigma_{t-1}^2 + (1-lam) * r_t^2, the
@@ -37,12 +47,14 @@ from __future__ import annotations
 
 import math
 import threading
+import warnings
 from collections import deque
 from collections.abc import Mapping
 from statistics import mean, stdev
 
 import numpy as np
 from scipy import stats
+from scipy.stats import qmc
 
 from config.logging import configure_logging, get_logger
 from config.settings import get_settings
@@ -137,6 +149,7 @@ class MonteCarloEngine:
         t_df_max: float = 30.0,
         kelly_cap: float = 0.25,
         edge_min_sigma: float = 0.05,
+        sampler: str = "sobol-rqmc",
     ) -> None:
         self._n_paths = n_paths
         self._horizon_steps = horizon_steps
@@ -149,6 +162,7 @@ class MonteCarloEngine:
         self._t_df_max = t_df_max
         self._kelly_cap = kelly_cap
         self._edge_min_sigma = edge_min_sigma
+        self._sampler = sampler
 
     def calibrate_dist(self, closes):
         """Per-step (mu, sigma, nu) of log returns over the trailing windows.
@@ -188,22 +202,50 @@ class MonteCarloEngine:
         sigma: float,
         seed: int | None = None,
         nu: float = float("inf"),
+        sampler: str | None = None,
     ) -> np.ndarray:
         """(horizon_steps + 1) x n_paths fat-tailed GBM price paths (S0 first).
 
         Shocks are standardized Student-t (mean 0, variance 1) for finite df;
-        ``nu=inf`` (the default) recovers Normal shocks. Vectorized simulation
-        of all paths in one numpy call.
+        ``nu=inf`` (the default) recovers Normal shocks. ``sampler`` selects
+        the shock source: ``sobol-rqmc`` (default) uses a per-seed scrambled
+        Sobol sequence mapped through the inverse-CDF, which fills the unit
+        hypercube with low discrepancy and converges near O((log N)^s / N)
+        instead of the O(N^-1/2) of pseudo-random MC (Sobol 1967; Bratley &
+        Fox 1988; Joe & Kuo 2008; Niederreiter 1992). The scramble (Owen
+        1997/2003) is seeded so each window stays reproducible and unbiased,
+        and the inverse-CDF keeps the low-discrepancy ordering that a
+        Box-Muller transform would destroy (Glasserman 2003, ch.5).
+        ``crude`` is the plain numpy ``default_rng`` path. Both are
+        vectorized over the full path ensemble.
         """
-        rng = np.random.default_rng(seed if seed is not None else self._seed)
+        rng_seed = seed if seed is not None else self._seed
         half_var = sigma * sigma / 2.0
-        size = (self._horizon_steps, self._n_paths)
-        if math.isinf(nu):
-            shocks = rng.normal(0.0, 1.0, size=size)
+        if (sampler or self._sampler) == "sobol-rqmc":
+            # scipy warns that the *balance* property wants a power-of-two
+            # sample size; production runs 2^14 paths, tests use smaller
+            # non-powers and still get low discrepancy, just not the strict
+            # (0,m,s)-net stratification.
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                sobol = qmc.Sobol(self._horizon_steps, scramble=True, rng=rng_seed)
+                uniforms = np.clip(sobol.random(self._n_paths), 1e-10, 1.0 - 1e-10)
+            if math.isinf(nu):
+                shocks = stats.norm.ppf(uniforms)
+            else:
+                # Raw t has variance nu/(nu-2); scale by sqrt((nu-2)/nu) so the
+                # shock has variance 1 for every df (fGarch 'std' / stochvol).
+                shocks = stats.t.ppf(uniforms, nu) * math.sqrt((nu - 2.0) / nu)
+            shocks = shocks.T  # (steps, n_paths)
         else:
-            # Raw t has variance nu/(nu-2); scale by sqrt((nu-2)/nu) so the
-            # shock has variance 1 for every df (fGarch 'std' / stochvol).
-            shocks = rng.standard_t(nu, size=size) * math.sqrt((nu - 2.0) / nu)
+            rng = np.random.default_rng(rng_seed)
+            size = (self._horizon_steps, self._n_paths)
+            if math.isinf(nu):
+                shocks = rng.normal(0.0, 1.0, size=size)
+            else:
+                # Raw t has variance nu/(nu-2); scale by sqrt((nu-2)/nu) so the
+                # shock has variance 1 for every df (fGarch 'std' / stochvol).
+                shocks = rng.standard_t(nu, size=size) * math.sqrt((nu - 2.0) / nu)
         increments = np.exp((mu - half_var) + sigma * shocks)
         return s0 * np.vstack([np.ones(self._n_paths), np.cumprod(increments, axis=0)])
 
@@ -325,6 +367,7 @@ class MonteCarloEngine:
             "nu": round(nu, 2),
             "vol_model": "ewma",
             "ewma_lambda": self._ewma_lambda,
+            "sampler": self._sampler,
             "scenario": scenario,
             "percentiles": bands,
             "median_path": bands["50"],
@@ -405,6 +448,7 @@ class SimulationConsumer:
         t_df_max: float = 30.0,
         kelly_cap: float = 0.25,
         edge_min_sigma: float = 0.05,
+        sampler: str = "sobol-rqmc",
     ) -> None:
         self._kv = kv
         self._simulation_prefix = simulation_prefix
@@ -420,6 +464,7 @@ class SimulationConsumer:
             t_df_max=t_df_max,
             kelly_cap=kelly_cap,
             edge_min_sigma=edge_min_sigma,
+            sampler=sampler,
         )
         self._history: dict[str, deque[dict]] = {}
         self._maxlen = vol_windows * 2
@@ -479,6 +524,7 @@ def main() -> None:
         t_df_max=settings.stream_simulation_t_df_max,
         kelly_cap=settings.stream_simulation_kelly_cap,
         edge_min_sigma=settings.stream_simulation_edge_min_sigma,
+        sampler=settings.stream_simulation_sampler,
     )
     from config.settings import csv_list
     from stream.materializer import feature_key

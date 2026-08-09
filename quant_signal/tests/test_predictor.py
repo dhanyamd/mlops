@@ -146,6 +146,33 @@ def test_mc_engine_needs_enough_history() -> None:
     assert MonteCarloEngine(vol_windows=40).calibrate([100.0]) is None
 
 
+def test_mc_sobol_rqmc_sampler_drifts_up_to_coin_flip() -> None:
+    """Scrambled Sobol QMC is a low-discrepancy point set: for a driftless
+    martingale the terminal P(up) must sit essentially at 0.5 — far tighter
+    than the O(N^-1/2) error band of crude pseudo-random MC would allow
+    (Sobol 1967; Bratley & Fox 1988; Owen 1997/2003 scrambled nets). The
+    scramble is seeded per engine, so the draw is reproducible."""
+    closes = _rising_closes()
+    engine = MonteCarloEngine(n_paths=16_384, horizon_steps=12, drift=False, seed=3)
+    forecast = engine.forecast(closes)
+    assert forecast is not None
+    assert forecast["sampler"] == "sobol-rqmc"
+    # QMC drives the sampling error of P(up) to ~1/N; 2σ of a binomial at
+    # N=16k is ~0.0078, so 1% is a generous bound on the |error|.
+    assert abs(forecast["prob_up"] - 0.5) < 0.01
+
+
+def test_mc_crude_sampler_still_works_and_is_labeled() -> None:
+    """The crude pseudo-random path remains available (A/B fallback) and is
+    labeled honestly in the payload."""
+    closes = _rising_closes()
+    engine = MonteCarloEngine(n_paths=2000, horizon_steps=12, drift=False, seed=3, sampler="crude")
+    forecast = engine.forecast(closes)
+    assert forecast is not None
+    assert forecast["sampler"] == "crude"
+    assert 0.0 <= forecast["prob_up"] <= 1.0
+
+
 def test_mc_edge_block_metrics_well_formed() -> None:
     """The decision layer over the simulated distribution is well-formed and
     honest: probabilities are proper, Kelly is capped (firms run fractional

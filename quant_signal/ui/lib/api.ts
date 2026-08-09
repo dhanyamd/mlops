@@ -88,6 +88,7 @@ export type Simulation = {
   nu?: number | null;
   vol_model?: string | null;
   ewma_lambda?: number | null;
+  sampler?: string | null;
   edge?: {
     expected_return: number;
     expected_log_return: number;
@@ -283,6 +284,7 @@ export type ExecutionFill = {
 export type Execution = {
   symbol: string;
   window_end_ms: number | null;
+  venue?: string | null;
   notional_usd: number;
   slippage_bps: number;
   taker_fee_bps: number;
@@ -297,6 +299,7 @@ export type Execution = {
   total_fees: number;
   fees_pct_of_gross_pnl: number | null;
   signals_skipped: number;
+  orders_rejected?: number | null;
   total_return: number;
   equity: number[];
   position: ExecutionPosition;

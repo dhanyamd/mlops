@@ -313,6 +313,7 @@ def market_reality(symbol: str) -> dict:
         t_df_max=settings.stream_simulation_t_df_max,
         kelly_cap=settings.stream_simulation_kelly_cap,
         edge_min_sigma=settings.stream_simulation_edge_min_sigma,
+        sampler=settings.stream_simulation_sampler,
     )
     reality = reality_report(
         [dict(w) for w in rows],
@@ -391,6 +392,7 @@ def market_simulation(
             t_df_max=settings.stream_simulation_t_df_max,
             kelly_cap=settings.stream_simulation_kelly_cap,
             edge_min_sigma=settings.stream_simulation_edge_min_sigma,
+            sampler=settings.stream_simulation_sampler,
         )
         window_end = history[-1].get("window_end_ms") if history else None
         simulation = engine.forecast(

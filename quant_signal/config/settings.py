@@ -163,12 +163,25 @@ class Settings(BaseSettings):
     stream_prediction_gamma: float = 0.005
     # Residuals kept for the conformal interval quantile.
     stream_prediction_residual_window: int = 200
-    # Monte Carlo engine: paths (all simulated in one vectorized numpy call),
+    # Monte Carlo engine: paths (a power of two so the Sobol low-discrepancy
+    # net keeps its (0,m,s)-net stratification property — Niederreiter 1992),
     # forward horizon (5m steps), trailing 5m windows used to estimate the
     # per-step log-return volatility.
-    stream_simulation_paths: int = 10_000
+    stream_simulation_paths: int = 16_384
     stream_simulation_horizon_steps: int = 12
     stream_simulation_vol_windows: int = 40
+    # Sampler for the path shocks. Crude pseudo-random MC converges at the
+    # O(N^-1/2) rate (Staum, WSC 2003), so doubling accuracy costs 4x paths.
+    # Scrambled Sobol quasi-MC (RQMC) replaces the pseudo-random uniforms with
+    # a low-discrepancy point set whose integration error is ~O((log N)^s / N)
+    # (Sobol 1967; Bratley & Fox 1988; Joe & Kuo 2008), far tighter at the
+    # tails (VaR/ES, tail odds, Kelly). Scrambling (Owen 1997/2003) keeps the
+    # estimate unbiased so the reality-check monitor stays meaningful, with the
+    # seed drawn from the window so each 5m forecast stays reproducible. The
+    # inverse-CDF transform (norm.ppf / t.ppf) preserves the low-discrepancy
+    # ordering (Glasserman 2003, ch.5); a Box-Muller transform would destroy
+    # it. "crude" keeps the old numpy default_rng path as a fallback.
+    stream_simulation_sampler: str = "sobol-rqmc"
     # Volatility model: RiskMetrics EWMA. sigma_t² = λ·sigma_{t−1}² +
     # (1−λ)·r_t² decays past shocks geometrically, so vol responds fast to
     # bursts and decays slowly — volatility clusters (Mandelbrot 1963; Fama
@@ -296,6 +309,44 @@ class Settings(BaseSettings):
     # Max closed trades per symbol before new entries halt (book keeps marking
     # to market and closing the open position — no more new risk).
     stream_execution_max_trades: int = 100
+    # Execution venue. "paper" fills at the next window's close with a fixed
+    # adverse-side slippage + taker fee model (no real orders). "bybit-demo"
+    # places REAL market orders on Bybit's free Demo Trading account
+    # (api-demo.bybit.com, virtual USDT — no deposit, no KYC), so the book sees
+    # actual exchange fills, latency and rejections. Honest behavior: when the
+    # demo keys are absent the venue falls back to paper at config time; once a
+    # demo venue is active, a failed order is SKIPPED (counted), never faked
+    # with a paper fill. Research: Bybit v5 Open API Demo docs — demo keys only
+    # work against api-demo.bybit.com and WS Trade is unsupported on demo, so
+    # fills are read back over REST.
+    stream_execution_venue: str = "paper"
+    # Bybit Demo credentials (gitignored .env). Created under the Demo Trading
+    # account (bybit.com → profile → Demo Trading → API), NOT mainnet; mainnet
+    # keys fail on the demo host with ErrCode 10003. repr=False: never logged.
+    bybit_demo_api_key: str | None = Field(default=None, repr=False)
+    bybit_demo_api_secret: str | None = Field(default=None, repr=False)
+    # Accepted aliases for the same credentials: API_KEY_BYBIT / API_SECRET_BYBIT
+    # (the names some earlier Bybit bots export). The canonical BYBIT_DEMO_*
+    # names win when both are set; either pair enables the demo venue.
+    api_key_bybit: str | None = Field(default=None, repr=False)
+    api_secret_bybit: str | None = Field(default=None, repr=False)
+    # Server-time tolerance for signed requests (recv_window, Bybit v5).
+    bybit_demo_recv_window_ms: int = 5000
+
+    @property
+    def has_bybit_demo_credentials(self) -> bool:
+        return bool(
+            (self.bybit_demo_api_key or self.api_key_bybit)
+            and (self.bybit_demo_api_secret or self.api_secret_bybit)
+        )
+
+    @property
+    def demo_api_key(self) -> str | None:
+        return self.bybit_demo_api_key or self.api_key_bybit
+
+    @property
+    def demo_api_secret(self) -> str | None:
+        return self.bybit_demo_api_secret or self.api_secret_bybit
 
     @field_validator("snowflake_account")
     @classmethod
