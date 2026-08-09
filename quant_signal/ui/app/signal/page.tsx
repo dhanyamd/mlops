@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Area,
   AreaChart,
@@ -153,6 +153,77 @@ function McGauge({ simulation }: { simulation: Simulation }) {
           Student-t ν{simulation.nu?.toFixed(1) ?? "∞"} · EWMA λ{simulation.ewma_lambda ?? 0.94}
         </div>
       </div>
+    </div>
+  );
+}
+
+function EdgeStrip({ simulation }: { simulation: Simulation }) {
+  const edge = simulation.edge;
+  if (!edge) return null;
+  const pos = edge.position;
+  const tone =
+    pos === "LONG" ? "text-emerald-500" : pos === "SHORT" ? "text-red-500" : "text-zinc-400";
+  const odds = edge.odds_ratio;
+  const oddsTone =
+    odds == null ? "text-zinc-400" : odds >= 1.15 ? "text-emerald-500" : odds <= 0.87 ? "text-red-500" : "text-zinc-400";
+
+  return (
+    <div className="mt-5 space-y-3 rounded-xl border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-950/40">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-semibold text-zinc-600 dark:text-zinc-300">What the distribution says</span>
+        <span
+          className={`rounded-md px-2 py-0.5 font-mono text-xs font-semibold tracking-wider ${
+            DIRECTION_STYLE[pos] ?? DIRECTION_STYLE.FLAT
+          }`}
+        >
+          {pos}
+        </span>
+      </div>
+      <div className="grid grid-cols-2 gap-2 text-center sm:grid-cols-3">
+        <div className="rounded-lg bg-white px-2 py-1.5 dark:bg-zinc-900">
+          <div className="text-[10px] uppercase tracking-wide text-zinc-500">edge (1h)</div>
+          <div className={`font-mono text-sm font-semibold tabular-nums ${tone}`}>
+            {edge.edge_bps >= 0 ? "+" : ""}
+            {edge.edge_bps.toFixed(1)} bps
+          </div>
+        </div>
+        <div className="rounded-lg bg-white px-2 py-1.5 dark:bg-zinc-900">
+          <div className="text-[10px] uppercase tracking-wide text-zinc-500">P(up)</div>
+          <div className="font-mono text-sm font-semibold tabular-nums">{pct1(edge.prob_up)}</div>
+        </div>
+        <div className="rounded-lg bg-white px-2 py-1.5 dark:bg-zinc-900">
+          <div className="text-[10px] uppercase tracking-wide text-zinc-500">up/dn tail odds</div>
+          <div className={`font-mono text-sm font-semibold tabular-nums ${oddsTone}`}>
+            {odds == null ? "—" : `${odds.toFixed(2)}×`}
+          </div>
+        </div>
+        <div className="rounded-lg bg-white px-2 py-1.5 dark:bg-zinc-900">
+          <div className="text-[10px] uppercase tracking-wide text-zinc-500">edge / σ</div>
+          <div className="font-mono text-sm font-semibold tabular-nums">
+            {edge.edge_per_risk >= 0 ? "+" : ""}
+            {edge.edge_per_risk.toFixed(2)}
+          </div>
+        </div>
+        <div className="rounded-lg bg-white px-2 py-1.5 dark:bg-zinc-900">
+          <div className="text-[10px] uppercase tracking-wide text-zinc-500">Kelly size</div>
+          <div className="font-mono text-sm font-semibold tabular-nums">
+            {pct1(edge.kelly_fraction)}
+          </div>
+        </div>
+        <div className="rounded-lg bg-white px-2 py-1.5 dark:bg-zinc-900">
+          <div className="text-[10px] uppercase tracking-wide text-zinc-500">half-Kelly</div>
+          <div className="font-mono text-sm font-semibold tabular-nums">
+            {pct1(edge.half_kelly)}
+          </div>
+        </div>
+      </div>
+      <p className="text-[11px] leading-relaxed text-zinc-400 dark:text-zinc-500">
+        Simulated from {simulation.n_paths.toLocaleString()} paths — E[log&nbsp;S/S₀], P(r&gt;+1σ) vs
+        P(r&lt;−1σ), and the growth-optimal Kelly fraction f*&nbsp;=&nbsp;E[log&nbsp;r]/Var(log&nbsp;r),
+        capped and shown half-Kelly (fractional Kelly — Thorp; MacLean–Thorp–Ziemba). Not a signal:
+        it&apos;s the honest read of this window&apos;s distribution, and the reality check above scores
+        whether those bands are telling the truth. On a coin-flip window it says FLAT.
+      </p>
     </div>
   );
 }
@@ -542,6 +613,22 @@ export default function SignalPage() {
   const lastUpdated = pred?.updated_at ?? strat?.updated_at ?? null;
   const simTag = stress ? "WHAT-IF · simulated · " : "";
 
+  // Ghosted previous-window bands: promote the last *current* window's
+  // percentiles into state whenever a NEW 5m window ships, so the fan draws
+  // the old cone peeling off the new one — a slow σ move that reads as
+  // "static" in a single fan becomes obvious.
+  const currentBands = useRef<{ ms: number; bands: Record<string, number[]> } | null>(null);
+  const [ghostBands, setGhostBands] = useState<Record<string, number[]> | null>(null);
+  useEffect(() => {
+    const ms = sim?.window_end_ms ?? null;
+    const bands = sim?.percentiles ?? null;
+    if (ms === null || !bands) return;
+    if (!currentBands.current || currentBands.current.ms !== ms) {
+      if (currentBands.current) setGhostBands(currentBands.current.bands);
+      currentBands.current = { ms, bands };
+    }
+  }, [sim]);
+
   // Shared fixed price window (base ± 4σ·√steps) so the fan and surface all
   // track the real calibrated volatility instead of auto-zooming each ensemble
   // to look identical every window.
@@ -632,8 +719,15 @@ export default function SignalPage() {
         <Card title="Signal" subtitle={pred ? `${pred.symbol} · ${pred.direction}` : "warming up"}>
           {pred ? <SignalGauge prediction={pred} /> : <p className="py-12 text-center text-sm text-zinc-500">No prediction yet — waiting for the next 5m window.</p>}
         </Card>
-        <Card title="Monte Carlo" subtitle={`${simTag}10,000 paths · t+EWMA · ${mcDistLabel}`}>
-          {sim ? <McGauge simulation={sim} /> : <p className="py-12 text-center text-sm text-zinc-500">Warming up — needs a few realized windows to calibrate volatility.</p>}
+        <Card title="Monte Carlo" subtitle={`${simTag}10,000 paths simulated · ${sim?.sample_paths?.length ?? 0} drawn · t+EWMA · ${mcDistLabel}`}>
+          {sim ? (
+            <div>
+              <McGauge simulation={sim} />
+              <EdgeStrip simulation={sim} />
+            </div>
+          ) : (
+            <p className="py-12 text-center text-sm text-zinc-500">Warming up — needs a few realized windows to calibrate volatility.</p>
+          )}
         </Card>
         <Card title="Risk" subtitle={`per-window, horizon ${sim?.horizon_steps ?? 12}×5m risk stats`}>
           {sim ? (
@@ -683,7 +777,7 @@ export default function SignalPage() {
             title="Monte Carlo · all simulated futures"
             subtitle={
               sim
-                ? `${simTag}${(sim.sample_paths?.length ?? 0).toLocaleString()} raw paths · bands 10–90 / 25–75 · median · ${volLabel} · ${mcDistLabel}`
+                ? `${simTag}${sim.n_paths.toLocaleString()} simulated · ${(sim.sample_paths?.length ?? 0).toLocaleString()} drawn · bands 10–90 / 25–75 · median · ghost = prev window · ${volLabel} · ${mcDistLabel}`
                 : "Monte Carlo all-paths fan"
             }
           >
@@ -691,6 +785,7 @@ export default function SignalPage() {
               <AllPathsFan
                 paths={sim.sample_paths}
                 percentiles={sim.percentiles}
+                prevPercentiles={ghostBands}
                 basePrice={sim.base_price}
                 domain={mcDomain}
                 height={280}

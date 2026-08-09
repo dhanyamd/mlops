@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import random
 
+import pytest
+
 from stream.kv import FakeKV
 from stream.predictor import ConformalInterval, OnlinePredictor, prediction_key, strategy_key
 from stream.simulation import MonteCarloEngine, SimulationConsumer, simulation_key
@@ -142,6 +144,54 @@ def test_mc_sigma_scale_widens_risk_and_keeps_surface_invariant() -> None:
 
 def test_mc_engine_needs_enough_history() -> None:
     assert MonteCarloEngine(vol_windows=40).calibrate([100.0]) is None
+
+
+def test_mc_edge_block_metrics_well_formed() -> None:
+    """The decision layer over the simulated distribution is well-formed and
+    honest: probabilities are proper, Kelly is capped (firms run fractional
+    Kelly — Thorp 2006; MacLean, Thorp & Ziemba 2010), and a driftless engine
+    (edge ≈ the Jensen drift term −σ²/2·T, tiny on 5m horizons) stays FLAT."""
+    closes = _rising_closes()
+    forecast = MonteCarloEngine(n_paths=4000, horizon_steps=12, seed=7).forecast(closes)
+    assert forecast is not None
+    e = forecast["edge"]
+    assert set(e) == {
+        "expected_return",
+        "expected_log_return",
+        "edge_bps",
+        "edge_per_risk",
+        "prob_up",
+        "odds_up",
+        "odds_down",
+        "odds_ratio",
+        "kelly_fraction",
+        "half_kelly",
+        "position",
+    }
+    assert 0.0 <= e["prob_up"] <= 1.0
+    assert 0.0 <= e["odds_up"] <= 1.0
+    assert 0.0 <= e["odds_down"] <= 1.0
+    assert e["half_kelly"] == pytest.approx(e["kelly_fraction"] / 2.0, abs=0.0001)  # 4-dp rounding
+    assert abs(e["kelly_fraction"]) <= 0.25 + 1e-9  # capped full-Kelly
+    if e["odds_down"] > 0:
+        assert e["odds_ratio"] is not None and e["odds_ratio"] > 0.0
+    # Driftless (default) engine: the only edge is the tiny −σ²/2·T Jensen term,
+    # far below the edge_min_sigma floor -> the honest call is FLAT.
+    assert e["position"] == "FLAT"
+    assert abs(e["edge_per_risk"]) < 0.05
+
+
+def test_mc_edge_block_drift_gives_directional_position() -> None:
+    """With the MLE drift on, a rising series produces a positive simulated
+    edge and the decision layer leans LONG (clearing the edge_min_sigma floor)."""
+    closes = _rising_closes()
+    forecast = MonteCarloEngine(n_paths=4000, horizon_steps=12, drift=True, seed=7).forecast(closes)
+    assert forecast is not None
+    e = forecast["edge"]
+    assert e["edge_bps"] > 0.0
+    assert e["edge_per_risk"] > 0.05  # clears the LONG floor
+    assert e["position"] == "LONG"
+    assert e["prob_up"] > 0.5
 
 
 # ── Online predictor + consumer ─────────────────────────────────────────────

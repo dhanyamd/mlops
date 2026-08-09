@@ -187,6 +187,19 @@ class Settings(BaseSettings):
     # GBM per-5m log returns), so the median fan path and P(up) track the real
     # trailing trend instead of hovering at 50% under a driftless martingale.
     stream_simulation_drift: bool = True
+    # Decision-layer thresholds on the simulated distribution (the "what to
+    # bet" box). Kelly is the growth-optimal fraction f* = E[log r]/Var(log r)
+    # of capital for a position with continuous log-returns (Kelly 1956;
+    # Breiman 1961; Thorp 2006) — reported capped, because firms run
+    # FRACTIONAL Kelly in practice: full-Kelly is only optimal if you know the
+    # true edge, and estimation error / drawdown risk argues for half-Kelly or
+    # less (MacLean, Thorp & Ziemba 2010; Stanford risk-constrained Kelly,
+    # Boyd et al.; Thorp, "Kelly Simulations"). A position side is recommended
+    # only when the simulated edge clears a floor expressed in units of
+    # terminal volatility (edge_min_sigma × σ·√horizon): below that the honest
+    # call is FLAT, because a near-zero edge estimate is noise, not signal.
+    stream_simulation_kelly_cap: float = 0.25
+    stream_simulation_edge_min_sigma: float = 0.05
     # Raw paths shipped to the UI for the all-paths fan (thin canvas lines);
     # percentile statistics always use *all* paths — this is purely how many
     # strokes the browser renders per window.

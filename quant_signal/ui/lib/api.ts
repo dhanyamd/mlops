@@ -64,6 +64,7 @@ export type Prediction = {
 
 export type Simulation = {
   symbol: string;
+  window_end_ms?: number | null;
   base_price: number;
   horizon_steps: number;
   n_paths: number;
@@ -87,6 +88,19 @@ export type Simulation = {
   nu?: number | null;
   vol_model?: string | null;
   ewma_lambda?: number | null;
+  edge?: {
+    expected_return: number;
+    expected_log_return: number;
+    edge_bps: number;
+    edge_per_risk: number;
+    prob_up: number;
+    odds_up: number;
+    odds_down: number;
+    odds_ratio: number | null;
+    kelly_fraction: number;
+    half_kelly: number;
+    position: "LONG" | "SHORT" | "FLAT";
+  } | null;
 };
 
 export type Strategy = {

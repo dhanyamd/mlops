@@ -135,6 +135,8 @@ class MonteCarloEngine:
         ewma_lambda: float = 0.94,
         t_df_min: float = 4.0,
         t_df_max: float = 30.0,
+        kelly_cap: float = 0.25,
+        edge_min_sigma: float = 0.05,
     ) -> None:
         self._n_paths = n_paths
         self._horizon_steps = horizon_steps
@@ -145,6 +147,8 @@ class MonteCarloEngine:
         self._ewma_lambda = ewma_lambda
         self._t_df_min = t_df_min
         self._t_df_max = t_df_max
+        self._kelly_cap = kelly_cap
+        self._edge_min_sigma = edge_min_sigma
 
     def calibrate_dist(self, closes):
         """Per-step (mu, sigma, nu) of log returns over the trailing windows.
@@ -240,6 +244,54 @@ class MonteCarloEngine:
         prob_up = float(np.mean(returns > 0.0))
         hist_counts, hist_edges = np.histogram(returns, bins=_HIST_BINS)
 
+        # Decision layer on top of the simulated distribution ("what to bet").
+        # All quantities are computed from ALL n_paths terminal outcomes, then
+        # the heavy metrics are cross-checked against the analytic t-distribution
+        # in the tests. Research-backed rationale (see settings docstring):
+        #   edge        E[log S_T/S0] in bps — the expected edge of the bet
+        #   odds        P(r > +1σ_T) / P(r < -1σ_T): the asymmetric upside vs
+        #               downside tail odds from the simulated paths, the
+        #               probability-weighted reason to lean one side
+        #   edge/σ_T    the mean per unit of terminal volatility (a horizon
+        #               Sharpe-style measure)
+        #   Kelly       f* = E[log r] / Var(log r) is the growth-optimal fraction
+        #               of capital (Kelly 1956; Breiman 1961; Thorp 2006).
+        #               Reported capped and as half-Kelly: firms run fractional
+        #               Kelly because full-Kelly assumes the true edge is known,
+        #               which it never is (MacLean, Thorp & Ziemba 2010; Boyd et
+        #               al. risk-constrained Kelly).
+        #   position    LONG/SHORT only when |edge| clears edge_min_sigma × σ_T,
+        #               otherwise FLAT — a near-zero edge estimate is noise.
+        log_returns = np.log(finals / s0)
+        mean_log = float(np.mean(log_returns))
+        std_log = float(np.std(log_returns)) if len(log_returns) > 1 else 0.0
+        sigma_terminal = sigma * math.sqrt(self._horizon_steps)
+        kelly = (mean_log / (std_log * std_log)) if std_log > 0.0 else 0.0
+        upside = float(np.mean(log_returns > sigma_terminal)) if sigma_terminal > 0 else 0.0
+        downside = float(np.mean(log_returns < -sigma_terminal)) if sigma_terminal > 0 else 0.0
+        edge_bps = mean_log * 10000.0
+        edge_per_risk = mean_log / sigma_terminal if sigma_terminal > 0 else 0.0
+        position = "FLAT"
+        if edge_per_risk >= self._edge_min_sigma:
+            position = "LONG"
+        elif edge_per_risk <= -self._edge_min_sigma:
+            position = "SHORT"
+        kelly_capped = max(-self._kelly_cap, min(self._kelly_cap, kelly))
+
+        edge = {
+            "expected_return": round(float(np.mean(returns)), 6),
+            "expected_log_return": round(mean_log, 6),
+            "edge_bps": round(edge_bps, 3),
+            "edge_per_risk": round(edge_per_risk, 4),
+            "prob_up": round(prob_up, 4),
+            "odds_up": round(upside, 4),
+            "odds_down": round(downside, 4),
+            "odds_ratio": round(upside / downside, 3) if downside > 0 else None,
+            "kelly_fraction": round(kelly_capped, 4),
+            "half_kelly": round(kelly_capped / 2.0, 4),
+            "position": position,
+        }
+
         # Per-step return density across ALL paths (not the UI sample): the 3D
         # "probability surface" bins every forward step over a *shared, fixed*
         # return grid that spans ±4σ·√steps. The span is derived from the
@@ -293,6 +345,7 @@ class MonteCarloEngine:
                 "p10": bands["10"][-1],
                 "p90": bands["90"][-1],
             },
+            "edge": edge,
         }
 
 
@@ -350,6 +403,8 @@ class SimulationConsumer:
         ewma_lambda: float = 0.94,
         t_df_min: float = 4.0,
         t_df_max: float = 30.0,
+        kelly_cap: float = 0.25,
+        edge_min_sigma: float = 0.05,
     ) -> None:
         self._kv = kv
         self._simulation_prefix = simulation_prefix
@@ -363,6 +418,8 @@ class SimulationConsumer:
             ewma_lambda=ewma_lambda,
             t_df_min=t_df_min,
             t_df_max=t_df_max,
+            kelly_cap=kelly_cap,
+            edge_min_sigma=edge_min_sigma,
         )
         self._history: dict[str, deque[dict]] = {}
         self._maxlen = vol_windows * 2
@@ -420,6 +477,8 @@ def main() -> None:
         ewma_lambda=settings.stream_simulation_ewma_lambda,
         t_df_min=settings.stream_simulation_t_df_min,
         t_df_max=settings.stream_simulation_t_df_max,
+        kelly_cap=settings.stream_simulation_kelly_cap,
+        edge_min_sigma=settings.stream_simulation_edge_min_sigma,
     )
     from config.settings import csv_list
     from stream.materializer import feature_key

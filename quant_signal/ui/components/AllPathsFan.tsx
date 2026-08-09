@@ -12,6 +12,10 @@ type AllPathsFanProps = {
    * canvas auto-normalizes to each ensemble's min/max, which makes every
    * window look identical no matter how volatility actually moved. */
   domain?: [number, number];
+  /** The previous window's bands, drawn ghosted — so a slow σ move that is
+   * invisible in a single fan becomes obvious as the old cone peeling off the
+   * new one. */
+  prevPercentiles?: Record<string, number[]> | null;
 };
 
 const BAND_ORDER: [string, string, string][] = [
@@ -33,6 +37,7 @@ export function AllPathsFan({
   height = 280,
   animate = true,
   domain,
+  prevPercentiles,
 }: AllPathsFanProps) {
   const ref = useRef<HTMLCanvasElement>(null);
 
@@ -90,6 +95,25 @@ export function AllPathsFan({
       ctx.lineTo(w(), y(basePrice));
       ctx.stroke();
       ctx.setLineDash([]);
+
+      // previous window's bands, ghosted (shows the fan actually moving)
+      if (prevPercentiles) {
+        for (const [loKey, hiKey] of BAND_ORDER) {
+          const lo = prevPercentiles[loKey];
+          const hi = prevPercentiles[hiKey];
+          if (!lo || !hi) continue;
+          ctx.strokeStyle = "rgba(148,163,184,0.35)";
+          ctx.lineWidth = 1;
+          ctx.setLineDash([2, 3]);
+          ctx.beginPath();
+          for (let i = 0; i <= steps; i++) ctx.lineTo(x(i), y(lo[i] ?? lo[lo.length - 1]));
+          ctx.stroke();
+          ctx.beginPath();
+          for (let i = 0; i <= steps; i++) ctx.lineTo(x(i), y(hi[i] ?? hi[hi.length - 1]));
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+      }
 
       // percentile bands
       for (const [loKey, hiKey, fill] of BAND_ORDER) {
@@ -167,7 +191,7 @@ export function AllPathsFan({
       window.removeEventListener("resize", onResize);
       ctx.clearRect(0, 0, canvas.width, canvas.height);
     };
-  }, [paths, percentiles, basePrice, animate, domain]);
+  }, [paths, percentiles, basePrice, animate, domain, prevPercentiles]);
 
   return (
     <div style={{ height }} className="w-full">
