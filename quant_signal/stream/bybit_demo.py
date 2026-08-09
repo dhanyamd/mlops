@@ -39,10 +39,11 @@ _FALLBACK_MIN_QTY = 0.001
 
 # Fill confirmation: a demo ``place_order`` echoes only the ``orderId``, so
 # fills are read back from order history (Bybit v5 order creation is
-# asynchronous). Market/IOC orders fill at placement, so a short poll suffices;
-# if it is still not Filled we return None and the engine skips the bar.
-_FILL_POLLS = 6
-_FILL_POLL_INTERVAL_S = 0.4
+# asynchronous). Empirically the demo order-history record lags the fill by up
+# to ~4s (measured on api-demo), so poll for ~8s; if it is still not Filled we
+# return None and the engine skips the bar honestly.
+_FILL_POLLS = 16
+_FILL_POLL_INTERVAL_S = 0.5
 
 
 def _fill_fee(row: dict) -> float:
