@@ -12,12 +12,14 @@ from config.settings import Settings
 from ingest.providers.alpaca import AlpacaBarProvider
 from ingest.providers.base import BarProvider
 from ingest.providers.binance import BinanceBarProvider
+from ingest.providers.bybit import BybitBarProvider
 from ingest.providers.synthetic import SyntheticBarProvider
 from ingest.providers.yahoo import YahooBarProvider
 
 PROVIDERS: dict[str, type[BarProvider]] = {
     "yahoo": YahooBarProvider,
     "binance": BinanceBarProvider,
+    "bybit": BybitBarProvider,
     "alpaca": AlpacaBarProvider,
     "synthetic": SyntheticBarProvider,
 }
@@ -46,4 +48,8 @@ def build_bar_provider(provider_name: str, settings: Settings) -> BarProvider:
             api_key=settings.ingest_provider_alpaca_api_key,
             api_secret=settings.ingest_provider_alpaca_secret_key,
         )
+    if provider_name == "bybit":
+        # Region mirrors (api.bybit.id for Indonesia, etc.) are selectable by
+        # overriding STREAM_BYBIT_BASE_URL; the global host works everywhere.
+        return BybitBarProvider(base_url=settings.stream_bybit_base_url)
     return provider_cls()

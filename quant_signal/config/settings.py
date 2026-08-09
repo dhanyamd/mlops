@@ -103,8 +103,9 @@ class Settings(BaseSettings):
 
     # ── Live market stream (near-real-time showcase) ────────────────────────
     # Ingestion runs in a standalone producer (``stream/producer.py``) that
-    # publishes Binance minute bars to the Kafka bus; the API consumes the raw
-    # topic and fans deltas out over /ws/market. Disable for a pure query API.
+    # publishes venue minute bars (bybit by default) to the Kafka bus; the API
+    # consumes the raw topic and fans deltas out over /ws/market. Disable for a
+    # pure query API.
     stream_enabled: bool = True
     stream_poll_seconds: int = 15
     stream_poll_timeout_seconds: float = 45
@@ -114,7 +115,7 @@ class Settings(BaseSettings):
     # ── Streaming stack (M3): Kafka ingestion bus + Redis online store ──────
     # Bootstrap servers for the message bus (comma-separated for a cluster).
     stream_kafka_bootstrap_servers: str = "localhost:9092"
-    # Raw Binance minute bars (producer → Flink → materializer). Keyed by symbol.
+    # Raw venue minute bars (producer → Flink → materializer). Keyed by symbol.
     stream_kafka_topic_raw: str = "crypto.bars.raw"
     # 5m window features computed by the Flink SQL job (crypto_features.sql).
     stream_kafka_topic_features: str = "crypto.features.5m"
@@ -134,6 +135,10 @@ class Settings(BaseSettings):
     # Venue (source exchange) for the live stream: the provider built by name
     # from the registry and stamped on every raw bar's ``provider`` field.
     stream_venue: str = "binance"
+    # Bybit mainnet host for the keyless kline endpoint. Region mirrors exist
+    # (api.bybit.id for Indonesia, api.bybit.eu for EEA, ...); the global host
+    # works unless the machine runs from a Bybit-excluded jurisdiction.
+    stream_bybit_base_url: str = "https://api.bybit.com"
     # Flink infrastructure the watchdog heals by name — the daemon never
     # hardcodes container ids, consumer groups, or job paths.
     stream_flink_jobmanager_container: str = "quant_signal-flink-jobmanager-1"

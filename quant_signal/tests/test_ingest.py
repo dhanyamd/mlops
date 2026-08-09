@@ -17,6 +17,7 @@ from config.settings import Settings
 from db.snowflake import SnowflakeClient
 from ingest.providers.alpaca import AlpacaBarProvider
 from ingest.providers.binance import BinanceBarProvider
+from ingest.providers.bybit import BybitBarProvider
 from ingest.providers.fred import FredProvider
 from ingest.providers.sec_edgar import (
     EdgarFundamentalsProvider,
@@ -870,6 +871,76 @@ def test_binance_provider_paginates_minute_bars(monkeypatch: pytest.MonkeyPatch)
     assert df.iloc[0]["provider"] == "binance"
     assert df.iloc[0]["symbol"] == "BTCUSDT"
     assert df.iloc[0]["volume"] == 1.25  # fractional crypto volume stays float
+
+
+def test_bybit_provider_paginates_and_sorts_minute_bars(monkeypatch: pytest.MonkeyPatch) -> None:
+    import json
+
+    now_ms = 1785900000000
+    # Bybit returns newest-first: [startTime_ms, open, high, low, close, volume, turnover].
+    pages = [
+        {
+            "retCode": 0,
+            "retMsg": "OK",
+            "result": {
+                "category": "spot",
+                "symbol": "BTCUSDT",
+                "list": [
+                    [now_ms, "100.5", "102.0", "100.0", "101.5", "0.75", "76200.0"],
+                    [now_ms - 60000, "100.0", "101.0", "99.5", "100.5", "1.25", "125200.0"],
+                ],
+            },
+        },
+        {
+            "retCode": 0,
+            "retMsg": "OK",
+            "result": {"category": "spot", "symbol": "BTCUSDT", "list": []},
+        },
+    ]
+    requests_seen: list[dict] = []
+
+    def fake_get(url, params=None, headers=None, timeout=None):  # type: ignore[no-untyped-def]
+        requests_seen.append(params or {})
+
+        class _R:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict:
+                return json.loads(json.dumps(pages.pop(0)))
+
+        return _R()
+
+    monkeypatch.setattr("ingest.providers.bybit.requests.get", fake_get)
+    df = BybitBarProvider(base_url="https://api.bybit.test").fetch_bars(["btcusdt"], days=1)
+    assert set(df.columns) == _BAR_COLUMNS
+    assert len(df) == 2
+    # Provider sorts ascending (contract order), newest-first wire format aside.
+    assert list(df["ts"]) == sorted(df["ts"])
+    assert df.iloc[0]["timeframe"] == "1Min"
+    assert df.iloc[0]["provider"] == "bybit"
+    assert df.iloc[0]["symbol"] == "BTCUSDT"
+    assert df.iloc[0]["volume"] == 1.25  # fractional crypto volume stays float
+    # Spot klines are requested with the dash-free uppercase symbol + 1m interval.
+    assert requests_seen[0]["category"] == "spot"
+    assert requests_seen[0]["symbol"] == "BTCUSDT"
+    assert requests_seen[0]["interval"] == "1"
+
+
+def test_bybit_provider_raises_on_error_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_get(url, params=None, headers=None, timeout=None):  # type: ignore[no-untyped-def]
+        class _R:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict:
+                return {"retCode": 10001, "retMsg": "Invalid symbol"}
+
+        return _R()
+
+    monkeypatch.setattr("ingest.providers.bybit.requests.get", fake_get)
+    with pytest.raises(RuntimeError, match="retCode=10001"):
+        BybitBarProvider().fetch_bars(["BTCUSDT"], days=1)
 
 
 # ── Macro flow (write tasks mocked, offline) ────────────────────────────────

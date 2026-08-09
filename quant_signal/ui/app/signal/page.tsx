@@ -625,7 +625,7 @@ export default function SignalPage() {
 
       <Card
         title="Live minute tape"
-        subtitle="raw Binance 1m bars straight off the Kafka stream · re-forms every ~20s, independent of the 5m windows below"
+        subtitle="raw venue 1m bars straight off the Kafka stream · re-forms every ~20s, independent of the 5m windows below"
       >
         <LiveTape symbol={symbol} height={200} />
       </Card>

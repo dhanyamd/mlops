@@ -4,7 +4,7 @@ Serves the same real numbers the CLI shows: market bars, PIT fundamentals,
 the PEAD event study, pipeline latency, and macro series. No mocking, no
 business values hardcoded — instruments come from ``INGEST_DEFAULT_TICKERS``.
 
-Also runs the live market stream (Binance minute bars → WebSocket fan-out)
+Also runs the live market stream (venue minute bars → WebSocket fan-out)
 for the duration of the process, via the FastAPI lifespan.
 
 Run:  uv run uvicorn api.main:app --port 8000

@@ -27,7 +27,11 @@ logger = get_logger(__name__)
 
 
 class BinanceProducer:
-    """Poll Binance and publish JSON bars to the ingestion bus."""
+    """Poll the venue provider and publish JSON bars to the ingestion bus.
+
+    Venue-agnostic: the provider is built by name from the registry (see
+    ``build_bar_provider``), so this class never talks to an exchange directly.
+    """
 
     def __init__(
         self,
@@ -79,7 +83,7 @@ class BinanceProducer:
             try:
                 holder["result"] = self._poll_once(minutes)
             except Exception:  # noqa: BLE001 - a producer must never die silently
-                logger.exception("binance producer poll failed")
+                logger.exception("venue producer poll failed")
 
         thread = threading.Thread(target=worker, daemon=True)
         thread.start()

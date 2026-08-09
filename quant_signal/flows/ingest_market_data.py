@@ -5,11 +5,13 @@ Run inline (no Prefect server needed)::
     make ingest                      # real daily bars via default provider/symbols
     uv run python flows/ingest_market_data.py --provider yahoo --days 365
     uv run python flows/ingest_market_data.py --provider binance --symbols BTCUSDT --days 3
+    uv run python flows/ingest_market_data.py --provider bybit --symbols BTCUSDT --days 3
     uv run python flows/ingest_market_data.py --provider alpaca --symbols AAPL --days 365
 
 Providers (all REAL; keyless unless noted):
     yahoo    — US equity daily OHLCV (unofficial endpoint, research-grade)
     binance  — crypto minute OHLCV (single venue)
+    bybit    — crypto minute OHLCV (single venue, keyless, geo-allowed default)
     alpaca   — US equity daily OHLCV via Alpaca's IEX feed (official, free API
                key — the production-grade upgrade over yahoo; ~2.5% of US
                consolidated volume)
@@ -43,7 +45,7 @@ def _build_provider(provider_name: str, settings: Settings) -> BarProvider:
 
 
 def _default_symbols(provider_name: str, settings: Settings) -> list[str]:
-    if provider_name == "binance":
+    if provider_name in {"binance", "bybit"}:
         return csv_list(settings.ingest_default_crypto_symbols)
     return csv_list(settings.ingest_default_symbols)
 
