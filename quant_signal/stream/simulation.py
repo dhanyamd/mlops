@@ -1,10 +1,27 @@
-"""Forward price simulation: geometric Brownian motion, Monte Carlo.
+"""Forward price simulation: fat-tailed GBM (Student-t + EWMA), Monte Carlo.
 
-Runs ``N`` GBM paths forward from the latest feature close, calibrated from
-the *realized* log returns of recent 5m windows (per-step mean/std — no
-lookahead), and emits the fan-chart percentile bands plus tail risk metrics:
+Runs ``N`` paths forward from the latest feature close, calibrated from the
+*realized* log returns of recent 5m windows (no lookahead), and emits the
+fan-chart percentile bands plus tail risk metrics:
 
-  S_{t+1} = S_t * exp((mu - sigma^2 / 2) * dt + sigma * sqrt(dt) * Z),  Z ~ N(0,1)
+  S_{t+1} = S_t * exp((mu - sigma^2 / 2) + sigma * Z_t),  Z_t ~ std-t(nu)
+
+Two model upgrades over a plain Normal-GBM (both research-backed):
+
+  EWMA volatility   sigma_t^2 = lam * sigma_{t-1}^2 + (1-lam) * r_t^2, the
+                    RiskMetrics recursion (λ = 0.94; J.P. Morgan 1994/2006,
+                    Hendricks NY Fed 1996). Volatility clusters (Mandelbrot
+                    1963; Fama 1965), so the equal-weight trailing stdev smears
+                    a burst into the forecast; EWMA decays it geometrically.
+  Student-t shocks  Z standardized to variance 1 with the df estimated from
+                    the standardized residuals (Bollerslev 1987 GARCH-t). Fat
+                    tails are the empirical norm and Normal-innovation models
+                    under-cover tail risk while Student-t captures the tail
+                    shape (Horváth & Šopov 2016); df→∞ recovers the Normal.
+
+The exponential map with standardized-t shocks is the log-Student-t ("Gosset")
+family used for fat-tailed MC pricing (Cassidy, Hamp & Ouyed 2010); with
+per-window sigma of a few bps the drift-bias from the t-tail is negligible.
 
 ``mu`` (per-step log-return drift, MLE) is dwarfed by ``sigma`` on 5m horizons,
 so a ``drift`` toggle lets the demo run driftless (conservative) or with the
@@ -25,6 +42,7 @@ from collections.abc import Mapping
 from statistics import mean, stdev
 
 import numpy as np
+from scipy import stats
 
 from config.logging import configure_logging, get_logger
 from config.settings import get_settings
@@ -55,6 +73,49 @@ def simulation_key(prefix: str, symbol: str) -> str:
     return f"{prefix}:{symbol.upper()}"
 
 
+def _ewma_vol(returns, lam: float) -> float:
+    """1-step-ahead RiskMetrics EWMA volatility of log returns.
+
+    sigma_t^2 = lam * sigma_{t-1}^2 + (1-lam) * r_t^2 — the recursive EWMA of
+    J.P. Morgan's RiskMetrics (1994/2006; Hendricks, NY Fed 1996). Seeded with
+    the trailing sample mean-square, so with λ=0.94 a past shock decays
+    geometrically (99.9% of its weight is gone after ~112 windows) instead of
+    being smeared by an equal-weight window.
+    """
+    r = np.asarray(returns, dtype=float)
+    if r.size == 0:
+        return 0.0
+    var = float(np.mean(r * r))
+    for x in r:
+        var = lam * var + (1.0 - lam) * x * x
+    return float(math.sqrt(var))
+
+
+def _t_df(returns, lam: float, df_min: float, df_max: float) -> float:
+    """Student-t innovation df from the standardized residuals (GARCH-t).
+
+    Each log return is standardized by the EWMA conditional volatility known
+    *before* it realized (GARCH-style), then the df is recovered from the
+    excess kurtosis via the t moment identity ν = 4 + 6/kurtosis (Heikkinen &
+    Kanto 2002; Aalto w369). df → df_max recovers the Normal-innovation model;
+    note sample kurtosis is a biased-but-practical per-window estimator
+    (Heracleous 2007) — fine for a self-checking monitor, not for exactness.
+    """
+    r = np.asarray(returns, dtype=float)
+    if r.size < 4:
+        return df_max
+    var = float(np.mean(r * r))
+    stds = np.empty_like(r)
+    for i, x in enumerate(r):
+        stds[i] = math.sqrt(max(var, 1e-12))
+        var = lam * var + (1.0 - lam) * x * x
+    z = r / stds
+    kurt = float(stats.kurtosis(z, fisher=True))
+    if not math.isfinite(kurt) or kurt <= 0.0:
+        return df_max
+    return float(min(max(4.0 + 6.0 / kurt, df_min), df_max))
+
+
 class MonteCarloEngine:
     """GBM Monte Carlo path simulator with percentile + VaR/ES stats.
 
@@ -71,6 +132,9 @@ class MonteCarloEngine:
         drift: bool = False,
         seed: int | None = None,
         sample_paths: int = _SAMPLE_PATHS,
+        ewma_lambda: float = 0.94,
+        t_df_min: float = 4.0,
+        t_df_max: float = 30.0,
     ) -> None:
         self._n_paths = n_paths
         self._horizon_steps = horizon_steps
@@ -78,11 +142,16 @@ class MonteCarloEngine:
         self._drift = drift
         self._seed = seed
         self._sample_paths = sample_paths
+        self._ewma_lambda = ewma_lambda
+        self._t_df_min = t_df_min
+        self._t_df_max = t_df_max
 
-    def calibrate(self, closes):
-        """Per-step (mu, sigma) of log returns over the trailing windows.
+    def calibrate_dist(self, closes):
+        """Per-step (mu, sigma, nu) of log returns over the trailing windows.
 
-        Returns None when there are not enough closes to estimate volatility.
+        Volatility is the RiskMetrics EWMA 1-step forecast; ``nu`` is the
+        Student-t df of the standardized residuals (GARCH-t). Returns None when
+        there are not enough closes to estimate volatility.
         """
         if len(closes) < 2:
             return None
@@ -90,18 +159,47 @@ class MonteCarloEngine:
         tail = returns[-self._vol_windows :]
         if len(tail) < 2 or stdev(tail) == 0:
             return None
-        sigma = stdev(tail)
+        sigma = _ewma_vol(tail, self._ewma_lambda)
+        if sigma == 0.0:
+            return None
+        nu = _t_df(tail, self._ewma_lambda, self._t_df_min, self._t_df_max)
         mu = (mean(tail) + sigma * sigma / 2) if self._drift else 0.0
+        return mu, sigma, nu
+
+    def calibrate(self, closes):
+        """Per-step (mu, sigma) of log returns over the trailing windows.
+
+        Returns None when there are not enough closes to estimate volatility.
+        """
+        dist = self.calibrate_dist(closes)
+        if dist is None:
+            return None
+        mu, sigma, _nu = dist
         return mu, sigma
 
-    def paths(self, s0: float, mu: float, sigma: float, seed: int | None = None) -> np.ndarray:
-        """(horizon_steps + 1) x n_paths GBM price paths (S0 first).
+    def paths(
+        self,
+        s0: float,
+        mu: float,
+        sigma: float,
+        seed: int | None = None,
+        nu: float = float("inf"),
+    ) -> np.ndarray:
+        """(horizon_steps + 1) x n_paths fat-tailed GBM price paths (S0 first).
 
-        Vectorized simulation of all paths in one numpy call.
+        Shocks are standardized Student-t (mean 0, variance 1) for finite df;
+        ``nu=inf`` (the default) recovers Normal shocks. Vectorized simulation
+        of all paths in one numpy call.
         """
         rng = np.random.default_rng(seed if seed is not None else self._seed)
         half_var = sigma * sigma / 2.0
-        shocks = rng.normal(0.0, 1.0, size=(self._horizon_steps, self._n_paths))
+        size = (self._horizon_steps, self._n_paths)
+        if math.isinf(nu):
+            shocks = rng.normal(0.0, 1.0, size=size)
+        else:
+            # Raw t has variance nu/(nu-2); scale by sqrt((nu-2)/nu) so the
+            # shock has variance 1 for every df (fGarch 'std' / stochvol).
+            shocks = rng.standard_t(nu, size=size) * math.sqrt((nu - 2.0) / nu)
         increments = np.exp((mu - half_var) + sigma * shocks)
         return s0 * np.vstack([np.ones(self._n_paths), np.cumprod(increments, axis=0)])
 
@@ -121,14 +219,14 @@ class MonteCarloEngine:
         shows up in every visual). ``scenario`` is echoed into the payload so
         the UI can label what-if runs honestly.
         """
-        calibrated = self.calibrate(closes)
+        calibrated = self.calibrate_dist(closes)
         if calibrated is None:
             return None
-        mu, sigma = calibrated
+        mu, sigma, nu = calibrated
         sigma = sigma * sigma_scale
         s0 = closes[-1]
         seed = window_end_ms if window_end_ms is not None else self._seed
-        paths = self.paths(s0, mu, sigma, seed=seed)
+        paths = self.paths(s0, mu, sigma, seed=seed, nu=nu)
 
         band_rows = np.percentile(paths, _PERCENTILES, axis=1)  # (5, steps)
         bands = {
@@ -172,6 +270,9 @@ class MonteCarloEngine:
             "mu": round(mu, 8),
             "sigma": round(sigma, 6),
             "sigma_annualized": round(sigma * math.sqrt(_PERIODS_PER_YEAR), 6),
+            "nu": round(nu, 2),
+            "vol_model": "ewma",
+            "ewma_lambda": self._ewma_lambda,
             "scenario": scenario,
             "percentiles": bands,
             "median_path": bands["50"],
@@ -246,6 +347,9 @@ class SimulationConsumer:
         drift: bool = False,
         seed: int | None = None,
         sample_paths: int = _SAMPLE_PATHS,
+        ewma_lambda: float = 0.94,
+        t_df_min: float = 4.0,
+        t_df_max: float = 30.0,
     ) -> None:
         self._kv = kv
         self._simulation_prefix = simulation_prefix
@@ -256,6 +360,9 @@ class SimulationConsumer:
             drift=drift,
             seed=seed,
             sample_paths=sample_paths,
+            ewma_lambda=ewma_lambda,
+            t_df_min=t_df_min,
+            t_df_max=t_df_max,
         )
         self._history: dict[str, deque[dict]] = {}
         self._maxlen = vol_windows * 2
@@ -310,6 +417,9 @@ def main() -> None:
         vol_windows=settings.stream_simulation_vol_windows,
         drift=settings.stream_simulation_drift,
         sample_paths=settings.stream_simulation_sample_paths,
+        ewma_lambda=settings.stream_simulation_ewma_lambda,
+        t_df_min=settings.stream_simulation_t_df_min,
+        t_df_max=settings.stream_simulation_t_df_max,
     )
     from config.settings import csv_list
     from stream.materializer import feature_key

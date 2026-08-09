@@ -31,6 +31,7 @@ from stream.mlflow_tracking import track_gate_report, track_validation
 from stream.pipeline_health import pipeline_summary
 from stream.predictive_eval import evaluate_predictor, passes_gate
 from stream.predictor import prediction_key, strategy_key
+from stream.reality_check import reality_report
 from stream.simulation import MonteCarloEngine, _closes_from_features, simulation_key
 from stream.strategy_mc import StrategyMonteCarlo
 
@@ -272,6 +273,56 @@ def market_health_summary() -> dict:
     return {"enabled": True, **summary}
 
 
+@app.get("/api/market/reality/{symbol}")
+def market_reality(symbol: str) -> dict:
+    """Forecast calibration monitor ("reality check").
+
+    Replays the MC engine's *exact* 1-step-ahead predictive distribution over
+    the stored feature history, point-in-time (same code path as the live
+    consumer, seeded per window — no lookahead, offline/online parity), and
+    scores it against the closes that actually materialized: empirical
+    10–90-band coverage vs its nominal level, PIT histogram + Wasserstein/KS
+    miscalibration, Kupiec + Christoffersen coverage backtests, and an
+    anytime-valid e-process whose alarm is valid under continuous monitoring
+    (Arnold–Henzi–Ziegel 2021 / Ville's inequality). 1-step-ahead only, so the
+    formal tests are not contaminated by overlapping multi-step horizons; the
+    multi-step fan + realized path is a labeled visual diagnostic.
+
+    Research: Diebold, Gunther & Tay (1998); Gneiting, Balabdaoui & Raftery
+    (2007); Arnold, Henzi & Ziegel (2021); Retzlaff (2025).
+    """
+    kv = _kv()
+    if kv is None:
+        return {"symbol": symbol.upper(), "enabled": False, "reality": None}
+    symbol_u = symbol.upper()
+    rows = kv.list_json(
+        feature_key(settings.stream_redis_feature_prefix, symbol_u),
+        reverse=False,  # chronological: replay is a forward walk
+        maxlen=settings.stream_redis_feature_maxlen,
+    )
+    if not rows:
+        return {"symbol": symbol_u, "enabled": True, "reality": None}
+    engine = MonteCarloEngine(
+        n_paths=settings.stream_simulation_paths,
+        horizon_steps=settings.stream_simulation_horizon_steps,
+        vol_windows=settings.stream_simulation_vol_windows,
+        drift=settings.stream_simulation_drift,
+        sample_paths=settings.stream_simulation_sample_paths,
+        ewma_lambda=settings.stream_simulation_ewma_lambda,
+        t_df_min=settings.stream_simulation_t_df_min,
+        t_df_max=settings.stream_simulation_t_df_max,
+    )
+    reality = reality_report(
+        [dict(w) for w in rows],
+        engine=engine,
+        nominal_coverage=settings.stream_reality_nominal_coverage,
+        alpha=settings.stream_reality_evalue_alpha,
+    )
+    if reality is not None:
+        reality["symbol"] = symbol_u
+    return {"symbol": symbol_u, "enabled": True, "reality": reality}
+
+
 @app.get("/api/market/features/{symbol}")
 def market_features(
     symbol: str,
@@ -333,6 +384,9 @@ def market_simulation(
             vol_windows=settings.stream_simulation_vol_windows,
             drift=settings.stream_simulation_drift,
             sample_paths=settings.stream_simulation_sample_paths,
+            ewma_lambda=settings.stream_simulation_ewma_lambda,
+            t_df_min=settings.stream_simulation_t_df_min,
+            t_df_max=settings.stream_simulation_t_df_max,
         )
         window_end = history[-1].get("window_end_ms") if history else None
         simulation = engine.forecast(
@@ -385,17 +439,23 @@ def market_validation(
     ),
 ) -> dict:
     """QuantPad-style pass probability: bootstrap the strategy's realized
-    returns into simulated futures and score them against prop-firm rules.
+    returns into simulated futures and score them against pass/fail rules.
 
-    The Monte Carlo is seeded from the latest feature window's event time
-    (``window_end_ms``), so every 5m window resamples the futures differently
-    while staying reproducible per window — the seed is echoed in the payload
-    for audit (prod-grade: reproducible, never OS-entropy, never frozen at a
-    fixed seed).
+    By default the rules are RISK-SCALED to the strategy's own realized
+    terminal volatility (target/max-DD = target_sigma/max_drawdown_sigma ×
+    σ_T) — a fixed 6%/8% contract is structurally unreachable for a 5m signal
+    and pins the gauge at 0/100/0, so scaling restores a well-posed, moving
+    question about realized edge relative to risk (research: the target-to-DD
+    ratio, not absolute percentages, decides difficulty — OneTradeJournal/
+    CrossTrade/PropFlux). The Monte Carlo is seeded from the latest feature
+    window's event time (``window_end_ms``), so every 5m window resamples the
+    futures differently while staying reproducible per window — the seed is
+    echoed in the payload for audit.
 
-    ``scenario`` re-runs the same bootstrap against a what-if rule override
-    (e.g. a 3% trailing stop), so busted/red futures appear and the pass arc
-    moves — a stress preview, clearly labeled, never a fake data feed.
+    ``scenario`` re-runs the same bootstrap against an explicit what-if rule
+    override (e.g. a 3% trailing stop / 6% target), so busted/red futures
+    appear and the pass arc moves — a stress preview, clearly labeled, never a
+    fake data feed.
 
     ``track=true`` logs this run to MLflow Tracking (params/metrics/artifacts).
     It defaults to off so the Signal Terminal's 15s polling never spams runs;
@@ -413,8 +473,10 @@ def market_validation(
         raise HTTPException(status_code=404, detail=f"unknown scenario '{scenario}'")
     mc = StrategyMonteCarlo(
         n_sims=settings.stream_validation_sims,
-        max_drawdown=cfg["max_drawdown"] if cfg else settings.stream_validation_max_drawdown,
-        target=settings.stream_validation_target,
+        target=cfg.get("target") if cfg else None,
+        max_drawdown=cfg.get("max_drawdown") if cfg else None,
+        target_sigma=settings.stream_validation_target_sigma,
+        max_drawdown_sigma=settings.stream_validation_max_drawdown_sigma,
         seed=seed,
     )
     validation = mc.validate(strategy["strategy_equity"])
@@ -422,8 +484,8 @@ def market_validation(
         track_validation(
             symbol.upper(),
             validation,
-            target=settings.stream_validation_target,
-            max_drawdown=settings.stream_validation_max_drawdown,
+            target=validation.get("target"),
+            max_drawdown=validation.get("max_drawdown_rule") or 0.0,
             seed=seed,
             n_sims=settings.stream_validation_sims,
         )
@@ -441,10 +503,14 @@ def market_validation(
 def market_validation_geometry(symbol: str) -> dict:
     """Geometry Optimizer heat grid.
 
-    Holds the strategy's realized daily EV constant while sweeping win-rate × R:R
+    Holds the strategy's realized EV constant while sweeping win-rate × R:R
     shape, showing pass-probability across 49 configurations. Research-backed
     insight (PropSim/QuantPad): trailing-DD rules are path-dependent, so two
     traders with identical edge can have 90% vs 10% pass rates.
+
+    The rules use the same risk-scaling as the validation gauge (target/max-DD
+    multiples of the strategy's realized σ_T), so the grid and the edge sweep
+    answer the same well-posed question as the headline pass probability.
 
     Seeded from the latest feature window's event time (``window_end_ms``) so
     each 5m window resamples the Monte Carlo differently — the curve and grid
@@ -457,21 +523,28 @@ def market_validation_geometry(symbol: str) -> dict:
     strategy = kv.get_json(strategy_key(settings.stream_redis_strategy_prefix, symbol.upper()))
     if not strategy or not strategy.get("strategy_equity"):
         return {"symbol": symbol.upper(), "enabled": True, "grid": None}
-    from stream.strategy_mc import strategy_returns_from_equity
+    from stream.strategy_mc import effective_rules, strategy_returns_from_equity
 
     returns = strategy_returns_from_equity(strategy["strategy_equity"])
     seed = strategy.get("window_end_ms") or settings.stream_validation_seed
+    rules = effective_rules(
+        returns,
+        target=None,
+        max_drawdown=None,
+        target_sigma=settings.stream_validation_target_sigma,
+        max_drawdown_sigma=settings.stream_validation_max_drawdown_sigma,
+    )
     mc = StrategyMonteCarlo(
         n_sims=settings.stream_validation_sims,
-        max_drawdown=settings.stream_validation_max_drawdown,
-        target=settings.stream_validation_target,
+        target_sigma=settings.stream_validation_target_sigma,
+        max_drawdown_sigma=settings.stream_validation_max_drawdown_sigma,
         seed=seed,
     )
     grid = mc.geometry_sweep(
         returns=returns,
         n_periods=len(returns),
-        target=settings.stream_validation_target,
-        max_drawdown=settings.stream_validation_max_drawdown,
+        target=rules["target"] or 0.0,
+        max_drawdown=rules["max_drawdown"] or 0.0,
         sweep_rows=7,
         sweep_cols=7,
         n_sims=1000,
@@ -482,6 +555,7 @@ def market_validation_geometry(symbol: str) -> dict:
         "seed": seed,
         "window_end_ms": strategy.get("window_end_ms"),
         "grid": grid,
+        "rules": rules,
     }
 
 

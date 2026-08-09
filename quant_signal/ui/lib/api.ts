@@ -84,6 +84,9 @@ export type Simulation = {
   };
   confidence_interval: { p10: number; p90: number };
   scenario?: { name: string; sigma_scale: number; max_drawdown?: number } | null;
+  nu?: number | null;
+  vol_model?: string | null;
+  ewma_lambda?: number | null;
 };
 
 export type Strategy = {
@@ -133,6 +136,12 @@ export type Validation = {
     edges: number[];
   };
   drawdown_histogram: { counts: number[]; edges: number[] };
+  rules: string;
+  sigma_terminal: number;
+  edge_bps: number;
+  pass_ci_low: number;
+  pass_ci_high: number;
+  analytic_pass_probability: number;
 };
 
 export type HealthStatus = "healthy" | "stale" | "warming";
@@ -172,6 +181,52 @@ export type GeometryGrid = {
   sigma?: number;
   seed?: number | null;
   edge_sweep?: EdgeSweep;
+};
+
+export type Reality = {
+  symbol: string | null;
+  window_end_ms: number;
+  updated_at: string;
+  horizon_steps: number;
+  nominal_coverage: number;
+  n_windows: number;
+  coverage: {
+    n: number;
+    hits: number;
+    coverage: number;
+    pof: { lr: number; p: number; reject: boolean };
+    cc: { lr: number; p: number; reject: boolean } | null;
+  };
+  pit: {
+    n: number;
+    counts: number[];
+    edges: number[];
+    expected: number;
+    ci_lo: number;
+    ci_hi: number;
+    mcb: number;
+    ks: number;
+  };
+  evalue: {
+    e_value: number;
+    anytime_p: number;
+    alarm: boolean;
+    alpha: number;
+    threshold: number;
+    process: number[];
+  };
+  fan: {
+    window_end_ms: number;
+    base_price: number;
+    sigma: number;
+    percentiles: Record<string, number[]>;
+  } | null;
+  realized: {
+    step: number;
+    close: number;
+    window_end_ms: number;
+    in_band: boolean;
+  }[] | null;
 };
 
 export type FeatureWindow = {
@@ -338,6 +393,10 @@ export const api = {
       `/api/market/features/${encodeURIComponent(symbol)}?limit=${limit}`
     ),
   healthSummary: () => get<HealthSummary>("/api/market/health/summary"),
+  reality: (symbol: string) =>
+    get<{ symbol: string; enabled: boolean; reality: Reality | null }>(
+      `/api/market/reality/${encodeURIComponent(symbol)}`
+    ),
   geometry: (symbol: string) =>
     get<{ symbol: string; enabled: boolean; grid: GeometryGrid | null }>(
       `/api/market/validation/${encodeURIComponent(symbol)}/geometry`

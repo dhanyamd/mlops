@@ -1,14 +1,23 @@
 """Strategy-validation Monte Carlo tests — hermetic (no Kafka/Redis/Snowflake).
 
 QuantPad-style: bootstrap the realized per-period returns into 10k simulated
-futures and score them against prop-firm-style rules. Covers determinism,
-the pass-probability logic, distribution shapes, and the equity→returns
-derivation.
+futures and score them against pass/fail rules. By default the rules are
+risk-scaled to the strategy's own realized terminal volatility (a fixed
+6%/8% contract is structurally unreachable for a 5m signal and would pin the
+gauge at 0/100/0); explicit contracts are still honored. Also covers the
+analytic two-barrier benchmark and the pass-rate confidence interval.
 """
 
 from __future__ import annotations
 
-from stream.strategy_mc import StrategyMonteCarlo, strategy_returns_from_equity
+import pytest
+
+from stream.strategy_mc import (
+    StrategyMonteCarlo,
+    effective_rules,
+    strategy_returns_from_equity,
+    two_barrier_pass_probability,
+)
 
 # A steadily profitable strategy (deterministic, small positive drift).
 _PROFITABLE = [1.0 + 0.001 * i + 0.0005 * (i % 2) for i in range(80)]
@@ -96,3 +105,115 @@ def test_sample_paths_carry_outcome_and_stats() -> None:
 
 def test_validation_needs_enough_history() -> None:
     assert StrategyMonteCarlo(n_sims=100).validate([1.0, 1.001, 1.002]) is None
+
+
+def test_effective_rules_explicit_contract_passthrough() -> None:
+    """QuantPad/FTMO fixed contracts are honored verbatim."""
+    import numpy as np
+
+    rules = effective_rules(
+        np.asarray(_PROFITABLE[1:]) / np.asarray(_PROFITABLE[:-1]) - 1.0,
+        target=0.06,
+        max_drawdown=0.08,
+        target_sigma=1.0,
+        max_drawdown_sigma=1.5,
+    )
+    assert rules["rules"] == "explicit"
+    assert rules["target"] == 0.06
+    assert rules["max_drawdown"] == 0.08
+
+
+def test_effective_rules_risk_scales_to_terminal_volatility() -> None:
+    """Default mode: target = 1·σ_T, max drawdown = 1.5·σ_T (σ_T = σ·√n).
+
+    Risk-scaling is the honest default for a 5m signal: the target:drawdown
+    ratio, not absolute percentages, decides how hard a challenge is
+    (OneTradeJournal/CrossTrade/PropFlux)."""
+    import math
+
+    import numpy as np
+
+    returns = np.asarray([0.001, -0.0005, 0.002, -0.001, 0.0015, 0.0008, -0.0004, 0.0011])
+    sigma = float(np.std(returns))
+    sigma_terminal = sigma * math.sqrt(returns.size)
+    rules = effective_rules(
+        returns,
+        target=None,
+        max_drawdown=None,
+        target_sigma=1.0,
+        max_drawdown_sigma=1.5,
+    )
+    assert rules["rules"] == "risk-scaled"
+    assert rules["sigma_terminal"] == pytest.approx(sigma_terminal, abs=1e-6)
+    assert rules["target"] == pytest.approx(1.0 * sigma_terminal, abs=1e-6)
+    assert rules["max_drawdown"] == pytest.approx(1.5 * sigma_terminal, abs=1e-6)
+    assert rules["edge_bps"] == pytest.approx(float(np.mean(returns)) * 1e4, abs=1e-3)
+
+
+def test_effective_rules_degenerate_on_zero_variance() -> None:
+    """No realized variance, no explicit contract -> nothing to score against."""
+    import numpy as np
+
+    rules = effective_rules(
+        np.zeros(40),
+        target=None,
+        max_drawdown=None,
+        target_sigma=1.0,
+        max_drawdown_sigma=1.5,
+    )
+    assert rules["rules"] == "degenerate"
+    assert rules["target"] is None and rules["max_drawdown"] is None
+
+    empty = effective_rules(
+        np.array([], dtype=float),
+        target=None,
+        max_drawdown=None,
+        target_sigma=1.0,
+        max_drawdown_sigma=1.5,
+    )
+    assert empty["rules"] == "none"
+
+
+def test_two_barrier_no_drift_ratio() -> None:
+    """μ=0 gambler's ruin: p = b/(a+b) — pure geometry (MIT 18.642 / STAT 3106)."""
+    p = two_barrier_pass_probability(0.0, sigma=0.02, target=0.05, max_drawdown=0.10)
+    assert p == pytest.approx(0.10 / 0.15, abs=1e-4)
+
+
+def test_two_barrier_drift_moves_probability() -> None:
+    """Positive edge beats the geometric ratio; negative edge loses to it."""
+    base = two_barrier_pass_probability(0.0, sigma=0.02, target=0.05, max_drawdown=0.10)
+    up = two_barrier_pass_probability(3.0, sigma=0.02, target=0.05, max_drawdown=0.10)
+    down = two_barrier_pass_probability(-3.0, sigma=0.02, target=0.05, max_drawdown=0.10)
+    assert base is not None and up is not None and down is not None
+    assert up > base > down
+
+
+def test_two_barrier_handles_extreme_negative_drift_without_overflow() -> None:
+    """The naive e^{γ(a+b)} ratio overflows for large γ; the stable form must
+    return a finite probability in [0, 1]."""
+    p = two_barrier_pass_probability(-20.0, sigma=0.0005, target=0.002, max_drawdown=0.003)
+    assert p is not None and 0.0 <= p <= 1.0
+
+
+def test_two_barrier_undefined_cases() -> None:
+    assert two_barrier_pass_probability(1.0, sigma=0.0, target=0.05, max_drawdown=0.10) is None
+    assert two_barrier_pass_probability(1.0, sigma=0.02, target=0.0, max_drawdown=0.0) is None
+
+
+def test_validation_emits_confidence_interval_analytic_and_rules() -> None:
+    """The honest '62% (52–71%)' convention: CI brackets the bootstrap pass
+    rate, the analytic two-barrier benchmark is a valid probability, and the
+    rules dict names whether the contract was explicit or risk-scaled."""
+    result = StrategyMonteCarlo(n_sims=10_000, seed=7).validate(_PROFITABLE)
+    assert result is not None
+    assert result["rules"] in ("explicit", "risk-scaled")
+    assert (
+        0.0 <= result["pass_ci_low"] <= result["pass_probability"] <= result["pass_ci_high"] <= 1.0
+    )
+    analytic = result["analytic_pass_probability"]
+    assert analytic is None or 0.0 <= analytic <= 1.0
+    assert result["edge_bps"] > 0.0
+    assert result["sigma_terminal"] > 0.0
+    assert result["max_drawdown_rule"] > 0.0
+    assert result["target"] > 0.0

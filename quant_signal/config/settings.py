@@ -169,6 +169,20 @@ class Settings(BaseSettings):
     stream_simulation_paths: int = 10_000
     stream_simulation_horizon_steps: int = 12
     stream_simulation_vol_windows: int = 40
+    # Volatility model: RiskMetrics EWMA. sigma_t² = λ·sigma_{t−1}² +
+    # (1−λ)·r_t² decays past shocks geometrically, so vol responds fast to
+    # bursts and decays slowly — volatility clusters (Mandelbrot 1963; Fama
+    # 1965) and the equal-weight trailing stdev smears the cluster into the
+    # forecast. J.P. Morgan's RiskMetrics (1994/2006) and Hendricks (NY Fed
+    # 1996) fix λ=0.94.
+    stream_simulation_ewma_lambda: float = 0.94
+    # Innovation family: Student-t with the df estimated from the standardized
+    # residuals (clamped to [min, max]). Fat tails are the empirical norm, and
+    # Normal-innovation GARCH materially under-covers tail risk while
+    # Student-t captures the tail shape (Bollerslev 1987; Horváth & Šopov
+    # 2016). df→∞ recovers the Normal model.
+    stream_simulation_t_df_min: float = 4.0
+    stream_simulation_t_df_max: float = 30.0
     # MLE drift toggle: when true, mu = mean(log returns) + sigma^2/2 (MLE for
     # GBM per-5m log returns), so the median fan path and P(up) track the real
     # trailing trend instead of hovering at 50% under a driftless martingale.
@@ -177,24 +191,46 @@ class Settings(BaseSettings):
     # percentile statistics always use *all* paths — this is purely how many
     # strokes the browser renders per window.
     stream_simulation_sample_paths: int = 1000
+    # Forecast calibration monitor ("reality check"): the nominal coverage of
+    # the MC fan's central 10–90 band at the 1-step-ahead horizon (0.8), and
+    # the anytime-valid e-value alarm level (Ville's inequality gives
+    # P(sup M_t >= 1/alpha) <= alpha under calibration, so 0.005 ≈ 1 alarm in
+    # 200 windows by chance while monitoring continuously).
+    stream_reality_nominal_coverage: float = 0.8
+    stream_reality_evalue_alpha: float = 0.005
     # Strategy validation Monte Carlo (QuantPad-style pass probability):
     # bootstrap the realized signal returns into simulated futures and score
-    # them against prop-firm-style rules (max drawdown breach + profit target,
-    # e.g. Topstep 50K ≈ 6% target / FTMO ≈ 8-10% target, trailing DD).
+    # them against pass/fail rules. By default the rules are RISK-SCALED to
+    # the strategy's own realized terminal volatility (target = target_sigma ×
+    # σ_T, max DD = max_drawdown_sigma × σ_T, where σ_T = per-window σ·√n):
+    # a fixed human-scaled 6%/8% contract is structurally unreachable for a
+    # 5m signal (per-window returns of a few bps), so the pass gauge would pin
+    # at 0%/100%/0% forever. Risk-scaling restores a well-posed, moving
+    # question about realized edge relative to risk (research: the target-to-
+    # drawdown ratio, not the absolute percentages, decides challenge
+    # difficulty — OneTradeJournal/CrossTrade/PropFlux). The explicit
+    # fixed-contract rules below (QuantPad/FTMO-style defaults) are what the
+    # what-if scenarios override with when set.
     stream_validation_sims: int = 10_000
-    stream_validation_max_drawdown: float = 0.08
-    # Profit target: a future only "passes" if it reaches this return from
-    # starting equity without breaching max drawdown first.
+    stream_validation_target_sigma: float = 1.0
+    stream_validation_max_drawdown_sigma: float = 1.5
+    # Profit target / max drawdown for the *explicit fixed-contract* mode
+    # (QuantPad/FTMO-style, e.g. Topstep 50K ≈ 6% target / FTMO ≈ 8-10%).
+    # Passed through when a scenario or caller supplies them; the live default
+    # risk-scales instead.
     stream_validation_target: float = 0.06
+    stream_validation_max_drawdown: float = 0.08
     stream_validation_seed: int = 42
     # What-if scenario library for the Signal Terminal's stress preview. Each
-    # scenario re-runs the *real* engines (GBM / bootstrap validation) with the
-    # listed knobs and is echoed into the response so the UI labels it clearly:
-    #   sigma_scale   → volatility multiplier for the Monte Carlo fan/surface
-    #   max_drawdown  → rule override, so a tighter stop busts more futures
-    # A scenario is a what-if on real calibrated inputs, never a fake data feed.
+    # scenario re-runs the *real* engines (MC fan / bootstrap validation) with
+    # the listed knobs and is echoed into the response so the UI labels it:
+    #   sigma_scale   → volatility multiplier for the price MC fan/surface
+    #   target        → explicit profit-target contract (validation)
+    #   max_drawdown  → explicit drawdown rule override (validation), so a
+    #                   tighter stop busts more futures
+    # A scenario is a what-if on real calibrated inputs, never a fake feed.
     stream_scenarios: dict[str, dict[str, float]] = {
-        "stress": {"sigma_scale": 4.0, "max_drawdown": 0.03},
+        "stress": {"sigma_scale": 4.0, "target": 0.06, "max_drawdown": 0.03},
     }
 
     # ── MLflow experiment tracking (offline validation runs) ────────────────

@@ -16,12 +16,12 @@ import { Card } from "@/components/Card";
 import { AllPathsFan } from "@/components/AllPathsFan";
 import { LiveTape } from "@/components/LiveTape";
 import { NextWindowCountdown } from "@/components/NextWindowCountdown";
-import { PathDrawIn } from "@/components/PathDrawIn";
 import { LiveBadge, PipelineHealth } from "@/components/PipelineHealth";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { ExecutionPanel } from "@/components/ExecutionPanel";
 import { GeometryOptimizer } from "@/components/GeometryOptimizer";
 import { ProbSurface3D } from "@/components/ProbSurface3D";
+import { RealityCheck } from "@/components/RealityCheck";
 import { RealizedReturns } from "@/components/RealizedReturns";
 import { Select } from "@/components/Select";
 import { StrategyFan } from "@/components/StrategyFan";
@@ -154,43 +154,6 @@ function McGauge({ simulation }: { simulation: Simulation }) {
   );
 }
 
-function ReturnsHistogram({ simulation }: { simulation: Simulation }) {
-  const { counts, edges } = simulation.returns_histogram;
-  const data = counts.map((c, i) => ({
-    mid: ((edges[i] + edges[i + 1]) / 2) * 100,
-    count: c,
-  }));
-  return (
-    <div style={{ height: 220 }} className="w-full">
-      <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="currentColor" opacity={0.1} />
-          <XAxis
-            dataKey="mid"
-            tick={{ fontSize: 11 }}
-            tickLine={false}
-            axisLine={false}
-            tickFormatter={(v: number) => `${v.toFixed(1)}%`}
-          />
-          <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false} width={40} />
-          <Tooltip
-            formatter={(v) => [`${Number(v)} paths`, "terminal return"]}
-            labelFormatter={(v) => `~${Number(v).toFixed(2)}%`}
-            contentStyle={{
-              background: "rgba(15,15,15,0.9)",
-              border: "none",
-              borderRadius: 8,
-              color: "#eee",
-              fontSize: 12,
-            }}
-          />
-          <Bar dataKey="count" fill="#3b82f6" radius={[3, 3, 0, 0]} />
-        </BarChart>
-      </ResponsiveContainer>
-    </div>
-  );
-}
-
 function PassArc({ validation }: { validation: Validation }) {
   const W = 280;
   const H = 160;
@@ -206,6 +169,13 @@ function PassArc({ validation }: { validation: Validation }) {
   const passLen = C * pass;
   const bustLen = C * bust;
   const tone = pass >= 0.5 ? "text-emerald-500" : pass >= 0.25 ? "text-amber-500" : "text-red-500";
+  const drift = pass - validation.analytic_pass_probability;
+  const driftNote =
+    Math.abs(drift) <= 0.01
+      ? "matches gambler's-ruin analytic"
+      : drift > 0
+        ? `+${pct1(drift)} above analytic`
+        : `${pct1(drift)} below analytic`;
 
   return (
     <div className="flex flex-col items-center">
@@ -227,6 +197,12 @@ function PassArc({ validation }: { validation: Validation }) {
           <span className="text-lg">%</span>
         </div>
         <div className="text-[10px] uppercase tracking-widest text-zinc-500">pass probability</div>
+        <div className="mt-1 font-mono text-[11px] text-zinc-500">
+          80% CI {pct1(validation.pass_ci_low)}–{pct1(validation.pass_ci_high)}
+        </div>
+        <div className="mt-0.5 text-[11px] text-zinc-400">
+          analytic {pct1(validation.analytic_pass_probability)} · {driftNote}
+        </div>
       </div>
       <div className="mt-3 grid w-full grid-cols-3 gap-2 text-center">
         <div className="rounded-lg bg-emerald-50 px-2 py-1.5 dark:bg-emerald-950/40">
@@ -339,10 +315,21 @@ function ValidationPanel({
   const targetPct = validation.target == null ? "—" : pct(validation.target);
   const ret = validation.expected_return;
   const simTag = stress ? "WHAT-IF · simulated · " : "";
+  const rulesBadge =
+    validation.rules === "risk-scaled"
+      ? `risk-scaled σ${pct1(validation.sigma_terminal)} · edge ${validation.edge_bps.toFixed(1)}bps`
+      : validation.rules === "explicit"
+        ? `explicit rules · edge ${validation.edge_bps.toFixed(1)}bps`
+        : `rules: ${validation.rules}`;
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <Card title="Pass probability" subtitle={`${simTag}QuantPad-style · ${validation.n_sims.toLocaleString()} futures`}>
+          <div className="mb-3">
+            <span className="rounded-md bg-zinc-100 px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+              {rulesBadge}
+            </span>
+          </div>
           <PassArc validation={validation} />
         </Card>
         <div className="lg:col-span-2">
@@ -529,6 +516,7 @@ export default function SignalPage() {
   const execution = useQuery([symbol, tick], () => api.execution(symbol));
   const portfolio = useQuery([tick], () => api.portfolio());
   const health = useQuery([tick], () => api.healthSummary());
+  const reality = useQuery([symbol, tick], () => api.reality(symbol));
 
   const error =
     prediction.error ??
@@ -539,19 +527,21 @@ export default function SignalPage() {
     geometry.error ??
     execution.error ??
     portfolio.error ??
-    health.error;
+    health.error ??
+    reality.error;
   const pred = prediction.data?.prediction ?? null;
   const sim = simulation.data?.simulation ?? null;
   const strat = strategy.data?.strategy ?? null;
   const feat = features.data?.features ?? null;
   const val = validation.data?.validation ?? null;
   const geo = geometry.data?.grid ?? null;
+  const real = reality.data?.reality ?? null;
   const lastUpdated = pred?.updated_at ?? strat?.updated_at ?? null;
   const simTag = stress ? "WHAT-IF · simulated · " : "";
 
-  // Shared fixed price window (base ± 4σ·√steps) so the fan, draw-in and
-  // surface all track the real calibrated volatility instead of auto-zooming
-  // each ensemble to look identical every window.
+  // Shared fixed price window (base ± 4σ·√steps) so the fan and surface all
+  // track the real calibrated volatility instead of auto-zooming each ensemble
+  // to look identical every window.
   const mcDomain = useMemo(() => {
     if (!sim || !(sim.sigma > 0)) return undefined;
     const half = sim.base_price * 4 * sim.sigma * Math.sqrt(sim.horizon_steps);
@@ -559,6 +549,11 @@ export default function SignalPage() {
   }, [sim]);
   const volLabel = sim
     ? `σ ${(sim.sigma_annualized * 100).toFixed(1)}%/yr · VaR95 ${pct(sim.var95)}`
+    : "";
+  const mcDistLabel = sim
+    ? sim.nu != null && sim.nu < 30
+      ? `Student-t ν${sim.nu.toFixed(1)} · EWMA λ${sim.ewma_lambda ?? 0.94}`
+      : "EWMA vol · Student-t (≈ normal) "
     : "";
 
   return (
@@ -634,7 +629,7 @@ export default function SignalPage() {
         <Card title="Signal" subtitle={pred ? `${pred.symbol} · ${pred.direction}` : "warming up"}>
           {pred ? <SignalGauge prediction={pred} /> : <p className="py-12 text-center text-sm text-zinc-500">No prediction yet — waiting for the next 5m window.</p>}
         </Card>
-        <Card title="Monte Carlo" subtitle={`${simTag}10,000 paths · geometric Brownian motion`}>
+        <Card title="Monte Carlo" subtitle={`${simTag}10,000 paths · t+EWMA · ${mcDistLabel}`}>
           {sim ? <McGauge simulation={sim} /> : <p className="py-12 text-center text-sm text-zinc-500">Warming up — needs a few realized windows to calibrate volatility.</p>}
         </Card>
         <Card title="Risk" subtitle={`per-window, horizon ${sim?.horizon_steps ?? 12}×5m risk stats`}>
@@ -671,18 +666,20 @@ export default function SignalPage() {
           </Card>
         </div>
         <Card
-          title="Path draw-in"
-          subtitle={sim ? `${simTag}${sim.sample_paths?.length ?? 0} sampled paths · continuous replay` : "Monte Carlo path reveal"}
+          title="Reality check"
+          subtitle={
+            real
+              ? `${real.symbol} · ${real.n_windows} 1-step windows replayed · calibration monitor`
+              : "forecast calibration monitor — warm-up needs a few dozen windows"
+          }
         >
-            {sim?.sample_paths?.length ? (
-              <PathDrawIn
-                paths={sim.sample_paths}
-                basePrice={sim.base_price}
-                domain={mcDomain}
-                height={300}
-              />
-            ) : (
-            <p className="py-12 text-center text-sm text-zinc-500">Warming up…</p>
+          {real ? (
+            <RealityCheck reality={real} />
+          ) : (
+            <p className="py-12 text-center text-sm text-zinc-500">
+              Warm-up — needs at least a few dozen feature windows to replay
+              forecasts point-in-time.
+            </p>
           )}
         </Card>
       </div>
@@ -710,8 +707,12 @@ export default function SignalPage() {
             )}
           </Card>
         </div>
-        <Card title="Terminal returns" subtitle={`${simTag}distribution of final path returns`}>
-          {sim ? <ReturnsHistogram simulation={sim} /> : <p className="py-12 text-center text-sm text-zinc-500">Warming up…</p>}
+        <Card title="Realized 5m returns" subtitle="actual moves each window — the market the model is reacting to">
+          {feat && feat.length >= 2 ? (
+            <RealizedReturns features={feat} height={280} />
+          ) : (
+            <p className="py-12 text-center text-sm text-zinc-500">Need at least two feature windows.</p>
+          )}
         </Card>
       </div>
 
@@ -738,16 +739,6 @@ export default function SignalPage() {
         <div className="space-y-6">
           <Card title="Latest window features" subtitle="Flink 5m aggregates from Redis">
             {feat ? <FeaturePanel features={feat} /> : <p className="py-12 text-center text-sm text-zinc-500">No feature windows yet.</p>}
-          </Card>
-          <Card
-            title="Realized 5m returns"
-            subtitle="actual moves each window — the market the model is reacting to"
-          >
-            {feat && feat.length >= 2 ? (
-              <RealizedReturns features={feat} height={200} />
-            ) : (
-              <p className="py-12 text-center text-sm text-zinc-500">Need at least two feature windows.</p>
-            )}
           </Card>
         </div>
       </div>

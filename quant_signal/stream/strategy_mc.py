@@ -2,24 +2,39 @@
 
 Bootstraps the strategy's *realized* per-period returns into ``n_sims``
 whole-strategy futures — one vectorized 10k-path matrix, no Python loop — and
-evaluates each future against prop-firm-style rules:
+evaluates each future against pass/fail rules:
 
   pass   <=>  reached the profit target (``target``) WITHOUT breaching the
               max-drawdown rule
   busted <=>  breached max drawdown from peak before reaching the target
-  neutral<=>  survived, but never reached the target
+  neutral<=>  survived, but never reached the target (the "ran out of time"
+              verdict — CrossTrade's naming)
 
-The fraction of passing futures is the pass probability QuantPad headlines
-("know your pass probability before you pay for an evaluation"). We also emit
-the equity fan (percentile bands), outcome-colored sample paths for the
-terminal visualization, terminal-equity and max-drawdown distributions, and
-tail expectations.
+Rules are either an explicit fixed contract (QuantPad/FTMO-style, e.g. 6%/8%)
+or **risk-scaled to the strategy's own realized terminal volatility**
+(``target_sigma``/``max_drawdown_sigma`` multiples of σ_T = per-window σ·√n).
+Risk-scaling is the honest default for a 5m signal whose per-window returns are
+a few bps: a fixed human-scaled 6%/8% contract is structurally unreachable, so
+the pass probability pins at 0%/100%/0% and never moves. The prop-firm
+literature is explicit that the *ratio* of target to drawdown, not the absolute
+percentages, decides how hard a challenge is (OneTradeJournal 2026; CrossTrade;
+PropFlux) — scaling the rules to realized risk restores the gauge to a
+well-posed, moving question about the strategy's realized edge.
+
+We also emit the **analytic two-barrier benchmark** — P(hit +target before
+−max-DD) for a drifted Brownian motion (gambler's ruin, Doob optional stopping;
+MIT 18.642 / Columbia STAT 3106) — plus an 80% confidence interval on the pass
+rate ("a '62% (52–71%)' result is honest; a bare '62.3%' would be false
+precision" — PropFlux methodology). Bootstrap (finite horizon) ≤ analytic
+(no horizon cap), with the gap being the neutral/timeout mass.
 
 Pure math lives in ``StrategyMonteCarlo`` for hermetic tests; the API drives it
 from the live ``strategy:crypto:5m:<SYMBOL>`` equity curve.
 """
 
 from __future__ import annotations
+
+import math
 
 import numpy as np
 
@@ -40,6 +55,107 @@ def strategy_returns_from_equity(equity: list[float]) -> np.ndarray:
     return eq[1:] / eq[:-1] - 1.0
 
 
+def effective_rules(
+    returns: np.ndarray,
+    *,
+    target: float | None,
+    max_drawdown: float | None,
+    target_sigma: float,
+    max_drawdown_sigma: float,
+) -> dict:
+    """Resolve the pass/fail rules actually applied to a bootstrap horizon.
+
+    An explicit contract (``target``/``max_drawdown``) is used verbatim — the
+    QuantPad/FTMO fixed-contract mode. Otherwise the rules are risk-scaled to
+    the strategy's own realized terminal volatility σ_T = per-window σ·√n, so
+    the pass probability is a well-posed question about the strategy's edge
+    relative to its risk (target:drawdown ratio, not absolute percentages —
+    OneTradeJournal/CrossTrade/PropFlux).
+    """
+    if returns.size == 0:
+        return {
+            "target": target,
+            "max_drawdown": max_drawdown,
+            "sigma": 0.0,
+            "sigma_terminal": 0.0,
+            "edge_bps": 0.0,
+            "rules": "none",
+        }
+    mu = float(np.mean(returns))
+    sigma = float(np.std(returns))
+    n = returns.size
+    sigma_terminal = sigma * math.sqrt(n)
+    edge_bps = mu * 10000.0
+    if sigma_terminal <= 0.0:
+        # Zero realized variance: nothing to score against in risk-scaled mode.
+        if target is not None and max_drawdown is not None:
+            return {
+                "target": target,
+                "max_drawdown": max_drawdown,
+                "sigma": round(sigma, 8),
+                "sigma_terminal": round(sigma_terminal, 6),
+                "edge_bps": round(edge_bps, 3),
+                "rules": "explicit",
+            }
+        return {
+            "target": None,
+            "max_drawdown": None,
+            "sigma": round(sigma, 8),
+            "sigma_terminal": round(sigma_terminal, 6),
+            "edge_bps": round(edge_bps, 3),
+            "rules": "degenerate",
+        }
+    target_eff = target_sigma * sigma_terminal if target is None else target
+    dd_eff = max_drawdown_sigma * sigma_terminal if max_drawdown is None else max_drawdown
+    return {
+        "target": round(target_eff, 6),
+        "max_drawdown": round(dd_eff, 6),
+        "sigma": round(sigma, 8),
+        "sigma_terminal": round(sigma_terminal, 6),
+        "edge_bps": round(edge_bps, 3),
+        "rules": "explicit" if (target is not None and max_drawdown is not None) else "risk-scaled",
+    }
+
+
+def two_barrier_pass_probability(
+    edge_bps: float,
+    sigma: float,
+    target: float,
+    max_drawdown: float,
+) -> float | None:
+    """P(hit +target before −max_drawdown) for a drifted Brownian motion.
+
+    Gambler's ruin for X_t = mu·t + sigma·B_t (Doob optional stopping):
+
+        p = (1 − exp(−2·mu·b/σ²)) / (1 − exp(−2·mu·(a+b)/σ²)),   mu ≠ 0
+        p = b / (a + b),                                          mu = 0
+
+    with a = target (up barrier) and b = max_drawdown (down barrier) in
+    equity-fraction units and mu = edge_bps/10⁴ per window. This is the
+    *no-horizon-cap* diffusion limit; the bootstrap pass rate is the
+    finite-horizon analogue, so bootstrap ≤ analytic, with the gap being the
+    neutral (timeout) mass. Returns None when not well-defined.
+    """
+    if sigma <= 0.0 or target is None or max_drawdown is None:
+        return None
+    if target + max_drawdown <= 0.0:
+        return None
+    a, b = target, max_drawdown
+    s2 = sigma * sigma
+    two_mu = 2.0 * edge_bps / 10000.0
+    if abs(two_mu) < 1e-12:
+        p = b / (a + b)
+    elif two_mu > 0.0:
+        p = (1.0 - math.exp(-two_mu * b / s2)) / (1.0 - math.exp(-two_mu * (a + b) / s2))
+    else:
+        # Negative drift: p = (e^{γb}−1)/(e^{γ(a+b)}−1) with γ=−2μ/σ². The naive
+        # ratio overflows for large γ, so factor out e^{−γ(a+b)}:
+        #   p = e^{−γa}·(1−e^{−γb})/(1−e^{−γ(a+b)}),  all terms bounded in (0,1].
+        gamma = -two_mu / s2
+        p = math.exp(-gamma * a) * (1.0 - math.exp(-gamma * b)) / (1.0 - math.exp(-gamma * (a + b)))
+    return round(min(max(p, 0.0), 1.0), 4)
+
+
 class StrategyMonteCarlo:
     """Bootstrap-resample the strategy's returns into simulated futures.
 
@@ -53,21 +169,30 @@ class StrategyMonteCarlo:
         self,
         *,
         n_sims: int = 10_000,
-        max_drawdown: float = 0.08,
+        max_drawdown: float | None = None,
         target: float | None = None,
+        target_sigma: float = 1.0,
+        max_drawdown_sigma: float = 1.5,
         seed: int | None = None,
     ) -> None:
         self._n_sims = n_sims
         self._max_drawdown = max_drawdown
         self._target = target
+        self._target_sigma = target_sigma
+        self._max_drawdown_sigma = max_drawdown_sigma
         self._seed = seed
 
     def _classify(
-        self, steps: np.ndarray, max_dd: np.ndarray
+        self,
+        steps: np.ndarray,
+        max_dd: np.ndarray,
+        *,
+        target: float | None,
+        max_drawdown: float,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        never_broke = max_dd < self._max_drawdown
-        if self._target is not None:
-            hit_target = np.max(steps, axis=1) >= (1.0 + self._target)
+        never_broke = max_dd < max_drawdown
+        if target is not None:
+            hit_target = np.max(steps, axis=1) >= (1.0 + target)
         else:
             hit_target = steps[:, -1] >= 1.0
         passed = never_broke & hit_target
@@ -222,6 +347,16 @@ class StrategyMonteCarlo:
         returns = strategy_returns_from_equity(equity)
         if len(returns) < 3:
             return None
+        rules = effective_rules(
+            returns,
+            target=self._target,
+            max_drawdown=self._max_drawdown,
+            target_sigma=self._target_sigma,
+            max_drawdown_sigma=self._max_drawdown_sigma,
+        )
+        if rules["target"] is None or rules["max_drawdown"] is None:
+            return None  # degenerate realized volatility: nothing to score against
+        target, max_drawdown = rules["target"], rules["max_drawdown"]
         rng = np.random.default_rng(self._seed)
         n = len(returns)
         n_sims = self._n_sims
@@ -236,11 +371,26 @@ class StrategyMonteCarlo:
         max_dd = np.max(dd, axis=1)
         terminal = steps[:, -1]
 
-        passed, busted, neutral = self._classify(steps, max_dd)
+        passed, busted, neutral = self._classify(
+            steps, max_dd, target=target, max_drawdown=max_drawdown
+        )
         pass_prob = float(np.mean(passed))
         bust_rate = float(np.mean(busted))
         neutral_rate = float(np.mean(neutral))
         mean_terminal = float(np.mean(terminal))
+
+        # Honest uncertainty on the pass rate: 80% binomial interval
+        # (se = sqrt(p(1-p)/n_sims) — PropFlux's "62% (52–71%)" convention).
+        se = math.sqrt(max(pass_prob * (1.0 - pass_prob), 0.0) / n_sims)
+        z80 = 1.2816
+        pass_ci_low = max(0.0, pass_prob - z80 * se)
+        pass_ci_high = min(1.0, pass_prob + z80 * se)
+
+        # Analytic two-barrier benchmark (drifted Brownian motion, no horizon
+        # cap): the diffusion limit the bootstrap is the finite-horizon of.
+        analytic = two_barrier_pass_probability(
+            rules["edge_bps"], rules["sigma"], target, max_drawdown
+        )
 
         fan = {
             str(q): [round(float(v), 6) for v in np.percentile(steps, q, axis=0)]
@@ -269,9 +419,15 @@ class StrategyMonteCarlo:
         return {
             "n_periods": n,
             "n_sims": n_sims,
-            "max_drawdown_rule": self._max_drawdown,
-            "target": self._target,
+            "max_drawdown_rule": round(max_drawdown, 6),
+            "target": round(target, 6),
+            "rules": rules["rules"],
+            "sigma_terminal": rules["sigma_terminal"],
+            "edge_bps": rules["edge_bps"],
             "pass_probability": round(pass_prob, 4),
+            "pass_ci_low": round(pass_ci_low, 4),
+            "pass_ci_high": round(pass_ci_high, 4),
+            "analytic_pass_probability": analytic,
             "bust_rate": round(bust_rate, 4),
             "neutral_rate": round(neutral_rate, 4),
             "expected_terminal": round(mean_terminal, 6),

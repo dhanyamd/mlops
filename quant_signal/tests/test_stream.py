@@ -18,7 +18,6 @@ from fastapi.testclient import TestClient
 import api.stream as stream_mod
 from api.main import app
 from api.stream import MarketHub, MarketStream
-from config.settings import get_settings
 from stream.bars import df_to_bars
 from stream.bus import FakeBus
 from stream.kv import FakeKV
@@ -336,8 +335,13 @@ def test_market_validation_endpoint_reads_redis(monkeypatch: pytest.MonkeyPatch)
     assert val is not None
     assert val["n_sims"] > 0
     assert 0.0 <= val["pass_probability"] <= 1.0
-    assert val["max_drawdown_rule"] == get_settings().stream_validation_max_drawdown
-    assert val["target"] == get_settings().stream_validation_target
+    # Default mode risk-scales the rules to the strategy's realized terminal
+    # volatility (σ_T = σ·√n), so the gauge is a well-posed edge question
+    # instead of an unreachable fixed 6%/8% contract.
+    assert val["rules"] == "risk-scaled"
+    assert val["max_drawdown_rule"] > 0.0
+    assert val["target"] > 0.0
+    assert val["sigma_terminal"] > 0.0
     assert len(val["sample_paths"]) == 100
     assert sum(val["terminal_histogram"]["counts"]) == val["n_sims"]
 
