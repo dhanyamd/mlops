@@ -122,6 +122,24 @@ def test_mc_risk_metrics_present() -> None:
     assert all(sum(row) == forecast["n_paths"] for row in surface["counts"])
 
 
+def test_mc_sigma_scale_widens_risk_and_keeps_surface_invariant() -> None:
+    """The what-if stress knob (σ×scale) widens risk metrics and the surface's
+    fixed σ-based bands, while every step's density row still sums to n_paths."""
+    closes = _rising_closes()
+    base = MonteCarloEngine(n_paths=4000, horizon_steps=12, seed=5).forecast(closes)
+    stressed = MonteCarloEngine(n_paths=4000, horizon_steps=12, seed=5).forecast(
+        closes, sigma_scale=4.0, scenario={"name": "stress"}
+    )
+    assert base is not None and stressed is not None
+    assert stressed["var95"] < base["var95"]
+    assert stressed["es95"] < base["es95"]
+    assert stressed["scenario"] == {"name": "stress"}
+    assert base["scenario"] is None
+    assert stressed["surface_grid"]["edges"][-1] > base["surface_grid"]["edges"][-1]
+    for row in stressed["surface_grid"]["counts"]:
+        assert sum(row) == stressed["n_paths"]
+
+
 def test_mc_engine_needs_enough_history() -> None:
     assert MonteCarloEngine(vol_windows=40).calibrate([100.0]) is None
 

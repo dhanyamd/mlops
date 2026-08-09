@@ -324,20 +324,31 @@ function DrawdownHistogram({ validation }: { validation: Validation }) {
   );
 }
 
-function ValidationPanel({ validation, geometry, realized }: { validation: Validation; geometry: GeometryGrid | null; realized?: number[] }) {
+function ValidationPanel({
+  validation,
+  geometry,
+  realized,
+  stress = false,
+}: {
+  validation: Validation;
+  geometry: GeometryGrid | null;
+  realized?: number[];
+  stress?: boolean;
+}) {
   const rulePct = pct(validation.max_drawdown_rule);
   const targetPct = validation.target == null ? "—" : pct(validation.target);
   const ret = validation.expected_return;
+  const simTag = stress ? "WHAT-IF · simulated · " : "";
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <Card title="Pass probability" subtitle={`QuantPad-style · ${validation.n_sims.toLocaleString()} futures`}>
+        <Card title="Pass probability" subtitle={`${simTag}QuantPad-style · ${validation.n_sims.toLocaleString()} futures`}>
           <PassArc validation={validation} />
         </Card>
         <div className="lg:col-span-2">
           <Card
             title="Simulated futures"
-            subtitle={`${validation.n_periods} realized windows resampled · ${rulePct} max DD · ${targetPct} target`}
+            subtitle={`${simTag}${validation.n_periods} realized windows resampled · ${rulePct} max DD · ${targetPct} target`}
           >
             <StrategyFan validation={validation} realized={realized} height={280} />
             <div className="mt-2 flex flex-wrap items-center justify-end gap-4 text-xs text-zinc-500 dark:text-zinc-400">
@@ -361,13 +372,13 @@ function ValidationPanel({ validation, geometry, realized }: { validation: Valid
       </div>
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2">
-          <Card title="Terminal outcomes" subtitle="final equity across futures, colored by verdict">
+          <Card title="Terminal outcomes" subtitle={`${simTag}final equity across futures, colored by verdict`}>
             <OutcomeHistogram validation={validation} />
           </Card>
         </div>
       </div>
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <Card title="Max drawdown" subtitle={`distribution of worst peak-to-trough · rule ${rulePct}`}>
+        <Card title="Max drawdown" subtitle={`${simTag}distribution of worst peak-to-trough · rule ${rulePct}`}>
           <DrawdownHistogram validation={validation} />
         </Card>
        </div>
@@ -494,6 +505,8 @@ export default function SignalPage() {
   const [symbols, setSymbols] = useState<string[]>([]);
   const [symbol, setSymbol] = useState("BTCUSDT");
   const [tick, setTick] = useState(0);
+  const [stress, setStress] = useState(false);
+  const scenario = stress ? "stress" : undefined;
 
   useEffect(() => {
     api.marketSymbols().then((s) => {
@@ -508,10 +521,10 @@ export default function SignalPage() {
   }, []);
 
   const prediction = useQuery([symbol, tick], () => api.prediction(symbol));
-  const simulation = useQuery([symbol, tick], () => api.simulation(symbol));
+  const simulation = useQuery([symbol, tick, stress], () => api.simulation(symbol, scenario));
   const strategy = useQuery([symbol, tick], () => api.strategy(symbol));
   const features = useQuery([symbol, tick], () => api.features(symbol, 12));
-  const validation = useQuery([symbol, tick], () => api.validation(symbol));
+  const validation = useQuery([symbol, tick, stress], () => api.validation(symbol, scenario));
   const geometry = useQuery(["geometry", symbol, tick], () => api.geometry(symbol));
   const execution = useQuery([symbol, tick], () => api.execution(symbol));
   const portfolio = useQuery([tick], () => api.portfolio());
@@ -534,6 +547,19 @@ export default function SignalPage() {
   const val = validation.data?.validation ?? null;
   const geo = geometry.data?.grid ?? null;
   const lastUpdated = pred?.updated_at ?? strat?.updated_at ?? null;
+  const simTag = stress ? "WHAT-IF · simulated · " : "";
+
+  // Shared fixed price window (base ± 4σ·√steps) so the fan, draw-in and
+  // surface all track the real calibrated volatility instead of auto-zooming
+  // each ensemble to look identical every window.
+  const mcDomain = useMemo(() => {
+    if (!sim || !(sim.sigma > 0)) return undefined;
+    const half = sim.base_price * 4 * sim.sigma * Math.sqrt(sim.horizon_steps);
+    return [sim.base_price - half, sim.base_price + half] as [number, number];
+  }, [sim]);
+  const volLabel = sim
+    ? `σ ${(sim.sigma_annualized * 100).toFixed(1)}%/yr · VaR95 ${pct(sim.var95)}`
+    : "";
 
   return (
     <div className="space-y-6">
@@ -546,6 +572,34 @@ export default function SignalPage() {
         </div>
         <div className="flex flex-wrap items-center gap-4">
           <LiveBadge summary={health.data} symbol={symbol} />
+          <div
+            role="group"
+            aria-label="what-if stress preview"
+            className="flex items-center rounded-lg border border-zinc-200 p-0.5 font-mono text-xs dark:border-zinc-800"
+          >
+            <button
+              type="button"
+              onClick={() => setStress(false)}
+              className={`rounded-md px-2.5 py-1 font-semibold tracking-wide ${
+                stress
+                  ? "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200"
+                  : "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+              }`}
+            >
+              Live
+            </button>
+            <button
+              type="button"
+              onClick={() => setStress(true)}
+              className={`rounded-md px-2.5 py-1 font-semibold tracking-wide ${
+                stress
+                  ? "bg-cyan-600 text-white"
+                  : "text-zinc-500 hover:text-cyan-700 dark:text-zinc-400 dark:hover:text-cyan-300"
+              }`}
+            >
+              Stress · what-if
+            </button>
+          </div>
           <Select
             label="Symbol"
             value={symbol}
@@ -580,7 +634,7 @@ export default function SignalPage() {
         <Card title="Signal" subtitle={pred ? `${pred.symbol} · ${pred.direction}` : "warming up"}>
           {pred ? <SignalGauge prediction={pred} /> : <p className="py-12 text-center text-sm text-zinc-500">No prediction yet — waiting for the next 5m window.</p>}
         </Card>
-        <Card title="Monte Carlo" subtitle="10,000 paths · geometric Brownian motion">
+        <Card title="Monte Carlo" subtitle={`${simTag}10,000 paths · geometric Brownian motion`}>
           {sim ? <McGauge simulation={sim} /> : <p className="py-12 text-center text-sm text-zinc-500">Warming up — needs a few realized windows to calibrate volatility.</p>}
         </Card>
         <Card title="Risk" subtitle={`per-window, horizon ${sim?.horizon_steps ?? 12}×5m risk stats`}>
@@ -603,7 +657,7 @@ export default function SignalPage() {
             title="Probability surface"
             subtitle={
               sim
-                ? `return density per forward step · ${sim.n_paths.toLocaleString()} paths · base ${sim.base_price.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+                ? `${simTag}return density per forward step · ${sim.n_paths.toLocaleString()} paths · base ${sim.base_price.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
                 : "Monte Carlo return density"
             }
           >
@@ -618,11 +672,16 @@ export default function SignalPage() {
         </div>
         <Card
           title="Path draw-in"
-          subtitle={sim ? `${sim.sample_paths?.length ?? 0} sampled paths · continuous replay` : "Monte Carlo path reveal"}
+          subtitle={sim ? `${simTag}${sim.sample_paths?.length ?? 0} sampled paths · continuous replay` : "Monte Carlo path reveal"}
         >
-          {sim?.sample_paths?.length ? (
-            <PathDrawIn paths={sim.sample_paths} basePrice={sim.base_price} height={300} />
-          ) : (
+            {sim?.sample_paths?.length ? (
+              <PathDrawIn
+                paths={sim.sample_paths}
+                basePrice={sim.base_price}
+                domain={mcDomain}
+                height={300}
+              />
+            ) : (
             <p className="py-12 text-center text-sm text-zinc-500">Warming up…</p>
           )}
         </Card>
@@ -634,7 +693,7 @@ export default function SignalPage() {
             title="All simulated futures"
             subtitle={
               sim
-                ? `${(sim.sample_paths?.length ?? 0).toLocaleString()} raw paths · percentile bands 10–90 / 25–75 · median`
+                ? `${simTag}${(sim.sample_paths?.length ?? 0).toLocaleString()} raw paths · percentile bands 10–90 / 25–75 · median · ${volLabel}`
                 : "Monte Carlo all-paths fan"
             }
           >
@@ -643,6 +702,7 @@ export default function SignalPage() {
                 paths={sim.sample_paths}
                 percentiles={sim.percentiles}
                 basePrice={sim.base_price}
+                domain={mcDomain}
                 height={280}
               />
             ) : (
@@ -650,7 +710,7 @@ export default function SignalPage() {
             )}
           </Card>
         </div>
-        <Card title="Terminal returns" subtitle="distribution of final path returns">
+        <Card title="Terminal returns" subtitle={`${simTag}distribution of final path returns`}>
           {sim ? <ReturnsHistogram simulation={sim} /> : <p className="py-12 text-center text-sm text-zinc-500">Warming up…</p>}
         </Card>
       </div>
@@ -693,7 +753,7 @@ export default function SignalPage() {
       </div>
 
       {val ? (
-        <ValidationPanel validation={val} geometry={geo} realized={strat?.strategy_equity} />
+        <ValidationPanel validation={val} geometry={geo} realized={strat?.strategy_equity} stress={stress} />
       ) : (
         <Card title="Strategy validation" subtitle="QuantPad-style pass probability">
           <p className="py-12 text-center text-sm text-zinc-500">

@@ -421,7 +421,10 @@ def test_write_equity_bars_uses_upsert_on_natural_key(monkeypatch: pytest.Monkey
         return len(df)
 
     monkeypatch.setattr(SnowflakeClient, "upsert_df", fake_upsert)
-    n = write_equity_bars(SyntheticBarProvider().fetch_bars(["AAPL"], days=1), _settings())
+    # days=7 so at least one weekday always exists regardless of the run day
+    # (the synthetic provider skips weekends, and days=1 yields zero rows on a
+    # Sunday when the trailing day is Saturday).
+    n = write_equity_bars(SyntheticBarProvider().fetch_bars(["AAPL"], days=7), _settings())
     assert n > 0
     assert captured["table_name"] == "EQUITY_BARS"
     assert captured["merge_keys"] == ["symbol", "timeframe", "ts"]

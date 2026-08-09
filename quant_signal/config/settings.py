@@ -182,6 +182,15 @@ class Settings(BaseSettings):
     # starting equity without breaching max drawdown first.
     stream_validation_target: float = 0.06
     stream_validation_seed: int = 42
+    # What-if scenario library for the Signal Terminal's stress preview. Each
+    # scenario re-runs the *real* engines (GBM / bootstrap validation) with the
+    # listed knobs and is echoed into the response so the UI labels it clearly:
+    #   sigma_scale   → volatility multiplier for the Monte Carlo fan/surface
+    #   max_drawdown  → rule override, so a tighter stop busts more futures
+    # A scenario is a what-if on real calibrated inputs, never a fake data feed.
+    stream_scenarios: dict[str, dict[str, float]] = {
+        "stress": {"sigma_scale": 4.0, "max_drawdown": 0.03},
+    }
 
     # ── MLflow experiment tracking (offline validation runs) ────────────────
     # The served models are online learners (River) + MC, so we use MLflow

@@ -67,6 +67,8 @@ export type Simulation = {
   base_price: number;
   horizon_steps: number;
   n_paths: number;
+  mu: number;
+  sigma: number;
   sigma_annualized: number;
   percentiles: Record<string, number[]>;
   median_path: number[];
@@ -81,6 +83,7 @@ export type Simulation = {
     counts: number[][];
   };
   confidence_interval: { p10: number; p90: number };
+  scenario?: { name: string; sigma_scale: number; max_drawdown?: number } | null;
 };
 
 export type Strategy = {
@@ -305,9 +308,11 @@ export const api = {
     get<{ symbol: string; enabled: boolean; prediction: Prediction | null }>(
       `/api/market/predict/${encodeURIComponent(symbol)}`
     ),
-  simulation: (symbol: string) =>
+  simulation: (symbol: string, scenario?: string) =>
     get<{ symbol: string; enabled: boolean; simulation: Simulation | null }>(
-      `/api/market/simulation/${encodeURIComponent(symbol)}`
+      `/api/market/simulation/${encodeURIComponent(symbol)}${
+        scenario ? `?scenario=${encodeURIComponent(scenario)}` : ""
+      }`
     ),
   strategy: (symbol: string) =>
     get<{ symbol: string; enabled: boolean; strategy: Strategy | null }>(
@@ -318,9 +323,15 @@ export const api = {
       `/api/market/execution/${encodeURIComponent(symbol)}`
     ),
   portfolio: () => get<Portfolio>("/api/market/portfolio"),
-  validation: (symbol: string) =>
-    get<{ symbol: string; enabled: boolean; validation: Validation | null }>(
-      `/api/market/validation/${encodeURIComponent(symbol)}`
+  validation: (symbol: string, scenario?: string) =>
+    get<{
+      symbol: string;
+      enabled: boolean;
+      validation: Validation | null;
+    }>(
+      `/api/market/validation/${encodeURIComponent(symbol)}${
+        scenario ? `?scenario=${encodeURIComponent(scenario)}` : ""
+      }`
     ),
   features: (symbol: string, limit = 12) =>
     get<{ symbol: string; enabled: boolean; count: number; features: FeatureWindow[] }>(

@@ -105,12 +105,27 @@ class MonteCarloEngine:
         increments = np.exp((mu - half_var) + sigma * shocks)
         return s0 * np.vstack([np.ones(self._n_paths), np.cumprod(increments, axis=0)])
 
-    def forecast(self, closes: list[float], window_end_ms: int | None = None) -> dict | None:
-        """Full forecast payload from trailing closes, or None if uncalibrated."""
+    def forecast(
+        self,
+        closes: list[float],
+        window_end_ms: int | None = None,
+        *,
+        sigma_scale: float = 1.0,
+        scenario: dict | None = None,
+    ) -> dict | None:
+        """Full forecast payload from trailing closes, or None if uncalibrated.
+
+        ``sigma_scale`` applies a what-if stress to the *calibrated* volatility
+        before generating paths (the engine recomputes everything downstream —
+        surface, fan bands, VaR/ES — from the stressed ensemble, so the stress
+        shows up in every visual). ``scenario`` is echoed into the payload so
+        the UI can label what-if runs honestly.
+        """
         calibrated = self.calibrate(closes)
         if calibrated is None:
             return None
         mu, sigma = calibrated
+        sigma = sigma * sigma_scale
         s0 = closes[-1]
         seed = window_end_ms if window_end_ms is not None else self._seed
         paths = self.paths(s0, mu, sigma, seed=seed)
@@ -128,17 +143,21 @@ class MonteCarloEngine:
         hist_counts, hist_edges = np.histogram(returns, bins=_HIST_BINS)
 
         # Per-step return density across ALL paths (not the UI sample): the 3D
-        # "probability surface" bins every forward step over a shared return
-        # grid, so the mountain is built from the full 10k-path ensemble and
-        # every step row sums to n_paths (no paths fall outside the grid).
+        # "probability surface" bins every forward step over a *shared, fixed*
+        # return grid that spans ±4σ·√steps. The span is derived from the
+        # calibrated volatility (not the ensemble's min/max), so the mountain
+        # visibly widens/narrows as volatility changes window to window and
+        # under what-if stress — a display resolution, not a model knob. Paths
+        # outside the grid are clipped into the extreme bins so every step row
+        # still sums to n_paths.
         surface_steps = min(self._horizon_steps, _SURFACE_STEPS)
         step_returns = paths[1 : surface_steps + 1] / s0 - 1.0  # (steps, n_paths)
-        surface_edges = np.linspace(
-            float(step_returns.min()), float(step_returns.max()), _HIST_BINS + 1
-        )
+        span = 4.0 * sigma * math.sqrt(surface_steps)
+        surface_edges = np.linspace(-span, span, _HIST_BINS + 1)
         surface = np.zeros((surface_steps, _HIST_BINS), dtype=int)
         for i in range(surface_steps):
-            surface[i], _ = np.histogram(step_returns[i], bins=surface_edges)
+            idx = np.clip(np.digitize(step_returns[i], surface_edges) - 1, 0, _HIST_BINS - 1)
+            np.add.at(surface[i], idx, 1)
 
         # Evenly-spaced subsample of the raw paths for the QuantPad-style
         # "all paths (N)" fan-chart spaghetti — stats always use every path.
@@ -153,6 +172,7 @@ class MonteCarloEngine:
             "mu": round(mu, 8),
             "sigma": round(sigma, 6),
             "sigma_annualized": round(sigma * math.sqrt(_PERIODS_PER_YEAR), 6),
+            "scenario": scenario,
             "percentiles": bands,
             "median_path": bands["50"],
             "sample_paths": [p.tolist() for p in sample_paths],

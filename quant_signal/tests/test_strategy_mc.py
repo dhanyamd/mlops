@@ -55,6 +55,16 @@ def test_drawdown_rule_bites_on_sinuous_strategy() -> None:
     assert strict["median_max_drawdown"] > 0.03  # typical path breaches the strict rule
 
 
+def test_tighter_drawdown_rule_raises_bust_rate() -> None:
+    """The red (busted) verdict must grow as the trailing-DD rule tightens —
+    this is exactly what the what-if stress preview leans on."""
+    strict = StrategyMonteCarlo(n_sims=10_000, seed=1, max_drawdown=0.03).validate(_SINUOUS)
+    loose = StrategyMonteCarlo(n_sims=10_000, seed=1, max_drawdown=0.5).validate(_SINUOUS)
+    assert strict is not None and loose is not None
+    assert strict["bust_rate"] > loose["bust_rate"]
+    assert strict["bust_rate"] > 0.5  # most futures breach a 3% trailing stop
+
+
 def test_validation_payload_shapes() -> None:
     result = StrategyMonteCarlo(n_sims=5_000, seed=3).validate(_PROFITABLE)
     assert result is not None

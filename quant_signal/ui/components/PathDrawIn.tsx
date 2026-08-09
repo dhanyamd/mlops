@@ -6,6 +6,10 @@ type PathFanProps = {
   paths: number[][];
   basePrice: number;
   height?: number;
+  /** Fixed [min, max] price window (e.g. base ± 4σ·√steps). When omitted the
+   * canvas auto-normalizes to each ensemble's min/max, which makes every
+   * window look identical no matter how volatility actually moved. */
+  domain?: [number, number];
 };
 
 /**
@@ -15,7 +19,7 @@ type PathFanProps = {
  * replay starts fresh every `epoch`, so the eye always has motion even when
  * the 5m window hasn't changed yet.
  */
-export function PathDrawIn({ paths, basePrice, height = 280 }: PathFanProps) {
+export function PathDrawIn({ paths, basePrice, height = 280, domain }: PathFanProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -32,15 +36,19 @@ export function PathDrawIn({ paths, basePrice, height = 280 }: PathFanProps) {
 
     let minPrice = basePrice;
     let maxPrice = basePrice;
-    for (const p of paths) {
-      for (const v of p) {
-        if (v < minPrice) minPrice = v;
-        if (v > maxPrice) maxPrice = v;
+    if (domain) {
+      [minPrice, maxPrice] = domain;
+    } else {
+      for (const p of paths) {
+        for (const v of p) {
+          if (v < minPrice) minPrice = v;
+          if (v > maxPrice) maxPrice = v;
+        }
       }
+      const pad = (maxPrice - minPrice) * 0.08 || 1;
+      minPrice -= pad;
+      maxPrice += pad;
     }
-    const pad = (maxPrice - minPrice) * 0.08 || 1;
-    minPrice -= pad;
-    maxPrice += pad;
 
     const layout = () => {
       const rect = canvas.getBoundingClientRect();
@@ -159,7 +167,7 @@ export function PathDrawIn({ paths, basePrice, height = 280 }: PathFanProps) {
       cancelAnimationFrame(raf);
       window.removeEventListener("resize", onResize);
     };
-  }, [paths, basePrice]);
+  }, [paths, basePrice, domain]);
 
   return (
     <div style={{ height }} className="w-full">

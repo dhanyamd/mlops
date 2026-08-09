@@ -8,6 +8,10 @@ type AllPathsFanProps = {
   basePrice: number;
   height?: number;
   animate?: boolean;
+  /** Fixed [min, max] price window (e.g. base ± 4σ·√steps). When omitted the
+   * canvas auto-normalizes to each ensemble's min/max, which makes every
+   * window look identical no matter how volatility actually moved. */
+  domain?: [number, number];
 };
 
 const BAND_ORDER: [string, string, string][] = [
@@ -28,6 +32,7 @@ export function AllPathsFan({
   basePrice,
   height = 280,
   animate = true,
+  domain,
 }: AllPathsFanProps) {
   const ref = useRef<HTMLCanvasElement>(null);
 
@@ -43,15 +48,19 @@ export function AllPathsFan({
 
     let minPrice = basePrice;
     let maxPrice = basePrice;
-    for (const p of paths) {
-      for (const v of p) {
-        if (v < minPrice) minPrice = v;
-        if (v > maxPrice) maxPrice = v;
+    if (domain) {
+      [minPrice, maxPrice] = domain;
+    } else {
+      for (const p of paths) {
+        for (const v of p) {
+          if (v < minPrice) minPrice = v;
+          if (v > maxPrice) maxPrice = v;
+        }
       }
+      const pad = (maxPrice - minPrice) * 0.08 || 1;
+      minPrice -= pad;
+      maxPrice += pad;
     }
-    const pad = (maxPrice - minPrice) * 0.08 || 1;
-    minPrice -= pad;
-    maxPrice += pad;
 
     const layout = () => {
       const rect = canvas.getBoundingClientRect();
@@ -158,7 +167,7 @@ export function AllPathsFan({
       window.removeEventListener("resize", onResize);
       ctx.clearRect(0, 0, canvas.width, canvas.height);
     };
-  }, [paths, percentiles, basePrice, animate]);
+  }, [paths, percentiles, basePrice, animate, domain]);
 
   return (
     <div style={{ height }} className="w-full">

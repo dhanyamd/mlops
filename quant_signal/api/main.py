@@ -16,7 +16,7 @@ import asyncio
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from api import db
@@ -31,7 +31,7 @@ from stream.mlflow_tracking import track_gate_report, track_validation
 from stream.pipeline_health import pipeline_summary
 from stream.predictive_eval import evaluate_predictor, passes_gate
 from stream.predictor import prediction_key, strategy_key
-from stream.simulation import simulation_key
+from stream.simulation import MonteCarloEngine, _closes_from_features, simulation_key
 from stream.strategy_mc import StrategyMonteCarlo
 
 configure_logging()
@@ -302,15 +302,53 @@ def market_predict(symbol: str) -> dict:
 
 
 @app.get("/api/market/simulation/{symbol}")
-def market_simulation(symbol: str) -> dict:
-    """Monte Carlo forward fan chart (percentiles, VaR/ES) from the online store."""
+def market_simulation(
+    symbol: str,
+    scenario: str | None = Query(
+        default=None, description="what-if stress scenario (e.g. 'stress')"
+    ),
+) -> dict:
+    """Monte Carlo forward fan chart (percentiles, VaR/ES) from the online store.
+
+    ``scenario`` re-runs the *same* GBM engine on the real calibrated inputs
+    with a what-if knob (e.g. volatility ×4) and labels the payload — a stress
+    preview for the UI, never a fake data feed. Without it, serves the live
+    artifact exactly as the consumer wrote it.
+    """
     kv = _kv()
     if kv is None:
         return {"symbol": symbol.upper(), "enabled": False, "simulation": None}
-    simulation = kv.get_json(
-        simulation_key(settings.stream_redis_simulation_prefix, symbol.upper())
-    )
-    return {"symbol": symbol.upper(), "enabled": True, "simulation": simulation}
+    symbol_u = symbol.upper()
+    if scenario:
+        cfg = settings.stream_scenarios.get(scenario)
+        if cfg is None:
+            raise HTTPException(status_code=404, detail=f"unknown scenario '{scenario}'")
+        history = kv.list_json(
+            feature_key(settings.stream_redis_feature_prefix, symbol_u), reverse=False
+        )
+        closes = _closes_from_features([dict(w) for w in history])
+        engine = MonteCarloEngine(
+            n_paths=settings.stream_simulation_paths,
+            horizon_steps=settings.stream_simulation_horizon_steps,
+            vol_windows=settings.stream_simulation_vol_windows,
+            drift=settings.stream_simulation_drift,
+            sample_paths=settings.stream_simulation_sample_paths,
+        )
+        window_end = history[-1].get("window_end_ms") if history else None
+        simulation = engine.forecast(
+            closes,
+            window_end_ms=window_end,
+            sigma_scale=cfg["sigma_scale"],
+            scenario={"name": scenario, **cfg},
+        )
+        return {
+            "symbol": symbol_u,
+            "enabled": True,
+            "scenario": scenario,
+            "simulation": simulation,
+        }
+    simulation = kv.get_json(simulation_key(settings.stream_redis_simulation_prefix, symbol_u))
+    return {"symbol": symbol_u, "enabled": True, "simulation": simulation}
 
 
 @app.get("/api/market/strategy/{symbol}")
@@ -339,7 +377,13 @@ def market_execution(symbol: str) -> dict:
 
 
 @app.get("/api/market/validation/{symbol}")
-def market_validation(symbol: str, track: bool = Query(default=False)) -> dict:
+def market_validation(
+    symbol: str,
+    track: bool = Query(default=False),
+    scenario: str | None = Query(
+        default=None, description="what-if stress scenario (e.g. 'stress')"
+    ),
+) -> dict:
     """QuantPad-style pass probability: bootstrap the strategy's realized
     returns into simulated futures and score them against prop-firm rules.
 
@@ -348,6 +392,10 @@ def market_validation(symbol: str, track: bool = Query(default=False)) -> dict:
     while staying reproducible per window — the seed is echoed in the payload
     for audit (prod-grade: reproducible, never OS-entropy, never frozen at a
     fixed seed).
+
+    ``scenario`` re-runs the same bootstrap against a what-if rule override
+    (e.g. a 3% trailing stop), so busted/red futures appear and the pass arc
+    moves — a stress preview, clearly labeled, never a fake data feed.
 
     ``track=true`` logs this run to MLflow Tracking (params/metrics/artifacts).
     It defaults to off so the Signal Terminal's 15s polling never spams runs;
@@ -360,9 +408,12 @@ def market_validation(symbol: str, track: bool = Query(default=False)) -> dict:
     if not strategy or not strategy.get("strategy_equity"):
         return {"symbol": symbol.upper(), "enabled": True, "validation": None}
     seed = strategy.get("window_end_ms") or settings.stream_validation_seed
+    cfg = settings.stream_scenarios.get(scenario) if scenario else None
+    if scenario and cfg is None:
+        raise HTTPException(status_code=404, detail=f"unknown scenario '{scenario}'")
     mc = StrategyMonteCarlo(
         n_sims=settings.stream_validation_sims,
-        max_drawdown=settings.stream_validation_max_drawdown,
+        max_drawdown=cfg["max_drawdown"] if cfg else settings.stream_validation_max_drawdown,
         target=settings.stream_validation_target,
         seed=seed,
     )
@@ -381,6 +432,7 @@ def market_validation(symbol: str, track: bool = Query(default=False)) -> dict:
         "enabled": True,
         "seed": seed,
         "window_end_ms": strategy.get("window_end_ms"),
+        "scenario": scenario,
         "validation": validation,
     }
 
