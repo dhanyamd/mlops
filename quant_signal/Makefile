@@ -67,6 +67,11 @@ dbt-parse: ## Compile the project without running (fast contract check)
 dbt-run: ## Build + test all models (silver/gold, contracts enforced) with latency telemetry
 	$(ENV) $(PYTHON) python scripts/run_dbt.py build --project-dir . --profiles-dir .
 
+## Warehouse sink (Redis online store → ClickHouse BRONZE) ───────────────────
+
+ch-materialize: ## Snapshot the live Redis online store into ClickHouse (idempotent upsert)
+	$(ENV) $(PYTHON) python flows/materialize_clickhouse.py
+
 ## Streaming stack (M3: Redpanda/Kafka + Flink + Redis) ──────────────────────
 
 FLINK_JM := quant_signal-flink-jobmanager-1

@@ -1,0 +1,21 @@
+# Prometheus — metrics scraping + storage (Pillar 6).
+# extra_hosts lets it scrape host-run services (fraud API, quant API).
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+      - "--web.enable-lifecycle"       # allows hot-reload: curl -X POST localhost:9090/-/reload
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # lets Prometheus reach services on host
+
+volumes:
+  prometheus_data:

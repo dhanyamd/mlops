@@ -333,6 +333,19 @@ class Settings(BaseSettings):
     # Server-time tolerance for signed requests (recv_window, Bybit v5).
     bybit_demo_recv_window_ms: int = 5000
 
+    # ── Batch warehouse sink (streaming online store → ClickHouse BRONZE) ─────
+    # The materialize_clickhouse flow copies the live Redis artifacts (features,
+    # predictions, strategy, execution) into ClickHouse for batch analytics +
+    # Grafana. ClickHouse is the OLAP warehouse (Snowflake-class) in the root
+    # docker-compose; "default" user has full access on the local dev instance.
+    clickhouse_host: str = "localhost"
+    clickhouse_port: int = 8123
+    clickhouse_user: str = "default"
+    # Mirrors infra/clickhouse/users.d/default.xml — the dev container's
+    # deterministic default-user password (24.3 image ships a random one).
+    clickhouse_password: str = "mlops"
+    clickhouse_database: str = "quant"
+
     @property
     def has_bybit_demo_credentials(self) -> bool:
         return bool(

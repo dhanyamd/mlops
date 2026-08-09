@@ -1,0 +1,569 @@
+{
+  "__inputs": [],
+  "__requires": [
+    {
+      "type": "grafana",
+      "id": "grafana",
+      "name": "Grafana",
+      "version": "10.0.0"
+    },
+    {
+      "type": "datasource",
+      "id": "grafana-clickhouse-datasource",
+      "name": "ClickHouse",
+      "version": "1.0.0"
+    }
+  ],
+  "annotations": {
+    "list": []
+  },
+  "description": "Crypto signals \u2014 5m BRONZE warehouse (Redis online store snapshotted into ClickHouse)",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 200,
+      "title": "\ud83d\udcc8 Market Data \u2014 quant.crypto_features_5m",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "barAlignment": 0,
+            "lineWidth": 1,
+            "fillOpacity": 100
+          }
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 16,
+        "x": 0,
+        "y": 1
+      },
+      "id": 201,
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "queryType": "sql",
+          "rawSql": "SELECT fromUnixTimestamp64Milli(window_end_ms) AS time, symbol, open, high, low, close FROM quant.crypto_features_5m WHERE $__timeFilter_ms(toDateTime64(window_end_ms/1000.0, 3)) AND $__conditionalAll(symbol IN (${symbol:singlequote}), $symbol) ORDER BY time",
+          "refId": "A",
+          "format": 0,
+          "interval": "5m"
+        }
+      ],
+      "title": "5m Candles (OHLC) \u2014 $symbol",
+      "type": "candlestick"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 30
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 1
+      },
+      "id": 202,
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "queryType": "sql",
+          "rawSql": "SELECT fromUnixTimestamp64Milli(window_end_ms) AS time, symbol, volume FROM quant.crypto_features_5m WHERE $__timeFilter_ms(toDateTime64(window_end_ms/1000.0, 3)) AND $__conditionalAll(symbol IN (${symbol:singlequote}), $symbol) ORDER BY time",
+          "refId": "A",
+          "format": 0,
+          "interval": "5m"
+        }
+      ],
+      "title": "Volume",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 9
+      },
+      "id": 203,
+      "title": "\ud83d\udd2e Conformal Predictions \u2014 quant.crypto_predictions_5m",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 20
+          },
+          "unit": "percentunit"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 16,
+        "x": 0,
+        "y": 10
+      },
+      "id": 204,
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "queryType": "sql",
+          "rawSql": "SELECT fromUnixTimestamp64Milli(window_end_ms) AS time, symbol, interval_low, predicted_return, interval_high FROM quant.crypto_predictions_5m WHERE $__timeFilter_ms(toDateTime64(window_end_ms/1000.0, 3)) AND $__conditionalAll(symbol IN (${symbol:singlequote}), $symbol) ORDER BY time",
+          "refId": "A",
+          "format": 0,
+          "interval": "5m"
+        }
+      ],
+      "title": "Predicted 5m Return \u2014 90% Conformal Band",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 10
+      },
+      "id": 205,
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "background"
+      },
+      "targets": [
+        {
+          "queryType": "sql",
+          "rawSql": "SELECT symbol, argMax(toFloat64(predicted_return), window_end_ms) AS predicted_return FROM quant.crypto_predictions_5m WHERE $__timeFilter_ms(toDateTime64(window_end_ms/1000.0, 3)) AND $__conditionalAll(symbol IN (${symbol:singlequote}), $symbol) GROUP BY symbol",
+          "refId": "A",
+          "format": 1
+        }
+      ],
+      "title": "Latest Prediction Signal",
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 18
+      },
+      "id": 206,
+      "title": "\ud83d\udcb0 Strategy vs Buy & Hold \u2014 quant.crypto_strategy_5m",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2
+          },
+          "unit": "percentunit",
+          "min": -1
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 16,
+        "x": 0,
+        "y": 19
+      },
+      "id": 207,
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "queryType": "sql",
+          "rawSql": "SELECT fromUnixTimestamp64Milli(window_end_ms) AS time, symbol, total_return_strategy, total_return_buyhold FROM quant.crypto_strategy_5m WHERE $__timeFilter_ms(toDateTime64(window_end_ms/1000.0, 3)) AND $__conditionalAll(symbol IN (${symbol:singlequote}), $symbol) ORDER BY time",
+          "refId": "A",
+          "format": 0,
+          "interval": "5m"
+        }
+      ],
+      "title": "Cumulative Return \u2014 Strategy vs Buy & Hold",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0
+              },
+              {
+                "color": "green",
+                "value": 0.5
+              }
+            ]
+          },
+          "unit": "percentunit"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 19
+      },
+      "id": 208,
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "background"
+      },
+      "targets": [
+        {
+          "queryType": "sql",
+          "rawSql": "SELECT symbol, argMax(toFloat64(total_return_strategy), window_end_ms) AS total_return_strategy, argMax(toFloat64(total_return_buyhold), window_end_ms) AS total_return_buyhold, argMax(n_trades, window_end_ms) AS n_trades FROM quant.crypto_strategy_5m WHERE $__timeFilter_ms(toDateTime64(window_end_ms/1000.0, 3)) AND $__conditionalAll(symbol IN (${symbol:singlequote}), $symbol) GROUP BY symbol",
+          "refId": "A",
+          "format": 1
+        }
+      ],
+      "title": "Latest Strategy Return",
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 27
+      },
+      "id": 209,
+      "title": "\ud83e\uddfe Paper Execution \u2014 quant.crypto_execution_5m",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "currencyUSD"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 28
+      },
+      "id": 210,
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "background"
+      },
+      "targets": [
+        {
+          "queryType": "sql",
+          "rawSql": "SELECT symbol, argMax(toFloat64(net_pnl), window_end_ms) AS net_pnl FROM quant.crypto_execution_5m WHERE $__timeFilter_ms(toDateTime64(window_end_ms/1000.0, 3)) AND $__conditionalAll(symbol IN (${symbol:singlequote}), $symbol) GROUP BY symbol",
+          "refId": "A",
+          "format": 1
+        }
+      ],
+      "title": "Latest Net PnL",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.5
+              },
+              {
+                "color": "green",
+                "value": 0.75
+              }
+            ]
+          },
+          "unit": "percentunit"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 28
+      },
+      "id": 211,
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "background"
+      },
+      "targets": [
+        {
+          "queryType": "sql",
+          "rawSql": "SELECT symbol, argMax(toFloat64(win_rate), window_end_ms) AS win_rate, argMax(n_trades, window_end_ms) AS n_trades, argMax(total_fees, window_end_ms) AS total_fees FROM quant.crypto_execution_5m WHERE $__timeFilter_ms(toDateTime64(window_end_ms/1000.0, 3)) AND $__conditionalAll(symbol IN (${symbol:singlequote}), $symbol) GROUP BY symbol",
+          "refId": "A",
+          "format": 1
+        }
+      ],
+      "title": "Win Rate / Trades / Fees",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 15
+          },
+          "unit": "currencyUSD"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 28
+      },
+      "id": 212,
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "queryType": "sql",
+          "rawSql": "SELECT fromUnixTimestamp64Milli(window_end_ms) AS time, symbol, toFloat64(gross_pnl) AS gross_pnl, toFloat64(net_pnl) AS net_pnl, toFloat64(total_fees) AS total_fees FROM quant.crypto_execution_5m WHERE $__timeFilter_ms(toDateTime64(window_end_ms/1000.0, 3)) AND $__conditionalAll(symbol IN (${symbol:singlequote}), $symbol) ORDER BY time",
+          "refId": "A",
+          "format": 0,
+          "interval": "5m"
+        }
+      ],
+      "title": "Execution PnL per Window",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": [
+    "mlops",
+    "crypto",
+    "clickhouse",
+    "streaming"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {},
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "clickhouse"
+        },
+        "definition": "SELECT DISTINCT symbol FROM quant.crypto_features_5m ORDER BY symbol",
+        "hide": 0,
+        "includeAll": true,
+        "multi": true,
+        "name": "symbol",
+        "options": [],
+        "query": "SELECT DISTINCT symbol FROM quant.crypto_features_5m ORDER BY symbol",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query",
+        "label": "Symbols"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-2h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Crypto Signals \u2014 ClickHouse BRONZE",
+  "uid": "crypto-signals-clickhouse",
+  "version": 1
+}

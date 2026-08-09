@@ -1,0 +1,17 @@
+# Jaeger — distributed tracing (OTel spans) (Pillar 6).
+
+services:
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "4317:4317"     # OTLP gRPC (OpenTelemetry sends spans here)
+      - "4318:4318"     # OTLP HTTP
+      - "6831:6831/udp" # Jaeger agent (legacy)
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:16686"]
+      interval: 10s
+      timeout: 5s
+      retries: 10

@@ -23,3 +23,18 @@ datasources:
           matcherRegex: '"trace_id":"(\w+)"'
           name: TraceID
           url: "http://localhost:16686/trace/${__value.raw}"
+
+  - name: ClickHouse
+    uid: clickhouse
+    type: grafana-clickhouse-datasource
+    access: proxy
+    editable: false
+    jsonData:
+      host: clickhouse
+      port: 8123
+      protocol: http
+      username: default
+      defaultDatabase: quant
+      tlsSkipVerify: true
+    secureJsonData:
+      password: $__env{CLICKHOUSE_PASSWORD}

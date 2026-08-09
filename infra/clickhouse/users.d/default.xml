@@ -1,0 +1,16 @@
+<clickhouse>
+    <users>
+        <default>
+            <!-- Local-dev password, mirrored in config/settings.py (clickhouse_password)
+                 so flows connect out of the box. Override for any non-local deploy. -->
+            <password>mlops</password>
+            <!-- Allow the host (localhost) AND sibling compose containers
+                 (Grafana datasource connects as clickhouse:8123). -->
+            <networks>
+                <ip>::/0</ip>
+            </networks>
+            <profile>default</profile>
+            <quota>default</quota>
+        </default>
+    </users>
+</clickhouse>

@@ -1,0 +1,19 @@
+# Redis — online feature store / low-latency cache (fraud/demand online store;
+# quant_signal's live store runs on quant_signal/docker-compose.yml :6380).
+
+services:
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  redis_data:

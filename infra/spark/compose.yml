@@ -1,0 +1,36 @@
+# Spark — standalone cluster (master + worker) for the batch feature pipeline.
+# The official apache/spark image (Bitnami's was removed from Docker Hub, so
+# SPARK_MODE no longer exists). Bitnami daemonized master/worker via wrapper
+# scripts; the official image backgrounds them too unless SPARK_NO_DAEMONIZE
+# is set — without it the container would exit immediately (PID-1 trap). We run
+# the daemons in the foreground and mount the quant_signal batch flows.
+
+services:
+  spark-master:
+    image: apache/spark:3.5.1-python3
+    command: /opt/spark/sbin/start-master.sh
+    environment:
+      SPARK_NO_DAEMONIZE: "true"
+      SPARK_MASTER_HOST: spark-master
+      SPARK_MASTER_PORT: 7077
+      SPARK_MASTER_WEBUI_PORT: 8080
+      # SPARK_RPC_* / SPARK_LOCAL_STORAGE_ENCRYPTION / SPARK_SSL defaults are
+      # fine unset — the standalone cluster stays on the private compose net.
+    ports:
+      - "18080:8080"   # master web UI (moved off 8081 — the live Flink jobmanager owns it)
+      - "7077:7077"    # spark://spark-master:7077
+    volumes:
+      - ../../quant_signal/flows:/opt/spark/jobs:ro
+
+  spark-worker:
+    image: apache/spark:3.5.1-python3
+    command: /opt/spark/sbin/start-worker.sh spark://spark-master:7077
+    depends_on:
+      - spark-master
+    environment:
+      SPARK_NO_DAEMONIZE: "true"
+      SPARK_WORKER_MEMORY: 2G
+      SPARK_WORKER_CORES: 2
+      SPARK_WORKER_WEBUI_PORT: 8081
+    volumes:
+      - ../../quant_signal/flows:/opt/spark/jobs:ro

@@ -1,0 +1,33 @@
+# MLflow — model registry + experiment tracking. Metadata in PostgreSQL,
+# artifacts in MinIO (S3-compatible).
+
+services:
+  # -full image ships DB drivers (psycopg2) + boto3; base v2.x has neither.
+  # Verified 2026-08-10: ghcr.io/mlflow/mlflow:v3.15.1-full == latest-full (3.15.1),
+  # v2.14.1-full does not exist. Pinned for reproducibility.
+  # Backend URI uses explicit +psycopg2 driver (MLflow 3.x removed implicit default).
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v3.15.1-full
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    ports:
+      - "5001:5000"   # 5000 on the host is owned by a system service (ControlCenter)
+    environment:
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+    command: >
+      mlflow server
+      --host 0.0.0.0
+      --port 5000
+      --backend-store-uri postgresql+psycopg2://${POSTGRES_USER:-mlops}:${POSTGRES_PASSWORD:-mlops}@postgres:5432/${POSTGRES_DB:-mlops}
+      --default-artifact-root s3://mlflow-artifacts/
+    # NOTE: the -full image ships python but NOT curl/wget — use urllib.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:5000/health').status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10

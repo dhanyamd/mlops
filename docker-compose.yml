@@ -1,337 +1,42 @@
-# Production ML platform stack — mirrors what startups/labs run in prod.
-# Usage: docker compose up -d && make bootstrap
+# Production ML platform stack — thin entrypoint that merges the per-service
+# compose fragments under infra/<service>/compose.yml. Every service owns its
+# own folder (config + compose), senior-monorepo style. Usage:
+#   docker compose up -d              # brings up all services
+#   docker compose up -d spark-master  # or target one service
 #
 # Services:
-#   Kafka + Zookeeper     — event streaming backbone
-#   Spark (master/worker) — Structured Streaming feature pipeline
-#   ClickHouse            — OLAP warehouse (Snowflake/BigQuery class)
-#   PostgreSQL            — OLTP catalog + metadata
-#   Redis                 — online feature store / low-latency cache
-#   Qdrant                — vector DB for fraud pattern similarity search
-#   MLflow + MinIO        — experiment tracking + S3 artifact store
-#   Prefect               — batch orchestration
-#   Kafka UI              — stream observability
-#   ── Observability stack (Pillar 6) ──
-#   Prometheus            — metrics scraping + storage
-#   Grafana               — dashboards (auto-provisioned from infra/grafana/)
-#   Loki                  — log aggregation (structlog JSON → Loki)
-#   Jaeger                — distributed tracing (OTel spans)
-#   LocalStack            — AWS emulation (S3, SQS, ECR, Secrets Manager)
+#   postgres  OLTP catalog + metadata            infra/postgres
+#   clickhouse  OLAP warehouse (quant BRONZE)     infra/clickhouse
+#   redis     online store / cache                infra/redis
+#   minio     S3-compatible object storage        infra/minio
+#   mlflow    model registry (PG + MinIO)         infra/mlflow
+#   qdrant    vector DB                           infra/qdrant
+#   spark     standalone cluster (master+worker)  infra/spark
+#   prefect   batch orchestration (3.8.1)         infra/prefect
+#   kafka     event backbone (legacy pillars;     infra/kafka
+#             NOT started by default — host :9092
+#             belongs to quant_signal's Redpanda)
+#   prometheus  metrics                           infra/prometheus
+#   grafana     dashboards (+ ClickHouse ds)      infra/grafana
+#   loki        logs                              infra/loki
+#   jaeger      tracing                          infra/jaeger
+#   localstack  AWS emulation                     infra/localstack
+#
+# The quant_signal live streaming stack (Redpanda + Redis + Flink) is a
+# separate, self-contained project: quant_signal/docker-compose.yml.
 
-
-services:
-  # ── OLTP ──────────────────────────────────────────────────────────────────
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-mlops}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mlops}
-      POSTGRES_DB: ${POSTGRES_DB:-mlops}
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mlops}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-  # ── OLAP warehouse ────────────────────────────────────────────────────────
-  clickhouse:
-    image: clickhouse/clickhouse-server:24.3-alpine
-    ports:
-      - "8123:8123"
-      - "9009:9000"
-    volumes:
-      - clickhouse_data:/var/lib/clickhouse
-      - ./infra/clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql
-    ulimits:
-      nofile:
-        soft: 262144
-        hard: 262144
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8123/ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-  # ── Vector DB (fraud pattern similarity) ──────────────────────────────────
-  qdrant:
-    image: qdrant/qdrant:v1.9.2
-    ports:
-      - "6333:6333"
-      - "6334:6334"
-    volumes:
-      - qdrant_data:/qdrant/storage
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:6333/healthz"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-  # ── Online store / cache ───────────────────────────────────────────────────
-  redis:
-    image: redis:7-alpine
-    command: redis-server --appendonly yes
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
-  # ── Object storage (S3-compatible) ────────────────────────────────────────
-  minio:
-    image: minio/minio:latest
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: ${AWS_ACCESS_KEY_ID:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    volumes:
-      - minio_data:/data
-    healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  minio-init:
-    image: minio/mc:latest
-    depends_on:
-      minio:
-        condition: service_healthy
-    entrypoint: >
-      /bin/sh -c "
-      mc alias set local http://minio:9000 ${AWS_ACCESS_KEY_ID:-minioadmin} ${AWS_SECRET_ACCESS_KEY:-minioadmin} &&
-      mc mb --ignore-existing local/mlflow-artifacts &&
-      mc mb --ignore-existing local/ml-data-lake &&
-      exit 0
-      "
-
-  # ── Model registry ───────────────────────────────────────────────────────
-  # -full image ships DB drivers (psycopg2) + boto3; base v2.x has neither.
-  # Verified 2026-08-10: ghcr.io/mlflow/mlflow:v3.15.1-full == latest-full (3.15.1),
-  # v2.14.1-full does not exist. Pinned for reproducibility.
-  # Backend URI uses explicit +psycopg2 driver (MLflow 3.x removed implicit default).
-  mlflow:
-    image: ghcr.io/mlflow/mlflow:v3.15.1-full
-    depends_on:
-      postgres:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
-    ports:
-      - "5001:5000"   # 5000 on the host is owned by a system service (ControlCenter)
-    environment:
-      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-minioadmin}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
-      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
-    command: >
-      mlflow server
-      --host 0.0.0.0
-      --port 5000
-      --backend-store-uri postgresql+psycopg2://${POSTGRES_USER:-mlops}:${POSTGRES_PASSWORD:-mlops}@postgres:5432/${POSTGRES_DB:-mlops}
-      --default-artifact-root s3://mlflow-artifacts/
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
-  # ── Event streaming ────────────────────────────────────────────────────────
-  zookeeper:
-    image: confluentinc/cp-zookeeper:7.6.0
-    environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_TICK_TIME: 2000
-    ports:
-      - "2181:2181"
-
-  kafka:
-    image: confluentinc/cp-kafka:7.6.0
-    depends_on:
-      - zookeeper
-    ports:
-      - "9092:9092"
-      - "29092:29092"
-    environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-      KAFKA_LOG_RETENTION_HOURS: 168
-    healthcheck:
-      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
-      interval: 10s
-      timeout: 10s
-      retries: 15
-
-  kafka-init:
-    image: confluentinc/cp-kafka:7.6.0
-    depends_on:
-      kafka:
-        condition: service_healthy
-    entrypoint: >
-      /bin/sh -c "
-      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic transactions --partitions 3 --replication-factor 1 &&
-      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic transaction_features --partitions 3 --replication-factor 1 &&
-      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic fraud_predictions --partitions 3 --replication-factor 1 &&
-      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic fraud_alerts --partitions 1 --replication-factor 1 &&
-      echo 'Kafka topics ready'
-      "
-
-  kafka-ui:
-    image: provectuslabs/kafka-ui:latest
-    depends_on:
-      kafka:
-        condition: service_healthy
-    ports:
-      - "8080:8080"
-    environment:
-      KAFKA_CLUSTERS_0_NAME: mlops
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
-      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
-
-  # ── Spark cluster (standalone) ─────────────────────────────────────────────
-  # The official apache/spark image (Bitnami's was removed from Docker Hub, so
-  # SPARK_MODE no longer exists). Bitnami daemonized master/worker via wrapper
-  # scripts; the official image backgrounds them too unless SPARK_NO_DAEMONIZE
-  # is set — without it the container would exit immediately (PID-1 trap). We
-  # run the daemons in the foreground and mount the quant_signal batch flows.
-  spark-master:
-    image: apache/spark:3.5.1-python3
-    command: /opt/spark/sbin/start-master.sh
-    environment:
-      SPARK_NO_DAEMONIZE: "true"
-      SPARK_MASTER_HOST: spark-master
-      SPARK_MASTER_PORT: 7077
-      SPARK_MASTER_WEBUI_PORT: 8080
-      # SPARK_RPC_* / SPARK_LOCAL_STORAGE_ENCRYPTION / SPARK_SSL defaults are
-      # fine unset — the standalone cluster stays on the private compose net.
-    ports:
-      - "18080:8080"   # master web UI (moved off 8081 — the live Flink jobmanager owns it)
-      - "7077:7077"    # spark://spark-master:7077
-    volumes:
-      - ./quant_signal/flows:/opt/spark/jobs:ro
-
-  spark-worker:
-    image: apache/spark:3.5.1-python3
-    command: /opt/spark/sbin/start-worker.sh spark://spark-master:7077
-    depends_on:
-      - spark-master
-    environment:
-      SPARK_NO_DAEMONIZE: "true"
-      SPARK_WORKER_MEMORY: 2G
-      SPARK_WORKER_CORES: 2
-      SPARK_WORKER_WEBUI_PORT: 8081
-    volumes:
-      - ./quant_signal/flows:/opt/spark/jobs:ro
-
-  # ── Batch orchestration ────────────────────────────────────────────────────
-  prefect:
-    image: prefecthq/prefect:2.19-python3.11
-    command: prefect server start --host 0.0.0.0
-    ports:
-      - "4200:4200"
-    environment:
-      PREFECT_SERVER_API_HOST: 0.0.0.0
-      PREFECT_API_URL: http://localhost:4200/api
-    volumes:
-      - prefect_data:/root/.prefect
-
-  # ── Observability: Metrics ─────────────────────────────────────────────────
-  prometheus:
-    image: prom/prometheus:v2.52.0
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus_data:/prometheus
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.path=/prometheus"
-      - "--storage.tsdb.retention.time=15d"
-      - "--web.enable-lifecycle"       # allows hot-reload: curl -X POST localhost:9090/-/reload
-    extra_hosts:
-      - "host.docker.internal:host-gateway"   # lets Prometheus reach services on host
-
-  grafana:
-    image: grafana/grafana:10.4.2
-    ports:
-      - "3001:3000"   # 3000 on the host belongs to the Next.js Signal Terminal
-    depends_on:
-      - prometheus
-    environment:
-      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
-      GF_USERS_ALLOW_SIGN_UP: "false"
-      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/dashboards/ml_model_health.json
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./infra/grafana/dashboards:/etc/grafana/dashboards:ro
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
-  # ── Observability: Logs ────────────────────────────────────────────────────
-  loki:
-    image: grafana/loki:2.9.7
-    ports:
-      - "3100:3100"
-    command: -config.file=/etc/loki/local-config.yaml
-    volumes:
-      - loki_data:/loki
-
-  # ── Observability: Tracing ─────────────────────────────────────────────────
-  jaeger:
-    image: jaegertracing/all-in-one:1.57
-    ports:
-      - "16686:16686"   # Jaeger UI
-      - "4317:4317"     # OTLP gRPC (OpenTelemetry sends spans here)
-      - "4318:4318"     # OTLP HTTP
-      - "6831:6831/udp" # Jaeger agent (legacy)
-    environment:
-      COLLECTOR_OTLP_ENABLED: "true"
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:16686"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
-  # ── AWS Emulation (LocalStack) ─────────────────────────────────────────────
-  localstack:
-    image: localstack/localstack:3.5
-    ports:
-      - "4566:4566"         # All AWS service APIs (S3, SQS, ECR, Secrets Manager)
-    environment:
-      SERVICES: s3,sqs,secretsmanager,iam,cloudwatch
-      DEBUG: "0"
-      PERSISTENCE: "1"      # State survives container restart
-    volumes:
-      - localstack_data:/var/lib/localstack
-      - /var/run/docker.sock:/var/run/docker.sock
-
-volumes:
-  postgres_data:
-  clickhouse_data:
-  qdrant_data:
-  redis_data:
-  minio_data:
-  prefect_data:
-  prometheus_data:
-  grafana_data:
-  loki_data:
-  localstack_data:
+include:
+  - infra/postgres/compose.yml
+  - infra/clickhouse/compose.yml
+  - infra/redis/compose.yml
+  - infra/minio/compose.yml
+  - infra/mlflow/compose.yml
+  - infra/qdrant/compose.yml
+  - infra/spark/compose.yml
+  - infra/prefect/compose.yml
+  - infra/kafka/compose.yml
+  - infra/prometheus/compose.yml
+  - infra/grafana/compose.yml
+  - infra/loki/compose.yml
+  - infra/jaeger/compose.yml
+  - infra/localstack/compose.yml

@@ -1,0 +1,30 @@
+# ClickHouse — OLAP warehouse (Snowflake/BigQuery class) for batch analytics.
+# Includes the quant streaming BRONZE tables (quant.*) plus the legacy
+# demand/fraud databases seeded from init.sql.
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3-alpine
+    ports:
+      - "8123:8123"
+      - "9009:9000"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+      # Deterministic local-dev password for the default user (24.3 image ships
+      # a random one otherwise); mirrors config/settings.py clickhouse_password.
+      - ./users.d/default.xml:/etc/clickhouse-server/users.d/default.xml:ro
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      # 127.0.0.1, not localhost: the container resolves localhost -> ::1
+      # (IPv6) but the server binds IPv4 only.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8123/ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  clickhouse_data:

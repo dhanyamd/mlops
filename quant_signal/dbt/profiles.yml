@@ -1,6 +1,11 @@
 # Connection credentials come exclusively from env vars (loaded via the
 # Makefile from ./.env). The password uses the DBT_ENV_SECRET_* prefix so dbt
 # scrubs it from logs automatically.
+#
+# Auth: key-pair (SNOWFLAKE_JWT), matching db/snowflake.py. This account has
+# MFA ENABLED, and dbt's CLI cannot answer a Duo push or read the connector's
+# cached MFA token — it falls back to demanding a TOTP passcode that blocks
+# automation. Key-pair auth is MFA-agnostic and works headless.
 quant_signal:
   target: dev
   outputs:
@@ -8,11 +13,9 @@ quant_signal:
       type: snowflake
       account: "{{ env_var('DBT_SNOWFLAKE_ACCOUNT') }}"
       user: "{{ env_var('DBT_SNOWFLAKE_USER') }}"
-      password: "{{ env_var('DBT_ENV_SECRET_SNOWFLAKE_PASSWORD') }}"
-      # Modern Snowflake accounts require MFA for password logins. dbt reuses
-      # the client-side MFA token cache (macOS/Windows), so no prompt after
-      # the first auth. Set to 'snowflake' for accounts without MFA.
-      authenticator: "{{ env_var('DBT_SNOWFLAKE_AUTHENTICATOR', 'snowflake') }}"
+      authenticator: snowflake_jwt
+      private_key_path: "{{ env_var('DBT_SNOWFLAKE_PRIVATE_KEY_PATH') }}"
+      private_key_passphrase: "{{ env_var('DBT_SNOWFLAKE_PRIVATE_KEY_PASSPHRASE', '') }}"
       role: "{{ env_var('DBT_SNOWFLAKE_ROLE', 'ACCOUNTADMIN') }}"
       database: "{{ env_var('DBT_SNOWFLAKE_DATABASE', 'QUANT') }}"
       warehouse: "{{ env_var('DBT_SNOWFLAKE_WAREHOUSE', 'QUANT_WH') }}"
@@ -29,8 +32,9 @@ quant_signal:
       type: snowflake
       account: "{{ env_var('DBT_SNOWFLAKE_ACCOUNT') }}"
       user: "{{ env_var('DBT_SNOWFLAKE_USER') }}"
-      password: "{{ env_var('DBT_ENV_SECRET_SNOWFLAKE_PASSWORD') }}"
-      authenticator: "{{ env_var('DBT_SNOWFLAKE_AUTHENTICATOR', 'snowflake') }}"
+      authenticator: snowflake_jwt
+      private_key_path: "{{ env_var('DBT_SNOWFLAKE_PRIVATE_KEY_PATH') }}"
+      private_key_passphrase: "{{ env_var('DBT_SNOWFLAKE_PRIVATE_KEY_PASSPHRASE', '') }}"
       role: "{{ env_var('DBT_SNOWFLAKE_ROLE', 'ACCOUNTADMIN') }}"
       database: "{{ env_var('DBT_SNOWFLAKE_DATABASE', 'QUANT') }}"
       warehouse: "{{ env_var('DBT_SNOWFLAKE_WAREHOUSE', 'QUANT_WH') }}"
