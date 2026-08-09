@@ -149,6 +149,9 @@ function McGauge({ simulation }: { simulation: Simulation }) {
         <div>
           {simulation.n_paths.toLocaleString()} paths · {simulation.horizon_steps}×5m
         </div>
+        <div>
+          Student-t ν{simulation.nu?.toFixed(1) ?? "∞"} · EWMA λ{simulation.ewma_lambda ?? 0.94}
+        </div>
       </div>
     </div>
   );
@@ -562,7 +565,7 @@ export default function SignalPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Signal Terminal</h1>
           <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-            River online model + ACI conformal intervals + 10k-path Monte Carlo, refreshed every 5m window
+            River online model + ACI conformal intervals + 10k-path Monte Carlo (Student-t + EWMA), refreshed every 5m window — with a reality-check monitor scoring the same predictive family
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-4">
@@ -665,21 +668,11 @@ export default function SignalPage() {
             )}
           </Card>
         </div>
-        <Card
-          title="Reality check"
-          subtitle={
-            real
-              ? `${real.symbol} · ${real.n_windows} 1-step windows replayed · calibration monitor`
-              : "forecast calibration monitor — warm-up needs a few dozen windows"
-          }
-        >
-          {real ? (
-            <RealityCheck reality={real} />
+        <Card title="Realized 5m returns" subtitle="actual moves each window — the market the model is reacting to">
+          {feat && feat.length >= 2 ? (
+            <RealizedReturns features={feat} height={300} />
           ) : (
-            <p className="py-12 text-center text-sm text-zinc-500">
-              Warm-up — needs at least a few dozen feature windows to replay
-              forecasts point-in-time.
-            </p>
+            <p className="py-12 text-center text-sm text-zinc-500">Need at least two feature windows.</p>
           )}
         </Card>
       </div>
@@ -687,10 +680,10 @@ export default function SignalPage() {
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2">
           <Card
-            title="All simulated futures"
+            title="Monte Carlo · all simulated futures"
             subtitle={
               sim
-                ? `${simTag}${(sim.sample_paths?.length ?? 0).toLocaleString()} raw paths · percentile bands 10–90 / 25–75 · median · ${volLabel}`
+                ? `${simTag}${(sim.sample_paths?.length ?? 0).toLocaleString()} raw paths · bands 10–90 / 25–75 · median · ${volLabel} · ${mcDistLabel}`
                 : "Monte Carlo all-paths fan"
             }
           >
@@ -707,14 +700,30 @@ export default function SignalPage() {
             )}
           </Card>
         </div>
-        <Card title="Realized 5m returns" subtitle="actual moves each window — the market the model is reacting to">
-          {feat && feat.length >= 2 ? (
-            <RealizedReturns features={feat} height={280} />
-          ) : (
-            <p className="py-12 text-center text-sm text-zinc-500">Need at least two feature windows.</p>
-          )}
-        </Card>
+        <div className="space-y-6">
+          <Card title="Latest window features" subtitle="Flink 5m aggregates from Redis">
+            {feat ? <FeaturePanel features={feat} /> : <p className="py-12 text-center text-sm text-zinc-500">No feature windows yet.</p>}
+          </Card>
+        </div>
       </div>
+
+      <Card
+        title="Reality check"
+        subtitle={
+          real
+            ? `${real.symbol} · ${real.n_windows} 1-step windows replayed point-in-time · scored with the same t+EWMA family the simulator uses`
+            : "forecast calibration monitor — warm-up needs a few dozen windows"
+        }
+      >
+        {real ? (
+          <RealityCheck reality={real} />
+        ) : (
+          <p className="py-12 text-center text-sm text-zinc-500">
+            Warm-up — needs at least a few dozen feature windows to replay
+            forecasts point-in-time.
+          </p>
+        )}
+      </Card>
 
       <Card
         title="Paper execution"
@@ -730,18 +739,9 @@ export default function SignalPage() {
         />
       </Card>
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <div className="lg:col-span-2">
-          <Card title="Live P&L vs buy-and-hold" subtitle={strat ? `${strat.n_windows} windows · ${strat.n_trades} trades` : "compounded from realized 5m signals"}>
-            {strat ? <PnLStrip strategy={strat} /> : <p className="py-12 text-center text-sm text-zinc-500">Warming up — equity compounds from realized signals.</p>}
-          </Card>
-        </div>
-        <div className="space-y-6">
-          <Card title="Latest window features" subtitle="Flink 5m aggregates from Redis">
-            {feat ? <FeaturePanel features={feat} /> : <p className="py-12 text-center text-sm text-zinc-500">No feature windows yet.</p>}
-          </Card>
-        </div>
-      </div>
+      <Card title="Live P&L vs buy-and-hold" subtitle={strat ? `${strat.n_windows} windows · ${strat.n_trades} trades` : "compounded from realized 5m signals"}>
+        {strat ? <PnLStrip strategy={strat} /> : <p className="py-12 text-center text-sm text-zinc-500">Warming up — equity compounds from realized signals.</p>}
+      </Card>
 
       {val ? (
         <ValidationPanel validation={val} geometry={geo} realized={strat?.strategy_equity} stress={stress} />

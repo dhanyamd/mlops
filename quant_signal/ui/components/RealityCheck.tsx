@@ -116,7 +116,7 @@ export function RealityCheck({ reality }: { reality: Reality }) {
         )}
       </div>
 
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-6">
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
         <div className="rounded-lg border border-zinc-200 px-3 py-2 dark:border-zinc-800">
           <div className="text-[10px] uppercase tracking-wide text-zinc-500">10–90 coverage</div>
           <div className={`font-mono text-base font-semibold tabular-nums ${covTone}`}>
