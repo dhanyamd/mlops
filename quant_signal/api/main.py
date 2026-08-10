@@ -24,6 +24,7 @@ from api.stream import MarketStream, start_stream, stop_stream
 from config.logging import configure_logging
 from config.settings import csv_list, get_settings
 from scripts.pead_backtest import compute_pead
+from stream.data_quality import quality_summary
 from stream.execution import execution_key
 from stream.kv import KVStore, RedisKV
 from stream.materializer import feature_key
@@ -179,6 +180,27 @@ def market_portfolio() -> dict:
         "win_rate": (round(n_wins / n_trades, 4) if n_trades else None),
         "rows": rows,
     }
+
+
+@app.get("/api/market/quality")
+def market_quality() -> dict:
+    """Five-pillar data-quality / SLA report over the window store.
+
+    Computed live from the online store (never a persisted snapshot): per-symbol
+    dimensions (freshness, volume, completeness, uniqueness, ordering, validity,
+    accuracy), the cross-symbol consistency score, and the stage-by-stage lineage
+    manifest. The overall score is the WORST dimension (Elementary-style health
+    — one broken dimension means the pipeline is not healthy, a weighted average
+    can be gamed), and every threshold is RELATIVE to the cadence (Soda: alert
+    on ~15–20% deviation from the expected rate, not fixed wall-clock numbers).
+
+    Defined above /api/market/{symbol} so it is never shadowed by the symbol
+    catch-all.
+    """
+    kv = _kv()
+    if kv is None:
+        return {"enabled": False, "quality": None}
+    return {"enabled": True, "quality": quality_summary(kv, settings)}
 
 
 @app.get("/api/market/{symbol}")
@@ -594,12 +616,27 @@ def market_gate(symbol: str, track: bool = Query(default=False)) -> dict:
     )
     if not rows:
         return {"symbol": symbol.upper(), "enabled": True, "gate": None}
+    # Feed the same lagged cross-coin returns the live predictor uses, so the
+    # gate tests the model as it actually runs online (signs learned, never
+    # hardcoded). Each cross symbol's stored history is replayed too.
+    cross_windows: dict[str, list[dict]] = {}
+    for cross in csv_list(settings.stream_prediction_cross_symbols):
+        if cross.upper() == symbol.upper():
+            continue
+        cross_rows = kv.list_json(
+            feature_key(settings.stream_redis_feature_prefix, cross.upper()),
+            reverse=False,
+            maxlen=settings.stream_redis_feature_maxlen,
+        )
+        if cross_rows:
+            cross_windows[cross.upper()] = [dict(r) for r in cross_rows]
     report = evaluate_predictor(
         rows,
         alpha=settings.stream_prediction_alpha,
         gamma=settings.stream_prediction_gamma,
         residual_window=settings.stream_prediction_residual_window,
         taker_cost=settings.stream_gate_taker_cost,
+        cross_windows=cross_windows or None,
     )
     passes, failures = passes_gate(report, settings, n_trials=settings.stream_gate_n_trials)
     if track:
@@ -618,6 +655,26 @@ def market_gate(symbol: str, track: bool = Query(default=False)) -> dict:
     gate = {k: v for k, v in report.items() if k != "_strat_rets"}
     gate["failures"] = failures
     return {"symbol": symbol.upper(), "enabled": True, "gate": gate}
+
+
+@app.get("/api/market/research/{symbol}")
+def market_research(symbol: str) -> dict:
+    """Latest autonomous-research leaderboard for the symbol.
+
+    Produced offline by ``scripts/run_research.py`` (``make stream-research``):
+    every configuration in the grid replayed over the stored windows, ranked
+    by the objective, and the winner deflated for the total trial count — the
+    multiple-testing correction that separates an edge from the maximum of
+    pure noise (Bailey & López de Prado, "The Deflated Sharpe Ratio", JPM
+    40(5):94, 2014). Returns None until the first sweep has run.
+    """
+    kv = _kv()
+    if kv is None:
+        return {"symbol": symbol.upper(), "enabled": False, "research": None}
+    summary = kv.get_json(f"{settings.research_leaderboard_prefix}:{symbol.upper()}")
+    if not summary:
+        return {"symbol": symbol.upper(), "enabled": True, "research": None}
+    return {"symbol": symbol.upper(), "enabled": True, "research": summary}
 
 
 def _default_live_symbol() -> str:

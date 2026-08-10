@@ -23,11 +23,11 @@ _THRESHOLD = 900.0
 
 _PREFIXES = dict(
     live_prefix="live:crypto",
-    feature_prefix="feature:crypto:5m",
-    prediction_prefix="prediction:crypto:5m",
-    simulation_prefix="simulation:crypto:5m",
-    strategy_prefix="strategy:crypto:5m",
-    execution_prefix="execution:crypto:5m",
+    feature_prefix="feature:crypto:1h",
+    prediction_prefix="prediction:crypto:1h",
+    simulation_prefix="simulation:crypto:1h",
+    strategy_prefix="strategy:crypto:1h",
+    execution_prefix="execution:crypto:1h",
 )
 
 
@@ -35,14 +35,14 @@ def _populate(kv: FakeKV, *, feature_end: int = _TS, artifacts_end: int = _TS) -
     """Healthy store: live bar, one feature window, every artifact tagged."""
     kv.set_json(live_key("live:crypto", "BTCUSDT"), {"ts": _TS, "provider": "binance"})
     kv.push_json(
-        feature_key("feature:crypto:5m", "BTCUSDT"),
+        feature_key("feature:crypto:1h", "BTCUSDT"),
         {"symbol": "BTCUSDT", "window_end_ms": feature_end, "close": 100.0},
         maxlen=200,
     )
     for key_builder, prefix in (
-        (prediction_key, "prediction:crypto:5m"),
-        (simulation_key, "simulation:crypto:5m"),
-        (strategy_key, "strategy:crypto:5m"),
+        (prediction_key, "prediction:crypto:1h"),
+        (simulation_key, "simulation:crypto:1h"),
+        (strategy_key, "strategy:crypto:1h"),
     ):
         kv.set_json(
             key_builder(prefix, "BTCUSDT"), {"symbol": "BTCUSDT", "window_end_ms": artifacts_end}
@@ -50,7 +50,7 @@ def _populate(kv: FakeKV, *, feature_end: int = _TS, artifacts_end: int = _TS) -
     from stream.execution import execution_key
 
     kv.set_json(
-        execution_key("execution:crypto:5m", "BTCUSDT"),
+        execution_key("execution:crypto:1h", "BTCUSDT"),
         {"symbol": "BTCUSDT", "window_end_ms": artifacts_end},
     )
 
@@ -89,7 +89,7 @@ def test_summary_marks_stalled_features_stale() -> None:
 
 def test_summary_marks_stale_downstream_artifact() -> None:
     kv = FakeKV()
-    _populate(kv, artifacts_end=_TS - 1_800_000)  # artifacts six 5m windows behind
+    _populate(kv, artifacts_end=_TS - 1_800_000)  # artifacts 30 min behind features
 
     summary = pipeline_summary(kv, symbols=["BTCUSDT"], staleness_threshold=_THRESHOLD, **_PREFIXES)
 
@@ -123,7 +123,9 @@ def test_health_summary_endpoint_reads_redis(monkeypatch) -> None:
     body = resp.json()
     assert body["enabled"] is True
     assert body["healthy"] is True
-    assert body["threshold_seconds"] == _THRESHOLD
+    assert (
+        body["threshold_seconds"] == api_main.settings.stream_watchdog_staleness_threshold_seconds
+    )
     btc = _by_name(body["stages"], "BTCUSDT")
     assert set(btc) == {"produce", "features", "predict", "simulate", "strategy", "execute"}
 

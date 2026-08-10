@@ -24,6 +24,15 @@ def csv_list(value: str) -> list[str]:
     return [part.strip() for part in value.split(",") if part.strip()]
 
 
+def csv_floats(value: str) -> list[float]:
+    """Split an env-provided CSV string into floats (research-grid axes).
+
+    The harness sweep axes (λ multiples, taker-cost assumptions) are lists of
+    floats in the environment — never literals in code.
+    """
+    return [float(part) for part in value.split(",") if part.strip()]
+
+
 class Settings(BaseSettings):
     """Typed, validated settings loaded from env vars (and optional ``.env``)."""
 
@@ -75,7 +84,10 @@ class Settings(BaseSettings):
     ingest_default_provider: str = "yahoo"
     ingest_default_days: int = 365
     ingest_default_symbols: str = "AAPL,MSFT,NVDA"
-    ingest_default_crypto_symbols: str = "BTCUSDT,ETHUSDT"
+    # Crypto universe: the two majors are the *signals* (they move first), the
+    # follower coins are the *targets* (they react a few minutes later — the
+    # lead-lag edge documented by Jia et al. 2023 and Guo et al. 2024).
+    ingest_default_crypto_symbols: str = "BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT"
     ingest_default_macro_series: str = "VIXCLS,CPIAUCSL,DGS10,DGS2,FEDFUNDS,UNRATE"
     ingest_default_tickers: str = "AAPL,MSFT"
     # Fundamental metrics extracted from SEC EDGAR XBRL company facts.
@@ -117,21 +129,36 @@ class Settings(BaseSettings):
     stream_kafka_bootstrap_servers: str = "localhost:9092"
     # Raw venue minute bars (producer → Flink → materializer). Keyed by symbol.
     stream_kafka_topic_raw: str = "crypto.bars.raw"
-    # 5m window features computed by the Flink SQL job (crypto_features.sql).
-    stream_kafka_topic_features: str = "crypto.features.5m"
+    # 1h window features computed by the Flink SQL job (crypto_features_1h.sql)
+    # — the TRADING cadence. Research: hourly horizons turn over far less than
+    # 5m, so taker fees stop dominating (Bysik & Ślepaczuk, "Machine Learning-
+    # Based Bitcoin Trading Under Transaction Costs", arXiv:2606.00060, 2026;
+    # the AdaptiveTrend paper reports Sharpe 2.41 at 6h vs 1.54 at 1h — longer
+    # horizons monotonically cut the fee bleed). The seesaw/lead-lag edge the
+    # literature documents at 5m (Jia et al. 2023, Guo et al. 2024) has NOT
+    # been tested at 1h — that is our novel extension, cost-filtered.
+    stream_kafka_topic_features: str = "crypto.features.1h"
+    # The 5m feature pipeline stays RUNNING as the benchmark/data feed (the
+    # "Alpha Autopsy" backtest source), even though trading moved to 1h. The
+    # materializer keeps both routes; everything else reads the 1h topic/prefix.
+    stream_kafka_topic_features_5m: str = "crypto.features.5m"
     # Online store where the materializer lands live bars + window features.
     # 6380: the docker-compose Redis is remapped off 6379 so it never
     # collides with a host Redis (the API/producer connect from the host).
     stream_redis_url: str = "redis://localhost:6380"
     stream_redis_live_prefix: str = "live:crypto"
-    stream_redis_feature_prefix: str = "feature:crypto:5m"
+    stream_redis_feature_prefix: str = "feature:crypto:1h"
+    # The 5m feature prefix, kept alive for the benchmark feed.
+    stream_redis_feature_prefix_5m: str = "feature:crypto:5m"
     # Windows of Flink features kept per symbol (RPUSH + LTRIM bound).
     stream_redis_feature_maxlen: int = 200
     # Staleness gate for the watchdog and the API's pipeline-status endpoint:
     # "healthy" means the latest feature window ended no more than this many
     # seconds before the latest raw bar (event-time delta, so the host clock
-    # drifting is irrelevant). Sized to > one 5m window + watermark + slack.
-    stream_watchdog_staleness_threshold_seconds: float = 900.0
+    # drifting is irrelevant). Sized to > one 1h window + watermark + slack
+    # (a healthy 1h pipeline sits 0–60min behind the in-progress raw bar, so
+    # the threshold must clear a full hour plus margin).
+    stream_watchdog_staleness_threshold_seconds: float = 7200.0
     # Venue (source exchange) for the live stream: the provider built by name
     # from the registry and stamped on every raw bar's ``provider`` field.
     stream_venue: str = "binance"
@@ -144,16 +171,25 @@ class Settings(BaseSettings):
     stream_flink_jobmanager_container: str = "quant_signal-flink-jobmanager-1"
     stream_flink_taskmanager_container: str = "quant_signal-flink-taskmanager-1"
     stream_redpanda_container: str = "quant_signal-redpanda-1"
-    stream_flink_consumer_group: str = "flink-crypto-features"
-    stream_flink_sql_path: str = "/opt/flink/jobs/crypto_features.sql"
+    # The 1h trading job (crypto_features_1h.sql) — the one the watchdog guards
+    # as the critical pipeline. The 5m benchmark job stays running too and is
+    # healed from its own group/SQL pair (below).
+    stream_flink_consumer_group: str = "flink-crypto-features-1h"
+    stream_flink_sql_path: str = "/opt/flink/jobs/crypto_features_1h.sql"
+    # The 5m benchmark feed (crypto_features.sql) — kept alive as the Alpha
+    # Autopsy data source, but it is NOT the trading cadence anymore.
+    stream_flink_consumer_group_5m: str = "flink-crypto-features"
+    stream_flink_sql_path_5m: str = "/opt/flink/jobs/crypto_features.sql"
 
     # ── Prediction layer (M3.5): River + conformal intervals + Monte Carlo ───
-    # Online store prefixes for the predictor and simulator outputs.
-    stream_redis_prediction_prefix: str = "prediction:crypto:5m"
-    stream_redis_simulation_prefix: str = "simulation:crypto:5m"
+    # Online store prefixes for the predictor and simulator outputs. The
+    # prediction/strategy/simulation/execution layers all run on the 1h cadence
+    # (the TRADING clock); only the raw+features 5m feed stays for the benchmark.
+    stream_redis_prediction_prefix: str = "prediction:crypto:1h"
+    stream_redis_simulation_prefix: str = "simulation:crypto:1h"
     # Live strategy P&L curve (compounded equity vs buy-and-hold) derived from
     # the predictor's realized directions, for the Signal Terminal P&L strip.
-    stream_redis_strategy_prefix: str = "strategy:crypto:5m"
+    stream_redis_strategy_prefix: str = "strategy:crypto:1h"
     # Windows kept in the per-symbol strategy equity curve.
     stream_strategy_maxlen: int = 500
     # Adaptive Conformal Inference (Gibbs & Candès 2021): target miscoverage
@@ -163,6 +199,31 @@ class Settings(BaseSettings):
     stream_prediction_gamma: float = 0.005
     # Residuals kept for the conformal interval quantile.
     stream_prediction_residual_window: int = 200
+    # Trading rule: a LONG/SHORT is only placed when the predicted next-1h
+    # return clears ±this. 0.002 = 20 bps = λ·c with λ=2 and c=10 bps round-trip
+    # cost — the cost-aware filter of Bysik & Ślepaczuk ("Machine Learning-Based
+    # Bitcoin Trading Under Transaction Costs", arXiv:2606.00060, 2026): their
+    # eq. (5) opens a position only when |r̂| > λ·c·|pos*−pos_prev|. On hourly
+    # BTC with λ=2 the filter flips XGBoost long-only from −64.0% ARC (10 619
+    # trades, all the fee bleed) to +65.4% ARC (251 trades), and long-short from
+    # −92.6% to +44.4% (60 trades). 20 bps also clears Bybit's 11 bps taker
+    # round trip (5.5 bps/leg, v5 fee schedule) with margin. The banding
+    # intuition — a higher hurdle to enter than to maintain — is the single most
+    # effective cost-mitigation technique (Novy-Marx & Velikov, "A Taxonomy of
+    # Anomalies and Their Trading Costs", RFS 29(1), 2016); the engine HOLDs
+    # through signals weaker than the entry band (Gârleanu & Pedersen, "Dynamic
+    # Trading with Predictable Returns and Transaction Costs", JoF 68(6), 2013:
+    # costs create a no-trade region — hold on decay, don't churn).
+    stream_prediction_direction_threshold: float = 0.002
+    # Cross-coin lead-lag features: lagged returns of these symbols are fed as
+    # features into EVERY symbol's model. The majors (BTC, ETH) move first and
+    # the followers react a few minutes later — the "seesaw effect" (Jia, Wu,
+    # Yan & Liu, J. Empirical Finance 74, 2023) and cross-crypto return
+    # predictability (Guo, Sang, Tu & Wang, JEDC 163, 2024): large coins lead
+    # small coins but not vice-versa, and a LASSO long-short earns 5-6 bps per
+    # 5m gross / 0.07-0.08 bps net (73-84% annualized) after realistic costs.
+    # Lagged leaders for SOL/XRP are the documented tradeable edge at 5m.
+    stream_prediction_cross_symbols: str = "BTCUSDT,ETHUSDT"
     # Monte Carlo engine: paths (a power of two so the Sobol low-discrepancy
     # net keeps its (0,m,s)-net stratification property — Niederreiter 1992),
     # forward horizon (5m steps), trailing 5m windows used to estimate the
@@ -288,22 +349,124 @@ class Settings(BaseSettings):
     # Taker cost charged per position flip against the strategy (5bps default).
     stream_gate_taker_cost: float = 0.0005
 
+    # ── Autonomous research harness (offline parameter sweep) ────────────────
+    # The harness ("Autonomous AI Researcher") sweeps the predictor's config
+    # grid offline, replays the EXACT progressive-validation loop over every
+    # configuration, ranks the trials, and deflates the winner for the total
+    # number of trials — the multiple-testing disclosure the literature
+    # demands: a Sharpe picked as the best of N trials is the maximum of N
+    # draws, and the maximum of pure noise is large (Bailey & López de Prado,
+    # "The Deflated Sharpe Ratio", JPM 40(5) 94–107, 2014; qbx-research:
+    # K=50 typical trials → spurious max Sharpe ~0.4–0.8). The sweep axis is
+    # λ — the cost-aware filter multiple of Bysik & Ślepaczuk (arXiv:
+    # 2606.00060, eq. 5); the entry hurdle is derived as direction_threshold
+    # = λ × round-trip taker cost (λ=2 @ 10bps = the live 20bps band).
+    research_lambda_values: str = "0.0,0.5,1.0,1.5,2.0,2.5,3.0"
+    research_taker_cost_values: str = "0.0005,0.001"
+    # Feature-set variants: "single" = own-symbol features only; "cross" adds
+    # the lagged cross-coin returns the live predictor uses (sign learned
+    # online, never hardcoded — the seesaw/spillover literature disagrees).
+    research_feature_modes: str = "single,cross"
+    # Search method: "grid" = exhaustive Cartesian product (small spaces);
+    # "random" = seeded budget-constrained draws (large spaces) — same
+    # coverage-per-sample argument as qbx-research's latin_hypercube.
+    research_search_method: str = "grid"
+    # 0 → full grid; >0 → cap trials when method is "random".
+    research_budget: int = 0
+    # Pinned so a sweep is byte-identical across reruns (reproducibility is a
+    # first-class property of research infrastructure — Hasan Javed harness).
+    research_seed: int = 42
+    # Ranking objective + hard constraint: a trial must clear its own assumed
+    # taker cost (non-negative excess return) to be a candidate for winner.
+    research_objective: str = "annual_sharpe_strategy"
+    research_min_excess_return: float = 0.0
+    research_top_k: int = 10
+    # Stability gate: the winner's per-block IC must not vary wildly across
+    # time (coefficient of variation < this) or the edge is one lucky period
+    # (offline-pixel WFV guide: CV > 0.2 → unstable, reject). Plateau over
+    # peak — an isolated optimum is a "cliff" (AlgoXpert, arXiv:2603.09219).
+    research_max_block_ic_cv: float = 0.2
+    # Number of contiguous blocks the replay splits history into for the
+    # per-block stability check.
+    research_n_blocks: int = 4
+    # Where each symbol's sweep leaderboard lands in the online store.
+    research_leaderboard_prefix: str = "research:harness:leaderboard"
+
+    # ── Data quality / SLA / visibility ──────────────────────────────────────
+    # The five-pillar observability model (freshness, volume, distribution,
+    # schema, lineage — Soda/Elementary) applied to the streaming window
+    # store: every dimension's threshold is RELATIVE to the pipeline cadence
+    # (window_ms), never a fixed wall-clock number, because an hourly pipeline
+    # should alert on a 2h stall, not on "24h" (Soda: "set freshness
+    # thresholds relative to your pipeline's expected cadence, not a fixed
+    # window").
+    # Freshness SLA: the feature window may lag the venue's latest raw bar by
+    # at most this many cadences before it's a stall.
+    quality_freshness_max_cadences: float = 2.0
+    # Volume: expected windows in the trailing lookback (lookback_ms / window_ms
+    # for a 24/7 crypto calendar); a deviation beyond these ratios is an
+    # anomaly (Soda: alert on ~15-20% relative deviation, not absolute counts).
+    quality_volume_lookback_hours: float = 24.0
+    quality_volume_warn_ratio: float = 0.9
+    quality_volume_min_ratio: float = 0.8
+    # Uniqueness/ordering/gaps: at-least-once Kafka delivery can duplicate a
+    # window; a dropped message leaves a gap; out-of-order windows break the
+    # chronology the online model depends on. Surfaced, never silently
+    # absorbed (vexdata: duplicates and gaps accumulate silently otherwise).
+    quality_max_duplicate_ratio: float = 0.01
+    quality_max_out_of_order: int = 0
+    quality_max_gaps_warn: int = 1
+    # Validity/accuracy: required numeric fields per window, and value bounds
+    # mirroring the predictor's own sanity clamps (a positive close, sane
+    # high≥low, ratio features within ±50%).
+    quality_required_fields: str = "open,high,low,close,vwap,volume,bar_count"
+    quality_min_completeness: float = 0.9
+    # Health-score bands for the Elementary-style quality dimensions; the
+    # overall score is the WORST dimension (one broken dimension = not
+    # healthy), so the dashboard can't be gamed by weighting.
+    quality_score_ok: float = 0.9
+    quality_score_warn: float = 0.7
+    # Where the per-symbol quality summaries land in the online store.
+    quality_prefix: str = "data:quality"
+
     # ── Paper execution layer (M3.6): simulated fills on real signals ────────
     # The execution simulator turns the predictor's realized directions into
     # filled trades: market order at the *next* window's close (no lookahead),
     # fixed-bps slippage on both legs, taker fee on entry and exit, and a fill
     # ledger. Deterministic by construction — fills are next-close + fixed bps,
     # so there is no PRNG to seed; ``window_end_ms`` is echoed for audit.
-    stream_redis_execution_prefix: str = "execution:crypto:5m"
-    # 5m window cadence in ms — the fill/exit rhythm of the paper book (must
-    # mirror the Flink 5m feature windows; configurable so nothing is baked in).
-    stream_window_ms: int = 300_000
+    stream_redis_execution_prefix: str = "execution:crypto:1h"
+    # 1h window cadence in ms — the fill/exit rhythm of the paper book (must
+    # mirror the Flink 1h feature windows; configurable so nothing is baked in).
+    # 3 600 000 ms = one hour: the TRADING cadence after the 5m rebuild (the
+    # 5m book was structurally negative at taker costs — 9/9 maker-first
+    # fallbacks; the paper: "the main obstacle in hourly cryptocurrency trading
+    # is not only weak predictability, but also the way forecasts are converted
+    # into trades", Bysik & Ślepaczuk, arXiv:2606.00060, 2026).
+    stream_window_ms: int = 3_600_000
     # Notional deployed per trade (USD) — a fixed-size paper book.
     stream_execution_notional_usd: float = 1000.0
     # Pessimistic market-fill slippage in bps (pay the spread's adverse side).
     stream_execution_slippage_bps: float = 2.0
     # Taker fee in bps (Binance-style), charged on both entry and exit.
     stream_execution_taker_fee_bps: float = 10.0
+    # Cost-aware execution filter (Bysik & Ślepaczuk 2026, eq. 5): trade only
+    # when |r̂| > λ·c·|pos*−pos_prev|, c = round-trip taker fee. λ=2 → entry at
+    # 20 bps, reversal at 40 bps. ``hold_until_decay`` keeps the position
+    # through signals weaker than the entry band (banding / no-trade region)
+    # instead of rolling every window — the mechanism that turned −64.0% ARC
+    # (XGBoost long-only, 10 619 trades) into +65.4% ARC (251 trades) in the
+    # paper. Set False to keep the legacy one-window roll for the 5m benchmark.
+    stream_execution_cost_filter_lambda: float = 2.0
+    stream_execution_hold_until_decay: bool = True
+    # Prefer maker fills on the demo venue: a post-only limit at the near-side
+    # quote (bid for LONG entries / LONG-exit sells, ask for SHORT) rests on
+    # the book and pays Bybit's 0.02% maker fee instead of 0.055% taker — an
+    # 11 → 4 bps round trip (Bybit v5 fee schedule). The order rests briefly
+    # (poll ~15s); if unfilled it is cancelled and the engine falls back to a
+    # market order, so signals still participate. Maker pricing also fills at
+    # the better side of the spread, not the adverse side.
+    stream_execution_maker_first: bool = True
     # Fill-ledger cap kept per symbol (older fills are trimmed for the UI).
     stream_execution_ledger_maxlen: int = 50
     # Max closed trades per symbol before new entries halt (book keeps marking

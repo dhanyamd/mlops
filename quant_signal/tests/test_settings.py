@@ -44,9 +44,13 @@ def test_stream_venue_and_watchdog_defaults(monkeypatch: pytest.MonkeyPatch) -> 
     s = Settings(_env_file=None)
 
     assert s.stream_venue == "binance"
-    assert s.stream_watchdog_staleness_threshold_seconds == 900.0
-    assert s.stream_flink_consumer_group == "flink-crypto-features"
-    assert s.stream_flink_sql_path == "/opt/flink/jobs/crypto_features.sql"
+    assert s.stream_watchdog_staleness_threshold_seconds == 7200.0
+    assert s.stream_flink_consumer_group == "flink-crypto-features-1h"
+    assert s.stream_flink_sql_path == "/opt/flink/jobs/crypto_features_1h.sql"
+    assert s.stream_flink_consumer_group_5m == "flink-crypto-features"
+    assert s.stream_flink_sql_path_5m == "/opt/flink/jobs/crypto_features.sql"
+    assert s.stream_execution_cost_filter_lambda == 2.0
+    assert s.stream_execution_hold_until_decay is True
 
 
 def test_key_pair_auth_detected(monkeypatch: pytest.MonkeyPatch) -> None:

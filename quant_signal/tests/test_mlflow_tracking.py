@@ -185,7 +185,7 @@ def test_endpoint_tracks_only_with_query_flag(monkeypatch: pytest.MonkeyPatch) -
     with TestClient(app) as client:
         kv = client.app.state.kv
         kv.set_json(
-            "strategy:crypto:5m:BTCUSDT",
+            "strategy:crypto:1h:BTCUSDT",
             {
                 "symbol": "BTCUSDT",
                 "n_windows": 30,
@@ -272,7 +272,7 @@ def test_gate_endpoint_returns_verdict_and_tracks_only_with_flag(
     with TestClient(app) as client:
         kv = client.app.state.kv
         for window in _feature_windows(150):
-            kv.push_json("feature:crypto:5m:BTCUSDT", window, maxlen=200)
+            kv.push_json("feature:crypto:1h:BTCUSDT", window, maxlen=200)
 
         # Without the flag: verdict served, no tracking run.
         resp = client.get("/api/market/gate/btcusdt")

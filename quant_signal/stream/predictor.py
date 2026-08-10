@@ -1,6 +1,6 @@
 """Online return prediction: River streaming regressor + conformal intervals.
 
-Consumes the Flink 5m feature windows from Kafka and, per symbol, trains an
+Consumes the Flink 1h feature windows from Kafka and, per symbol, trains an
 online regression model on the *realized* next-window return (learned only
 once the next window closes — no lookahead). Predictions carry a conformal
 interval whose nominal level is adapted online so that long-run coverage
@@ -11,7 +11,7 @@ tracks the target even as the market drifts:
     q_t = (1 - alpha_t)-quantile of the trailing window of residuals |y - y_hat|
     alpha_{t+1} = alpha_t + gamma * (alpha - err_t),  err_t = 1{ y_t not in C_t }
 
-Outputs land in the online store as ``prediction:crypto:5m:<SYMBOL>`` (a SET),
+Outputs land in the online store as ``prediction:crypto:1h:<SYMBOL>`` (a SET),
 so the API serves them sub-500ms without touching Kafka or Snowflake.
 
 Run with ``make stream-predictor``. Pure logic lives in ``handle`` so tests
@@ -37,22 +37,24 @@ from stream.kv import KVStore, RedisKV
 
 logger = get_logger(__name__)
 
-# Sanity bounds. A 5-minute crypto window with a ratio feature (open→close,
-# high→low, vwap→close) beyond 10% is a corrupt bar, not a real move. Even in
-# the hyper-volatile 2017-18 era, 5-min BTC log returns topped out near ~10%
-# (Catania & Sandholdt, "Bitcoin at High Frequency", JRFM 12(1):36, 2019,
-# Table 4); today it is far less — BTC 1-year realized volatility is ~42%
-# annualized (Ark Invest, Q2 2026), i.e. ~0.13% per 5-min 1σ, and our own
-# feed's clean BTC/ETH windows stay under ~0.5%. Rejecting such windows stops
-# the online scalers from being poisoned: River's maintainers document that
-# its online StandardScaler is unstable when a feature changes abruptly
-# (online-ml/river#335) — a few corrupt-window learns run the model away to
-# absurd predictions that online learning can never forget.
-_MAX_FEATURE_RATIO = 0.1
-# A 5-minute close-to-close return beyond 10% is implausible (real moves are
-# ~<1%, and 10% ≈ 77σ of today's 5-min volatility); skip learning on it so a
+# Sanity bounds. A 1-hour crypto window with a ratio feature (open→close,
+# high→low, vwap→close) beyond 50% is a corrupt bar, not a real move. Hourly
+# BTC is far less wild: ~0.73% per-hour 1σ (Bysik & Ślepaczuk, "Machine
+# Learning-Based Bitcoin Trading Under Transaction Costs", arXiv:2606.00060,
+# 2026 — descriptive stats over 70,872 hourly observations: min −20.1%,
+# max +16.0%), i.e. a 20% move is ~27σ and a 10% move ~14σ of a normal hour.
+# The 5m-era bound (10%) was calibrated to 5-minute bars where a 10% move is
+# ~77σ; at 1h it would reject real, tradeable shock bars. Rejecting only
+# genuinely implausible windows stops the online scalers from being poisoned:
+# River's maintainers document that its online StandardScaler is unstable when
+# a feature changes abruptly (online-ml/river#335) — a few corrupt-window
+# learns run the model away to absurd predictions that online learning can
+# never forget.
+_MAX_FEATURE_RATIO = 0.5
+# A 1-hour close-to-close return beyond 50% is implausible (real hourly moves
+# are <~5%, and 50% ≈ 68σ of hourly volatility); skip learning on it so a
 # corrupt close can't explode the target scaler or the conformal residuals.
-_MAX_REALIZED = 0.1
+_MAX_REALIZED = 0.5
 
 
 def prediction_key(prefix: str, symbol: str) -> str:
@@ -108,14 +110,18 @@ class ConformalInterval:
         return sum(self._hits) / len(self._hits)
 
 
-def _features(msg: Mapping) -> dict[FeatureName, float] | None:
-    """Numeric feature dict from a Flink 5m window, or None if malformed.
+def _features(
+    msg: Mapping, cross_returns: Mapping[str, float] | None = None
+) -> dict[FeatureName, float] | None:
+    """Numeric feature dict from a Flink 1h window, or None if malformed.
 
-    Uses only current-window values (no lookahead). Missing/NaN fields are
-    dropped so River never sees a non-numeric feature, and windows whose ratio
-    features are implausible (a corrupt bar, e.g. an ``open`` or ``close`` off
-    by orders of magnitude) are rejected outright so the online model can
-    never learn on garbage.
+    Uses only current-window values (no lookahead). ``cross_returns`` carries
+    each cross symbol's realized return over the window that closed BEFORE this
+    one (computed by the caller from the cross-close registry, so only past
+    closes are used). Missing/NaN fields are dropped so River never sees a
+    non-numeric feature, and windows whose ratio features are implausible (a
+    corrupt bar, e.g. an ``open`` or ``close`` off by orders of magnitude) are
+    rejected outright so the online model can never learn on garbage.
     """
     features: dict[FeatureName, float] = {}
     close = msg.get("close")
@@ -140,6 +146,10 @@ def _features(msg: Mapping) -> dict[FeatureName, float] | None:
         features["log_volume"] = math.log1p(float(msg["volume"]))
     if isinstance(msg.get("bar_count"), int):
         features["bar_count"] = float(msg["bar_count"])
+    if cross_returns:
+        for cross, ret in cross_returns.items():
+            if isinstance(ret, (int, float)) and ret == ret and abs(ret) <= _MAX_FEATURE_RATIO:
+                features[f"lag_{cross.lower()}_ret"] = float(ret)
     return features or None
 
 
@@ -175,17 +185,54 @@ class _SymbolState:
     n_windows: int = 0
 
 
-def _direction(y_hat: float) -> str:
-    """Trading rule: long/short when the predicted return is meaningful."""
-    if y_hat > 1e-4:
+def _direction(y_hat: float, threshold: float) -> str:
+    """Trading rule: long/short when the predicted return clears ±threshold.
+
+    Below threshold the predicted move is within hourly noise (~0.73% vol), so
+    the honest call is FLAT — trading every coin-flip lean just bleeds fees.
+    """
+    if y_hat > threshold:
         return "LONG"
-    if y_hat < -1e-4:
+    if y_hat < -threshold:
         return "SHORT"
     return "FLAT"
 
 
 class OnlinePredictor:
-    """Per-symbol online return model fed by the 5m feature stream."""
+    """Per-symbol online return model fed by the 1h feature stream.
+
+    Cross-coin lead-lag: each symbol's model also sees the lagged returns of
+    the ``cross_symbols`` (the majors, e.g. BTC/ETH). ``_closes`` is a rolling
+    per-symbol registry of ``(window_end_ms, close)``; when a window arrives
+    for a symbol, the return of each cross symbol over its most recent window
+    that ended *before* this one is used as a feature — never the current
+    window's close, so there is no lookahead and the online model learns the
+    same spillover the lead-lag papers document. Three facts drive the feature
+    choice, and the sign is deliberately NOT hardcoded:
+
+      - Positive spillover, minute data, Binance: lagged returns of other
+        coins predict a focal coin up to 10 minutes ahead; BTC is the reliable
+        positive leader (~75 bps per hour per 1σ of its lagged return — above
+        our 20 bps entry band), with BNB/TRX also leading (Guo, Sang, Tu &
+        Wang, "Cross-Cryptocurrency Return Predictability", JEDC 163, 2024).
+      - Negative ("seesaw") lead-lag intraday: the five largest coins
+        negatively predict smaller coins — small coins do not predict large
+        ones (Jia, Wu, Yan & Yin, "A Seesaw Effect in the Cryptocurrency
+        Market", CUFE / JEF 74, 2023).
+      - The direction is regime- and tail-dependent: systemic centrality does
+        NOT track market cap (XRP/SOL-style coins transmit in calm markets,
+        BTC flips from net receiver to top transmitter in crises), and
+        spillovers amplify at both tails (Fu, Zhu & Liu, Jinan Univ. —
+        SA-Log-HAR arXiv:2507.22409; TVTP-MS-HAR, Mathematics 13(15), 2025).
+
+    Because the literature itself finds sign instability across horizons,
+    coins and regimes, we feed the realized lagged cross return as a raw
+    feature and let each symbol's online regressor learn its own sign online —
+    no hardcoded direction. Trading the spillover through the cost-aware
+    execution filter (|r̂| > λ·c) instead of raw high-frequency scalping is our
+    novel extension: whether lead-lag survives hourly (and nets of taker
+    fees) is untested in the literature.
+    """
 
     def __init__(
         self,
@@ -197,13 +244,19 @@ class OnlinePredictor:
         alpha: float = 0.1,
         gamma: float = 0.005,
         residual_window: int = 200,
+        direction_threshold: float = 0.002,
+        cross_symbols: list[str] | None = None,
     ) -> None:
         self._kv = kv
         self._prediction_prefix = prediction_prefix
         self._strategy_prefix = strategy_prefix
         self._strategy_maxlen = strategy_maxlen
+        self._direction_threshold = direction_threshold
+        self._cross_symbols = [s.upper() for s in (cross_symbols or [])]
         self._states: dict[str, _SymbolState] = {}
         self._default = (alpha, gamma, residual_window)
+        # Rolling cross-symbol close registry: symbol -> (window_end_ms, close).
+        self._closes: dict[str, list[tuple[int, float]]] = {}
 
     def _state(self, symbol: str) -> _SymbolState:
         state = self._states.get(symbol)
@@ -217,6 +270,40 @@ class OnlinePredictor:
             self._states[symbol] = state
         return state
 
+    def _record_close(self, symbol: str, window_end: int, close: float) -> None:
+        """Append this symbol's close to the registry, trimmed to recent windows."""
+        hist = self._closes.setdefault(symbol, [])
+        if hist and hist[-1][0] >= window_end:
+            return
+        hist.append((window_end, close))
+        # Keep ~24h of windows (1h cadence) for lag computation — a full day
+        # of the leader's hourly closes.
+        while len(hist) > 24:
+            del hist[0]
+
+    def _cross_returns(self, symbol: str, window_end: int) -> dict[str, float]:
+        """Lagged returns of the cross symbols, from windows ending BEFORE this one.
+
+        For each cross symbol, takes its last completed close strictly before
+        ``window_end`` and the one before that → a realized return the model
+        would actually know when this window opens. Missing/warm-up pairs are
+        simply omitted (the feature set is stable because River treats an
+        absent feature as no signal for that window).
+        """
+        returns: dict[str, float] = {}
+        for cross in self._cross_symbols:
+            if cross == symbol:
+                continue
+            hist = [h for h in self._closes.get(cross, []) if h[0] < window_end]
+            if len(hist) < 2:
+                continue
+            older, newer = hist[-2], hist[-1]
+            if older[0] >= newer[0]:
+                continue
+            if newer[1] != 0:
+                returns[cross] = newer[1] / older[1] - 1.0
+        return returns
+
     def handle(self, msg: dict) -> None:
         """One feature window: learn from the *previous* window's target, then
         predict the next return and write the conformal interval to the store.
@@ -224,11 +311,21 @@ class OnlinePredictor:
         symbol = str(msg.get("symbol") or "").upper()
         if not symbol:
             return
-        features = _features(msg)
+        close = float(msg["close"]) if isinstance(msg.get("close"), (int, float)) else None
+        window_end = msg.get("window_end_ms")
+        if isinstance(window_end, (int, float)):
+            window_end = int(window_end)
+        else:
+            window_end = None
+        if close is None or window_end is None:
+            return
+        # Register this close BEFORE computing cross returns so the leaders'
+        # most-recent completed window is available to followers this bar.
+        self._record_close(symbol, window_end, close)
+        cross = self._cross_returns(symbol, window_end)
+        features = _features(msg, cross)
         if features is None:
             return
-        close = float(msg["close"])
-        window_end = msg.get("window_end_ms")
         state = self._state(symbol)
 
         if state.last_features is not None and state.last_close is not None and close != 0:
@@ -249,7 +346,7 @@ class OnlinePredictor:
 
         y_hat = float(state.model.predict_one(features))
         interval = state.conformal.predict(y_hat)
-        direction = _direction(y_hat)
+        direction = _direction(y_hat, self._direction_threshold)
 
         state.last_features = features
         state.last_close = close
@@ -351,6 +448,8 @@ def main() -> None:
     settings = get_settings()
     bus = KafkaBus(settings.stream_kafka_bootstrap_servers)
     kv = RedisKV(settings.stream_redis_url)
+    from config.settings import csv_list
+
     predictor = OnlinePredictor(
         kv,
         prediction_prefix=settings.stream_redis_prediction_prefix,
@@ -359,13 +458,17 @@ def main() -> None:
         alpha=settings.stream_prediction_alpha,
         gamma=settings.stream_prediction_gamma,
         residual_window=settings.stream_prediction_residual_window,
+        direction_threshold=settings.stream_prediction_direction_threshold,
+        cross_symbols=csv_list(settings.stream_prediction_cross_symbols),
     )
     logger.info(
-        "predictor consuming %s → %s (alpha=%s, gamma=%s)",
+        "predictor consuming %s → %s (alpha=%s, gamma=%s, direction_threshold=%s, cross=%s)",
         settings.stream_kafka_topic_features,
         settings.stream_redis_prediction_prefix,
         settings.stream_prediction_alpha,
         settings.stream_prediction_gamma,
+        settings.stream_prediction_direction_threshold,
+        settings.stream_prediction_cross_symbols,
     )
     from config.settings import csv_list
     from stream.materializer import feature_key

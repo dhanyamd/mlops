@@ -83,7 +83,7 @@ def test_evaluate_predictor_scores_a_downtrend_and_beats_buyhold() -> None:
 
 def test_taker_cost_charged_per_flip_not_per_window(monkeypatch) -> None:
     """A position that never flips pays exactly one taker cost, not one per window."""
-    monkeypatch.setattr(predictive_eval, "_direction", lambda y_hat: "LONG")
+    monkeypatch.setattr(predictive_eval, "_direction", lambda y_hat, threshold: "LONG")
     windows = [_feature_window("BTCUSDT", i) for i in range(40)]
     taker = 0.001
     report = evaluate_predictor(windows, taker_cost=taker)

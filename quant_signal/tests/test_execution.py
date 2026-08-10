@@ -3,13 +3,21 @@
 Covers the fill model's correctness: no-lookahead (fills use the NEXT bar's
 close, never the signal bar), slippage + taker fees on both legs, LONG/SHORT/
 FLAT state transitions, deterministic replay, the trade cap, mark-to-market of
-the open position, and malformed-message handling.
+the open position, malformed-message handling — and the cost-aware filter:
+entries clear the λ·c band, positions HOLD through weak signals, and flips
+require |r̂| past the 2·λ·c band (Bysik & Ślepaczuk 2026, eq. 5).
+
+The fill-model tests below run with ``hold_until_decay=False`` (the benchmark
+cadence) so they isolate the fill math; the cost-filter tests at the end use
+the default ``hold_until_decay=True``.
 """
 
 from __future__ import annotations
 
 import pytest
 
+from stream import bybit_demo
+from stream.bybit_demo import BybitDemoVenue
 from stream.execution import PaperExecutionSimulator, _build_venue, execution_key
 from stream.kv import FakeKV
 from stream.predictor import prediction_key
@@ -33,13 +41,19 @@ def _window(symbol: str, i: int, close: float) -> dict:
     }
 
 
-def _seed_prediction(kv: FakeKV, symbol: str, window_end_ms: int, direction: str) -> None:
+def _seed_prediction(
+    kv: FakeKV,
+    symbol: str,
+    window_end_ms: int,
+    direction: str,
+    predicted_return: float = 0.0,
+) -> None:
     kv.set_json(
         prediction_key("prediction:crypto:5m", symbol),
         {
             "symbol": symbol,
             "window_end_ms": window_end_ms,
-            "predicted_return": 0.0,
+            "predicted_return": predicted_return,
             "interval_low": -0.01,
             "interval_high": 0.01,
             "direction": direction,
@@ -49,6 +63,12 @@ def _seed_prediction(kv: FakeKV, symbol: str, window_end_ms: int, direction: str
 
 
 def _simulator(kv: FakeKV, **kwargs) -> PaperExecutionSimulator:
+    # Legacy cadence for the fill-model tests (they isolate the fill math, not
+    # the position-management policy). The cost-filter tests opt back in with
+    # hold_until_decay=True explicitly. window_ms must match the test bars
+    # (the engine's module default is the 1h trading clock).
+    kwargs.setdefault("hold_until_decay", False)
+    kwargs.setdefault("window_ms", _WINDOW_MS)
     return PaperExecutionSimulator(
         kv,
         execution_prefix="execution:crypto:5m",
@@ -414,6 +434,7 @@ class _StubSettings:
         self.demo_api_key = api_key
         self.demo_api_secret = api_secret
         self.bybit_demo_recv_window_ms = recv_window_ms
+        self.stream_execution_maker_first = True
 
 
 def test_build_venue_returns_none_without_creds_and_paper_setting() -> None:
@@ -459,3 +480,221 @@ def test_build_venue_falls_back_to_paper_when_construction_raises(capsys) -> Non
     venue = _build_venue(_StubSettings(), venue_cls=_ExplodingVenue)
     assert venue is None
     assert "could not be initialized" in capsys.readouterr().out
+
+
+# ── maker-first fills (post-only limit → market fallback) ──────────────────
+
+
+class _FakeHTTP:
+    """Records place_order calls and lets tests script the fill status."""
+
+    def __init__(self, status: str = "New") -> None:
+        self.orders: list[dict] = []
+        self.cancelled: list[str] = []
+        self.status = status
+        self.book = {"retCode": 0, "result": {"b": [["100.0", "1"]], "a": [["102.0", "1"]]}}
+
+    def get_orderbook(self, **kw) -> dict:
+        return self.book
+
+    def place_order(self, **kw) -> dict:
+        self.orders.append(kw)
+        return {"retCode": 0, "result": {"orderId": f"o{len(self.orders)}"}}
+
+    def get_order_history(self, **kw) -> dict:
+        if self.status == "Filled":
+            return {
+                "retCode": 0,
+                "result": {
+                    "list": [
+                        {
+                            "orderStatus": "Filled",
+                            "avgPrice": "100.5",
+                            "cumExecQty": "0.01",
+                            "cumFeeDetail": {"USDT": "0.02"},
+                        }
+                    ]
+                },
+            }
+        return {"retCode": 0, "result": {"list": [{"orderStatus": self.status}]}}
+
+    def cancel_order(self, **kw) -> dict:
+        self.cancelled.append(str(kw.get("orderId") or ""))
+        return {"retCode": 0, "result": {}}
+
+
+def _fast_venue(http: _FakeHTTP, maker_first: bool = True) -> BybitDemoVenue:
+    """A BybitDemoVenue with its network bound to ``http``, fast polls."""
+    venue = BybitDemoVenue.__new__(BybitDemoVenue)
+    venue._http = http  # type: ignore[attr-defined]
+    venue._maker_first = maker_first  # type: ignore[attr-defined]
+    venue._qty_for_notional = lambda symbol, notional_usd: 0.01  # type: ignore[method-assign]
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(bybit_demo, "_FILL_POLL_INTERVAL_S", 0.0)
+    return venue
+
+
+def test_maker_first_places_postonly_limit_at_bid_then_market_fallback() -> None:
+    """LONG entry: a resting post-only buy at the bid first; when it never
+    fills the order is cancelled and a market order takes over."""
+    http = _FakeHTTP(status="New")
+    venue = _fast_venue(http)
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(bybit_demo, "_MAKER_FILL_POLLS", 2)
+
+    fill = venue.open_market("BTCUSDT", "LONG", 1000)
+
+    assert fill is None  # nothing filled, market fallback also not filled here
+    limit, market = http.orders[0], http.orders[1]
+    assert limit["orderType"] == "Limit"
+    assert limit["timeInForce"] == "PostOnly"
+    assert limit["price"] == "100.0"  # the bid, not the ask — maker pricing
+    assert limit["reduceOnly"] is False
+    assert market["orderType"] == "Market"
+    assert len(http.cancelled) == 1  # the unfilled limit was cancelled
+
+
+def test_maker_first_returns_maker_fill_without_market_fallback() -> None:
+    """A limit that fills on the book returns the maker fill (lower fee) and
+    never degrades to a market order."""
+    http = _FakeHTTP(status="Filled")
+    venue = _fast_venue(http)
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(bybit_demo, "_MAKER_FILL_POLLS", 2)
+
+    fill = venue.open_market("BTCUSDT", "LONG", 1000)
+
+    assert fill is not None
+    assert fill["fill_price"] == 100.5
+    assert fill["fees"] == pytest.approx(0.02, abs=1e-9)
+    assert [o["orderType"] for o in http.orders] == ["Limit"]  # no fallback
+    assert http.cancelled == []
+
+
+def test_maker_first_close_uses_reduce_only_postonly() -> None:
+    """LONG exit sells at the bid as a reduce-only post-only limit."""
+    http = _FakeHTTP(status="Filled")
+    venue = _fast_venue(http)
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(bybit_demo, "_MAKER_FILL_POLLS", 2)
+
+    venue.close_market("BTCUSDT", "LONG", 0.01)
+
+    assert http.orders[0]["orderType"] == "Limit"
+    assert http.orders[0]["timeInForce"] == "PostOnly"
+    assert http.orders[0]["price"] == "100.0"
+    assert http.orders[0]["reduceOnly"] is True
+
+
+def test_maker_first_disabled_goes_straight_to_market() -> None:
+    """maker_first=False preserves the old pure-market behavior."""
+    http = _FakeHTTP(status="Filled")
+    venue = _fast_venue(http, maker_first=False)
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(bybit_demo, "_MAKER_FILL_POLLS", 2)
+
+    venue.open_market("BTCUSDT", "LONG", 1000)
+
+    assert [o["orderType"] for o in http.orders] == ["Market"]
+
+
+# ── cost-aware filter (Bysik & Ślepaczuk 2026, eq. 5) ───────────────────────
+
+# Defaults used here: taker_fee_bps=10 → c=0.001; λ=2 → entry band 0.002
+# (20 bps), flip band 0.004 (40 bps). ``hold_until_decay`` defaults True.
+
+
+def _cost_simulator(kv: FakeKV, **kwargs) -> PaperExecutionSimulator:
+    # window_ms must match the test bars (the engine's module default is the
+    # 1h trading clock).
+    kwargs.setdefault("window_ms", _WINDOW_MS)
+    return PaperExecutionSimulator(
+        kv,
+        execution_prefix="execution:crypto:5m",
+        prediction_prefix="prediction:crypto:5m",
+        **kwargs,
+    )
+
+
+def test_cost_filter_blocks_entries_below_lambda_times_cost() -> None:
+    """|r̂| = 10 bps < λ·c = 20 bps → the LONG signal is too weak to enter."""
+    kv = FakeKV()
+    sim = _cost_simulator(kv)
+    _seed_prediction(kv, "BTCUSDT", 2 * _WINDOW_MS, "LONG", predicted_return=0.001)
+
+    sim.handle(_window("BTCUSDT", 0, 100.0))
+    sim.handle(_window("BTCUSDT", 1, 100.0))  # bar 1 closes with the weak forecast
+
+    stored = kv.get_json(execution_key("execution:crypto:5m", "BTCUSDT"))
+    assert stored is not None
+    assert stored["position"] is None
+    assert stored["n_trades"] == 0
+
+
+def test_cost_filter_enters_when_forecast_clears_the_band() -> None:
+    """|r̂| = 30 bps > 20 bps → the LONG signal enters at the signal bar close."""
+    kv = FakeKV()
+    sim = _cost_simulator(kv)
+    _seed_prediction(kv, "BTCUSDT", 2 * _WINDOW_MS, "LONG", predicted_return=0.003)
+
+    sim.handle(_window("BTCUSDT", 0, 100.0))
+    sim.handle(_window("BTCUSDT", 1, 100.0))
+
+    stored = kv.get_json(execution_key("execution:crypto:5m", "BTCUSDT"))
+    assert stored is not None
+    assert stored["position"]["side"] == "LONG"
+    assert stored["entry_threshold_bps"] == 20.0
+    assert stored["flip_threshold_bps"] == 40.0
+
+
+def test_hold_until_decay_keeps_position_through_weak_signal() -> None:
+    """A strong entry is NOT closed when the next signal decays below the
+    entry band — the no-trade region of Gârleanu & Pedersen (2013) / banding
+    (Novy-Marx & Velikov 2016)."""
+    kv = FakeKV()
+    sim = _cost_simulator(kv)
+    _seed_prediction(kv, "BTCUSDT", 2 * _WINDOW_MS, "LONG", predicted_return=0.003)
+    sim.handle(_window("BTCUSDT", 0, 100.0))
+    sim.handle(_window("BTCUSDT", 1, 100.0))  # enter LONG
+    _seed_prediction(kv, "BTCUSDT", 3 * _WINDOW_MS, "LONG", predicted_return=0.001)  # decay
+    sim.handle(_window("BTCUSDT", 2, 100.0))
+
+    stored = kv.get_json(execution_key("execution:crypto:5m", "BTCUSDT"))
+    assert stored is not None
+    assert stored["position"]["side"] == "LONG"  # held
+    assert stored["n_trades"] == 0
+
+
+def test_hold_until_decay_flips_on_strong_reversal() -> None:
+    """A reversal past the 2·λ·c band closes the leg and opens the opposite
+    side in the same bar (turnover 2)."""
+    kv = FakeKV()
+    sim = _cost_simulator(kv)
+    _seed_prediction(kv, "BTCUSDT", 2 * _WINDOW_MS, "LONG", predicted_return=0.003)
+    sim.handle(_window("BTCUSDT", 0, 100.0))
+    sim.handle(_window("BTCUSDT", 1, 100.0))  # enter LONG
+    _seed_prediction(kv, "BTCUSDT", 3 * _WINDOW_MS, "SHORT", predicted_return=-0.005)
+    sim.handle(_window("BTCUSDT", 2, 100.0))  # |−0.005| > 0.004 → flip
+
+    stored = kv.get_json(execution_key("execution:crypto:5m", "BTCUSDT"))
+    assert stored is not None
+    assert stored["n_trades"] == 1
+    assert stored["position"]["side"] == "SHORT"
+    assert stored["fills"][0]["side"] == "LONG"
+
+
+def test_hold_until_decay_ignores_weak_reversal() -> None:
+    """|r̂| = 30 bps < 40 bps flip band → a weak SHORT signal does NOT flip the
+    LONG position (paying 2× turnover for no edge)."""
+    kv = FakeKV()
+    sim = _cost_simulator(kv)
+    _seed_prediction(kv, "BTCUSDT", 2 * _WINDOW_MS, "LONG", predicted_return=0.003)
+    sim.handle(_window("BTCUSDT", 0, 100.0))
+    sim.handle(_window("BTCUSDT", 1, 100.0))  # enter LONG
+    _seed_prediction(kv, "BTCUSDT", 3 * _WINDOW_MS, "SHORT", predicted_return=-0.003)
+    sim.handle(_window("BTCUSDT", 2, 100.0))
+
+    stored = kv.get_json(execution_key("execution:crypto:5m", "BTCUSDT"))
+    assert stored is not None
+    assert stored["position"]["side"] == "LONG"  # held
+    assert stored["n_trades"] == 0

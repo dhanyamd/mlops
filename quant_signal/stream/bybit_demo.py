@@ -48,6 +48,12 @@ _FALLBACK_MIN_QTY = 0.001
 _FILL_POLLS = 16
 _FILL_POLL_INTERVAL_S = 0.5
 
+# Maker fills rest on the book as post-only limits, so "Filled" legitimately
+# takes longer than a market order. Poll for ~15s: long enough for the price to
+# trade at our level in liquid BTC/ETH, short enough to keep the consumer
+# thread inside its Kafka max-poll budget. Unfilled → cancel + market fallback.
+_MAKER_FILL_POLLS = 30
+
 
 def _fill_fee(row: dict) -> float:
     """Maker/taker fee on a linear order history record.
@@ -75,6 +81,7 @@ class BybitDemoVenue:
         api_key: str,
         api_secret: str,
         recv_window_ms: int = 5000,
+        maker_first: bool = True,
     ) -> None:
         # Bounded HTTP client: pybit's default 10s timeout + its rate-limit
         # retry sleep (ErrCode 10006 waits until the limit resets — minutes!)
@@ -92,8 +99,25 @@ class BybitDemoVenue:
             max_retries=1,
             retry_codes={-1},
         )
+        self._maker_first = maker_first
 
     # ── market data helpers ─────────────────────────────────────────────────
+
+    def _best_ba(self, symbol: str) -> tuple[float, float] | None:
+        """(best bid, best ask) from a depth-1 orderbook snapshot, or None."""
+        try:
+            result = self._http.get_orderbook(category="linear", symbol=symbol, limit=1)
+            if not result.get("retCode") == 0:
+                return None
+            rows = result.get("result", {}) or {}
+            bids = rows.get("b") or []
+            asks = rows.get("a") or []
+            if not bids or not asks:
+                return None
+            return float(bids[0][0]), float(asks[0][0])
+        except Exception:  # pragma: no cover - network tolerance
+            logger.exception("bybit demo: get_orderbook failed")
+            return None
 
     def _qty_step(self, symbol: str) -> tuple[float, float]:
         """(min_order_qty, qty_step) for a linear perp, from the instrument
@@ -148,8 +172,22 @@ class BybitDemoVenue:
     # ── fills ───────────────────────────────────────────────────────────────
 
     def open_market(self, symbol: str, side: str, notional_usd: float) -> dict | None:
-        """Market order to open a position. Returns the fill or None if the
-        order did not fill immediately (rejected/pending) — the caller skips."""
+        """Open a position, preferring a maker fill when enabled (default).
+
+        With ``maker_first`` the engine first rests a post-only limit at the
+        near-side quote (bid for a LONG) and only falls back to a market order
+        if the book never trades at that price within the maker poll window.
+        Returns the actual fill (price/qty/fees) or None when no order filled
+        (rejected/pending) — the caller skips the bar honestly.
+        """
+        if self._maker_first:
+            fill = self._open_maker(symbol, side, notional_usd)
+            if fill is not None:
+                return fill
+        return self._open_market_impl(symbol, side, notional_usd)
+
+    def _open_market_impl(self, symbol: str, side: str, notional_usd: float) -> dict | None:
+        """Market order to open a position."""
         qty = self._qty_for_notional(symbol, notional_usd)
         if qty is None:
             return None
@@ -174,9 +212,55 @@ class BybitDemoVenue:
             return None
         return self._fill_from_order(symbol, order_id, qty)
 
+    def _open_maker(self, symbol: str, side: str, notional_usd: float) -> dict | None:
+        """Post-only limit at the near side of the book; market fallback.
+
+        A resting limit pays Bybit's 0.02% maker fee (vs 0.055% taker) and
+        fills at the better side of the spread — an 11 → 4 bps round trip
+        (Bybit v5 fee schedule). PostOnly guarantees the order cannot cross,
+        so it can never slip to a taker fee unintentionally. The order rests
+        for the maker poll window; if the price never trades at our level the
+        order is cancelled and a market order takes over, so momentum signals
+        still participate.
+        """
+        qty = self._qty_for_notional(symbol, notional_usd)
+        if qty is None:
+            return None
+        ba = self._best_ba(symbol)
+        if ba is None:
+            logger.warning("bybit demo: no orderbook for %s — using market fill", symbol)
+            return None
+        bid, ask = ba
+        price = bid if side == "LONG" else ask
+        side_bb = "Buy" if side == "LONG" else "Sell"
+        order_id = self._place_limit(symbol, side_bb, qty, price, reduce_only=False)
+        if order_id:
+            fill = self._fill_from_order(symbol, order_id, qty, polls=_MAKER_FILL_POLLS, quiet=True)
+            if fill is not None:
+                return fill
+            self._cancel(symbol, order_id)
+        logger.warning(
+            "bybit demo: maker entry not filled for %s (%s @ %s) → market fallback",
+            symbol,
+            side,
+            price,
+        )
+        return None
+
     def close_market(self, symbol: str, side: str, qty: float) -> dict | None:
-        """Market reduce-only order to close an open position. None when not
-        filled, so the caller keeps the position and retries next window."""
+        """Close an open position, preferring a maker fill when enabled.
+
+        None when nothing filled, so the caller keeps the position and retries
+        next window.
+        """
+        if self._maker_first:
+            fill = self._close_maker(symbol, side, qty)
+            if fill is not None:
+                return fill
+        return self._close_market_impl(symbol, side, qty)
+
+    def _close_market_impl(self, symbol: str, side: str, qty: float) -> dict | None:
+        """Market reduce-only order to close an open position."""
         side_bb = "Sell" if side == "LONG" else "Buy"
         try:
             result = self._http.place_order(
@@ -199,16 +283,88 @@ class BybitDemoVenue:
             return None
         return self._fill_from_order(symbol, order_id, qty)
 
-    def _fill_from_order(self, symbol: str, order_id: str, qty: float) -> dict | None:
-        """Fill for a placed market order, read back from order history.
+    def _close_maker(self, symbol: str, side: str, qty: float) -> dict | None:
+        """Reduce-only post-only limit at the near side; market fallback."""
+        ba = self._best_ba(symbol)
+        if ba is None:
+            logger.warning("bybit demo: no orderbook for %s — using market fill", symbol)
+            return None
+        bid, ask = ba
+        price = bid if side == "LONG" else ask
+        side_bb = "Sell" if side == "LONG" else "Buy"
+        order_id = self._place_limit(symbol, side_bb, qty, price, reduce_only=True)
+        if order_id:
+            fill = self._fill_from_order(symbol, order_id, qty, polls=_MAKER_FILL_POLLS, quiet=True)
+            if fill is not None:
+                return fill
+            self._cancel(symbol, order_id)
+        logger.warning(
+            "bybit demo: maker exit not filled for %s (%s @ %s) → market fallback",
+            symbol,
+            side,
+            price,
+        )
+        return None
+
+    def _place_limit(
+        self, symbol: str, side_bb: str, qty: float, price: float, *, reduce_only: bool
+    ) -> str | None:
+        """Post-only limit order. Returns the orderId or None (rejected/errored).
+
+        timeInForce=PostOnly (Bybit v5): if the limit would execute on arrival
+        it is cancelled instead — guaranteeing a maker fill, never an
+        accidental taker. The near-side bid/ask prices come from the orderbook
+        so they always satisfy the venue's tickSize precision.
+        """
+        try:
+            result = self._http.place_order(
+                category="linear",
+                symbol=symbol,
+                side=side_bb,
+                orderType="Limit",
+                qty=str(qty),
+                price=str(price),
+                timeInForce="PostOnly",
+                reduceOnly=reduce_only,
+            )
+        except Exception:
+            logger.exception("bybit demo: post-only limit failed for %s %s", symbol, side_bb)
+            return None
+        if result.get("retCode") != 0:
+            logger.warning(
+                "bybit demo: post-only limit rejected (%s) → market fallback",
+                result.get("retMsg"),
+            )
+            return None
+        return (result.get("result") or {}).get("orderId")
+
+    def _cancel(self, symbol: str, order_id: str) -> None:
+        """Best-effort cancel of an unfilled resting order."""
+        try:
+            self._http.cancel_order(category="linear", symbol=symbol, orderId=order_id)
+        except Exception:
+            logger.warning("bybit demo: cancel failed for order %s", order_id)
+
+    def _fill_from_order(
+        self,
+        symbol: str,
+        order_id: str,
+        qty: float,
+        *,
+        polls: int = _FILL_POLLS,
+        quiet: bool = False,
+    ) -> dict | None:
+        """Fill for a placed order, read back from order history.
 
         ``place_order`` only echoes the ``orderId``; the executed average price,
         filled qty and fees arrive on the order-history record once the order
         fills (order creation is asynchronous on Bybit v5, so poll briefly).
         Returns None when the order is not confirmed Filled — the caller skips
-        the bar honestly rather than guessing a price.
+        the bar honestly rather than guessing a price. ``quiet`` suppresses the
+        per-poll warning for resting maker orders (still-New is the expected
+        state there, not an error).
         """
-        for attempt in range(_FILL_POLLS):
+        for attempt in range(polls):
             try:
                 history = self._http.get_order_history(
                     category="linear", symbol=symbol, orderId=order_id
@@ -217,7 +373,7 @@ class BybitDemoVenue:
                 logger.warning(
                     "bybit demo: order-history read failed (attempt %s/%s)",
                     attempt + 1,
-                    _FILL_POLLS,
+                    polls,
                 )
                 time.sleep(_FILL_POLL_INTERVAL_S)
                 continue
@@ -230,9 +386,10 @@ class BybitDemoVenue:
                 continue
             row = rows[0]
             if row.get("orderStatus") != "Filled":
-                logger.warning(
-                    "bybit demo: order not filled yet (status=%s)", row.get("orderStatus")
-                )
+                if not quiet:
+                    logger.warning(
+                        "bybit demo: order not filled yet (status=%s)", row.get("orderStatus")
+                    )
                 time.sleep(_FILL_POLL_INTERVAL_S)
                 continue
             try:
@@ -244,9 +401,7 @@ class BybitDemoVenue:
             if fill_price <= 0.0:
                 return None
             return {"fill_price": fill_price, "qty": fill_qty, "fees": fees}
-        logger.warning(
-            "bybit demo: order %s not confirmed filled after %s polls", order_id, _FILL_POLLS
-        )
+        logger.warning("bybit demo: order %s not confirmed filled after %s polls", order_id, polls)
         return None
 
     # ── account / position reconciliation ───────────────────────────────────

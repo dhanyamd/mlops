@@ -1,10 +1,11 @@
 """Online store materializer: Kafka topics → Redis (the online feature store).
 
-Consumes the raw 1m bars and the Flink-computed 5m window features, then
-materializes them into Redis so the dashboard reads are sub-500ms and never
-touch Kafka or Snowflake:
-  live:crypto:<SYMBOL>      latest 1m bar (SET)
-  feature:crypto:5m:<SYMBOL> bounded history of window features (RPUSH+LTRIM)
+Consumes the raw 1m bars and both Flink-window feature topics (1h live trading
+clock + 5m benchmark book), then materializes them into Redis so the dashboard
+reads are sub-500ms and never touch Kafka or Snowflake:
+  live:crypto:<SYMBOL>          latest 1m bar (SET)
+  feature:crypto:1h:<SYMBOL>    bounded history of 1h window features (RPUSH+LTRIM)
+  feature:crypto:5m:<SYMBOL>    bounded history of 5m window features (RPUSH+LTRIM)
 
 Run with ``make stream-materializer``. Pure logic lives in ``handle`` so tests
 drive it directly with ``FakeBus``/``FakeKV``.
@@ -44,6 +45,8 @@ class OnlineStoreMaterializer:
         feature_prefix: str,
         feature_maxlen: int = 200,
         group_id: str = "redis-materializer",
+        features_topic_5m: str | None = None,
+        feature_prefix_5m: str | None = None,
     ) -> None:
         self._bus = bus
         self._kv = kv
@@ -53,6 +56,8 @@ class OnlineStoreMaterializer:
         self._feature_prefix = feature_prefix
         self._feature_maxlen = feature_maxlen
         self._group_id = group_id
+        self._features_topic_5m = features_topic_5m
+        self._feature_prefix_5m = feature_prefix_5m
 
     def handle(self, topic: str, msg: dict) -> None:
         symbol = str(msg.get("symbol") or "").upper()
@@ -66,11 +71,22 @@ class OnlineStoreMaterializer:
                 msg,
                 maxlen=self._feature_maxlen,
             )
+        elif (
+            self._features_topic_5m is not None
+            and topic == self._features_topic_5m
+            and self._feature_prefix_5m is not None
+        ):
+            self._kv.push_json(
+                feature_key(self._feature_prefix_5m, symbol),
+                msg,
+                maxlen=self._feature_maxlen,
+            )
 
     def run_forever(self, stop: threading.Event | None = None) -> None:
-        for topic, msg in self._bus.iter_consume(
-            [self._raw_topic, self._features_topic], self._group_id, stop=stop
-        ):
+        topics = [self._raw_topic, self._features_topic]
+        if self._features_topic_5m is not None:
+            topics.append(self._features_topic_5m)
+        for topic, msg in self._bus.iter_consume(topics, self._group_id, stop=stop):
             self.handle(topic, msg)
 
 
@@ -87,11 +103,14 @@ def main() -> None:
         live_prefix=settings.stream_redis_live_prefix,
         feature_prefix=settings.stream_redis_feature_prefix,
         feature_maxlen=settings.stream_redis_feature_maxlen,
+        features_topic_5m=settings.stream_kafka_topic_features_5m,
+        feature_prefix_5m=settings.stream_redis_feature_prefix_5m,
     )
     logger.info(
-        "materializer consuming %s+%s → %s",
+        "materializer consuming %s+%s+%s → %s",
         settings.stream_kafka_topic_raw,
         settings.stream_kafka_topic_features,
+        settings.stream_kafka_topic_features_5m,
         settings.stream_redis_url,
     )
     try:

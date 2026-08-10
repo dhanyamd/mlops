@@ -3,7 +3,7 @@ DBT := cd dbt && uv run dbt
 # dbt reads profiles/dbt_project from the dbt/ dir; credentials come from ./.env
 ENV := set -a; . ./.env; set +a;
 
-.PHONY: setup lint test check dbt-setup dbt-deps dbt-debug dbt-run dbt-parse bootstrap ping ingest ingest-macro ingest-fundamentals api ui-setup ui stream-infra stream-topics stream-flink-submit stream-flink-status stream-producer stream-materializer stream-predictor stream-simulator stream-execution stream-seed
+.PHONY: setup lint test check dbt-setup dbt-deps dbt-debug dbt-run dbt-parse bootstrap ping ingest ingest-macro ingest-fundamentals api ui-setup ui stream-infra stream-topics stream-flink-submit stream-flink-submit-1h stream-flink-status stream-producer stream-materializer stream-predictor stream-simulator stream-execution stream-seed stream-watchdog stream-research stream-quality
 
 ## Environment ────────────────────────────────────────────────────────────────
 
@@ -81,10 +81,13 @@ stream-infra: ## Start Redpanda + Redis + Flink (builds the Flink image)
 	docker compose up -d --build
 
 stream-topics: ## Create the Kafka topics (idempotent; Flink needs them to exist)
-	docker exec $(REDPANDA) rpk topic create crypto.bars.raw crypto.features.5m --partitions 1 --replicas 1 --if-not-exists
+	docker exec $(REDPANDA) rpk topic create crypto.bars.raw crypto.features.5m crypto.features.1h --partitions 1 --replicas 1 --if-not-exists
 
-stream-flink-submit: ## Submit the crypto 5m-window SQL job (detached)
+stream-flink-submit: ## Submit the crypto 5m-window SQL job (detached; benchmark/Alpha-Autopsy book)
 	docker exec $(FLINK_JM) bash -c 'sql-client.sh -f /opt/flink/jobs/crypto_features.sql -d'
+
+stream-flink-submit-1h: ## Submit the crypto 1h-window SQL job (detached; live trading clock)
+	docker exec $(FLINK_JM) bash -c 'sql-client.sh -f /opt/flink/jobs/crypto_features_1h.sql -d'
 
 stream-flink-status: ## Show Flink job states
 	docker exec $(FLINK_JM) bash -c 'curl -s http://localhost:8081/jobs/overview'
@@ -109,6 +112,12 @@ stream-seed: ## Publish synthetic demo bars (fast E2E without waiting on Binance
 
 stream-watchdog: ## Detect a stalled Flink pipeline (features behind raw bars); --fix heals it
 	$(ENV) $(PYTHON) python -m scripts.stream_watchdog --interval 60 --fix
+
+stream-research: ## Sweep the predictor's config grid offline; persist per-symbol leaderboards
+	$(ENV) $(PYTHON) python -m scripts.run_research
+
+stream-quality: ## Score every symbol's window history + lineage; persist quality summaries
+	$(ENV) $(PYTHON) python -m scripts.run_quality
 
 ## Dashboard ─────────────────────────────────────────────────────────────────
 

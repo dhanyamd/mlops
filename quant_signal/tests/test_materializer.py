@@ -76,3 +76,44 @@ def test_run_forever_dispatches_both_topics() -> None:
 
     assert kv.get_json("live:crypto:BTCUSDT")["ts"] == 10
     assert kv.list_json("feature:crypto:5m:BTCUSDT")[0]["window_start_ms"] == 20
+
+
+def test_handle_routes_5m_feature_topic_to_5m_prefix() -> None:
+    bus = FakeBus()
+    kv = FakeKV()
+    materializer = OnlineStoreMaterializer(
+        bus,
+        kv,
+        raw_topic="crypto.bars.raw",
+        features_topic="crypto.features.1h",
+        live_prefix="live:crypto",
+        feature_prefix="feature:crypto:1h",
+        feature_maxlen=3,
+        features_topic_5m="crypto.features.5m",
+        feature_prefix_5m="feature:crypto:5m",
+    )
+
+    materializer.handle("crypto.features.1h", {"symbol": "BTCUSDT", "window_start_ms": 30})
+    materializer.handle("crypto.features.5m", {"symbol": "BTCUSDT", "window_start_ms": 31})
+
+    assert kv.list_json("feature:crypto:1h:BTCUSDT")[0]["window_start_ms"] == 30
+    assert kv.list_json("feature:crypto:5m:BTCUSDT")[0]["window_start_ms"] == 31
+
+
+def test_handle_ignores_5m_topic_when_dual_mode_disabled() -> None:
+    bus = FakeBus()
+    kv = FakeKV()
+    materializer = OnlineStoreMaterializer(
+        bus,
+        kv,
+        raw_topic="crypto.bars.raw",
+        features_topic="crypto.features.1h",
+        live_prefix="live:crypto",
+        feature_prefix="feature:crypto:1h",
+        feature_maxlen=3,
+    )
+
+    materializer.handle("crypto.features.5m", {"symbol": "BTCUSDT", "window_start_ms": 31})
+
+    assert kv.list_json("feature:crypto:1h:BTCUSDT") == []
+    assert kv.list_json("feature:crypto:5m:BTCUSDT") == []

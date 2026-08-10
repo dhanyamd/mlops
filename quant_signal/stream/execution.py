@@ -3,9 +3,10 @@
 Turns the predictor's realized directions into filled trades the way a real
 execution stack would (FLOX SimulatedExecutor / ordersim / Sequence pattern):
 
-  - A signal made at window ``t`` (the predictor's stored direction) is filled
-    as a market order at the *next* window's close price — never the signal
-    bar — so the simulation is honest about latency (no lookahead).
+  - A signal is filled at the close of the bar it was made on (the paper's
+    eq. 4 timing: act at t on the forecast of r_{t+1}), using the freshest
+    forecast available — the current bar's prediction, or the previous bar's
+    if the online store has not caught up (no lookahead, no starvation).
   - Paper venue (default): the fill pays the adverse side of a fixed-bps spread
     (``slippage_bps``) and a taker fee (``taker_fee_bps``) on both entry and
     exit, deterministically (no PRNG to seed).
@@ -14,11 +15,20 @@ execution stack would (FLOX SimulatedExecutor / ordersim / Sequence pattern):
     prices, quantities and fees come from the venue, so the book sees actual
     exchange fills, latency and rejections. A rejected/pending order is
     SKIPPED and counted (``orders_rejected``) — never faked with a paper fill.
-  - Positions hold one window and roll continuously: each bar closes the
-    position opened a window earlier, then opens the new one if a fresh signal
-    is available.
+  - Cost-aware position management (default, ``hold_until_decay=True``): a
+    position is opened only when the forecast clears the entry band and is then
+    HELD through signals weaker than it — "banding", i.e. a higher hurdle to
+    enter than to maintain (Novy-Marx & Velikov, "A Taxonomy of Anomalies and
+    Their Trading Costs", RFS 29(1), 2016), the no-trade region of Gârleanu &
+    Pedersen ("Dynamic Trading with Predictable Returns and Transaction
+    Costs", JoF 68(6), 2013). The exact rule is Bysik & Ślepaczuk's
+    (arXiv:2606.00060, 2026) eq. (5): trade only when |r̂| > λ·c·|pos*−pos_prev|
+    with λ = ``cost_filter_lambda`` and c = round-trip taker fee — entry
+    (turnover 1) at |r̂| > λ·c = 20 bps, reversal (turnover 2) at |r̂| > 2·λ·c =
+    40 bps. A position persists until its signal reverses past the flip band
+    (or, with ``hold_until_decay=False``, rolls after exactly one window).
   - A fill ledger and per-symbol P&L (realized / unrealized, compounded equity,
-    win rate) land in the online store as ``execution:crypto:5m:<SYMBOL>``.
+    win rate) land in the online store as ``execution:crypto:1h:<SYMBOL>``.
 
 ``window_end_ms`` is echoed in every payload as the event-time audit tag,
 matching the rest of the streaming layer.
@@ -28,6 +38,7 @@ from __future__ import annotations
 
 import threading
 from collections import deque
+from collections.abc import Mapping
 from typing import Protocol
 
 from config.logging import configure_logging, get_logger
@@ -51,8 +62,9 @@ class ExecutionVenue(Protocol):
     def close_market(self, symbol: str, side: str, qty: float) -> dict | None: ...
 
 
-# 5m window length in ms — the fill/exit cadence for the paper book.
-_WINDOW_MS = 300_000
+# 1h window length in ms — the fill/exit cadence for the paper book (the
+# TRADING clock after the 5m rebuild; mirrored by Flink's 1h feature windows).
+_WINDOW_MS = 3_600_000
 
 # Equity-curve cap kept per symbol (older points trimmed for the UI).
 _EQUITY_MAXLEN = 200
@@ -75,17 +87,21 @@ def _mark_pnl(position: dict, mark: float) -> float:
 
 
 class PaperExecutionSimulator:
-    """Per-symbol execution book fed by the 5m feature stream.
+    """Per-symbol execution book fed by the 1h feature stream.
 
     State machine per symbol, driven one bar at a time:
 
-      exit   position entered a window ago (``entry_window_end_ms + WINDOW_MS``)
-             closes at the current bar's close, paying slippage + exit fee (or
-             a real reduce-only market order on the Bybit Demo venue)
-      entry  no open position + a tradeable signal from the *previous* bar →
-             market order at the current bar's close (next-bar fill), slippage
-             + entry fee (or a real market order on the demo venue)
-      roll   the current bar's signal is stored for the next bar's fill
+      hold    with ``hold_until_decay`` (default): a position persists while
+              the forecast stays on its side or within the no-trade band; it
+              is closed only when the signal reverses past the 2·λ·c flip band
+              (eq. 5 — entry |r̂|>λ·c, flip |r̂|>2·λ·c, else no trade). With
+              ``hold_until_decay=False`` the book instead closes exactly one
+              window after entry (the legacy 5m benchmark cadence).
+      entry   no open position + a fresh forecast (current bar, falling back
+              to the previous bar's) clearing the λ·c band → market order at
+              the current bar's close (paper eq. 4 fill timing), slippage +
+              entry fee (or a real market order on the demo venue)
+      roll    the current bar's signal is stored for the next bar's fill
 
     The signal for a bar is read from the predictor's online-store payload
     matched by that bar's ``window_end_ms``; if the store has not caught up, no
@@ -111,6 +127,8 @@ class PaperExecutionSimulator:
         max_trades: int = 100,
         window_ms: int = _WINDOW_MS,
         venue: ExecutionVenue | None = None,
+        cost_filter_lambda: float = 2.0,
+        hold_until_decay: bool = True,
     ) -> None:
         self._kv = kv
         self._execution_prefix = execution_prefix
@@ -122,6 +140,15 @@ class PaperExecutionSimulator:
         self._max_trades = max_trades
         self._window_ms = window_ms
         self._venue = venue
+        # Cost-aware filter (Bysik & Ślepaczuk 2026, eq. 5): trade only when
+        # |r̂| > λ·c·|pos*−pos_prev|. λ=2 with c = round-trip taker fee (10 bps)
+        # gives a 20 bps entry band and a 40 bps reversal band. When
+        # ``hold_until_decay`` is False the engine keeps the legacy behaviour
+        # (close exactly one window after entry) for the 5m benchmark book.
+        self._cost_lambda = cost_filter_lambda
+        self._hold_until_decay = hold_until_decay
+        self._entry_threshold = cost_filter_lambda * self._taker_fee
+        self._flip_threshold = 2.0 * self._entry_threshold
 
         # Per-symbol state.
         self._last_window_end: dict[str, int | None] = {}
@@ -139,8 +166,8 @@ class PaperExecutionSimulator:
 
     # ── signal resolution ───────────────────────────────────────────────────
 
-    def _signal_for(self, symbol: str, window_end: int | None) -> str | None:
-        """Direction the predictor held for ``window_end``, or None if unknown."""
+    def _prediction_for(self, symbol: str, window_end: int | None) -> Mapping | None:
+        """The predictor's stored payload for ``window_end``, or None if unknown."""
         if window_end is None:
             return None
         prediction = self._kv.get_json(prediction_key(self._prediction_prefix, symbol))
@@ -148,6 +175,13 @@ class PaperExecutionSimulator:
             return None
         tag = prediction.get("window_end_ms")
         if not isinstance(tag, (int, float)) or int(tag) != window_end:
+            return None
+        return prediction
+
+    def _signal_for(self, symbol: str, window_end: int | None) -> str | None:
+        """Direction the predictor held for ``window_end``, or None if unknown."""
+        prediction = self._prediction_for(symbol, window_end)
+        if prediction is None:
             return None
         direction = prediction.get("direction")
         return direction if isinstance(direction, str) else None
@@ -253,22 +287,63 @@ class PaperExecutionSimulator:
         while len(fills) > self._ledger_maxlen:
             fills.pop()
 
+    def _freshest(
+        self, symbol: str, window_end: int | None, prev_end: int | None
+    ) -> tuple[str | None, float | None]:
+        """Freshest stored forecast when bar ``window_end`` closes.
+
+        The paper (Bysik & Ślepaczuk eq. 4) fills at the forecast bar's close —
+        act at ``t`` with the forecast of ``r_{t+1}``. We prefer the prediction
+        made at this bar's close (``window_end``) and fall back to the previous
+        bar's forecast (``prev_end``) only if the online store has not caught
+        up, so a predictor→engine write race never starves the book. Returns
+        ``(direction, predicted_return)`` or ``(None, None)``.
+        """
+        for candidate in (window_end, prev_end):
+            prediction = self._prediction_for(symbol, candidate)
+            if prediction is None:
+                continue
+            direction = prediction.get("direction")
+            yhat = prediction.get("predicted_return")
+            return (
+                direction if isinstance(direction, str) else None,
+                float(yhat) if isinstance(yhat, (int, float)) else None,
+            )
+        return None, None
+
     def _advance(self, symbol: str, close: float, window_end: int, prev_end: int | None) -> None:
-        """One bar of the state machine (exit → enter → record signal bar)."""
-        position = self._position.get(symbol)
+        """One bar of the state machine (manage position → record signal bar)."""
+        if self._hold_until_decay:
+            # Cost-aware management (Bysik & Ślepaczuk 2026, eqs. 5-7): trade
+            # only when |r̂| > λ·c·|pos*−pos_prev|. Same-side or weak signals
+            # (turnover 0 / within the no-trade region) keep the position —
+            # banding holds winners until they reverse (Novy-Marx & Velikov
+            # 2016; Gârleanu & Pedersen 2013). A flip (turnover 2) requires
+            # |r̂| past the 2·λ·c band; anything weaker is ignored.
+            signal, yhat = self._freshest(symbol, window_end, prev_end)
+            position = self._position.get(symbol)
 
-        if position is not None and window_end >= position["entry_window_end_ms"] + self._window_ms:
-            self._close(symbol, position, close, window_end)
-            position = None
-
-        if position is None:
-            signal = self._signal_for(symbol, prev_end)
-            if (
+            if position is not None:
+                flip_side = None
+                if signal == "SHORT" and position["side"] == "LONG":
+                    flip_side = "SHORT"
+                elif signal == "LONG" and position["side"] == "SHORT":
+                    flip_side = "LONG"
+                if flip_side is not None and yhat is not None and abs(yhat) > self._flip_threshold:
+                    self._close(symbol, position, close, window_end)
+                    if self._n_trades.get(symbol, 0) < self._max_trades:
+                        self._open(symbol, flip_side, close, window_end)
+            elif (
                 signal in ("LONG", "SHORT")
                 and prev_end is not None
                 and window_end >= prev_end + self._window_ms
                 and self._n_trades.get(symbol, 0) < self._max_trades
+                and yhat is not None
+                and abs(yhat) > self._entry_threshold
             ):
+                # Entry gate: the fresh forecast must clear the λ·c band in
+                # magnitude (turnover 1), independent of the predictor's own
+                # threshold. Fills at the signal bar's close (paper eq. 4).
                 self._open(symbol, signal, close, window_end)
             elif (
                 signal is None and prev_end is not None and window_end >= prev_end + self._window_ms
@@ -277,6 +352,31 @@ class PaperExecutionSimulator:
                 # entry is skipped, exactly as a live book would skip a stale
                 # signal. Counted for observability, not treated as an error.
                 self._signals_skipped[symbol] = self._signals_skipped.get(symbol, 0) + 1
+        else:
+            # Legacy cadence (5m benchmark book): close exactly one window
+            # after entry, re-enter on the previous window's signal.
+            position = self._position.get(symbol)
+            if (
+                position is not None
+                and window_end >= position["entry_window_end_ms"] + self._window_ms
+            ):
+                self._close(symbol, position, close, window_end)
+                position = None
+            if self._position.get(symbol) is None:
+                signal = self._signal_for(symbol, prev_end)
+                if (
+                    signal in ("LONG", "SHORT")
+                    and prev_end is not None
+                    and window_end >= prev_end + self._window_ms
+                    and self._n_trades.get(symbol, 0) < self._max_trades
+                ):
+                    self._open(symbol, signal, close, window_end)
+                elif (
+                    signal is None
+                    and prev_end is not None
+                    and window_end >= prev_end + self._window_ms
+                ):
+                    self._signals_skipped[symbol] = self._signals_skipped.get(symbol, 0) + 1
 
         self._last_window_end[symbol] = window_end
 
@@ -305,11 +405,23 @@ class PaperExecutionSimulator:
         gross = self._gross_pnl.get(symbol, 0.0)
         fees = self._total_fees.get(symbol, 0.0)
         demo = self._venue is not None
+        filter_assumptions = {
+            "cost_filter_lambda": self._cost_lambda,
+            "entry_threshold_bps": round(self._entry_threshold * 10_000, 2),
+            "flip_threshold_bps": round(self._flip_threshold * 10_000, 2),
+            "hold_until_decay": self._hold_until_decay,
+            "filter_rule": (
+                "open only when |predicted_return| > lambda * round-trip taker fee "
+                "(20 bps at lambda=2); flip only past 2 * lambda * fee (40 bps); "
+                "otherwise HOLD — Bysik & Slepaczuk (2026) eq. (5)"
+            ),
+        }
         assumptions = (
             {
                 "fill_timing": (
-                    "signal at window t, real market order at window t+1 close, "
-                    "reduce-only market close at window t+2"
+                    "freshest forecast at window t, real market order at window t close "
+                    "(paper eq. 4: act at t), reduce-only market close on reversal "
+                    "past the flip band"
                 ),
                 "slippage_bps": 0.0,
                 "taker_fee_bps": 0.0,
@@ -320,11 +432,14 @@ class PaperExecutionSimulator:
                 "venue": "bybit-demo",
                 "funding": "virtual USDT — no real money, no KYC; results are demo only",
                 "not_modeled": "margin, funding, partial fills, queue position, and market impact",
+                **filter_assumptions,
             }
             if demo
             else {
                 "fill_timing": (
-                    "signal at window t, market fill at window t+1 close, exit at window t+2 close"
+                    "freshest forecast at window t, market fill at window t close "
+                    "(paper eq. 4: act at t), exit on reversal past the flip band "
+                    "(or after one window when hold_until_decay is off)"
                 ),
                 "slippage_bps": round(self._slippage * 10_000, 2),
                 "taker_fee_bps": round(self._taker_fee * 10_000, 2),
@@ -334,6 +449,7 @@ class PaperExecutionSimulator:
                 ),
                 "deterministic": "fills are next-close + fixed bps; no PRNG, no hidden randomness",
                 "not_modeled": "margin, funding, partial fills, queue position, and market impact",
+                **filter_assumptions,
             }
         )
         return {
@@ -343,6 +459,10 @@ class PaperExecutionSimulator:
             "notional_usd": self._notional,
             "slippage_bps": assumptions["slippage_bps"],
             "taker_fee_bps": assumptions["taker_fee_bps"],
+            "cost_filter_lambda": self._cost_lambda,
+            "entry_threshold_bps": assumptions["entry_threshold_bps"],
+            "flip_threshold_bps": assumptions["flip_threshold_bps"],
+            "hold_until_decay": self._hold_until_decay,
             "n_trades": n_trades,
             "n_wins": n_wins,
             "win_rate": (round(n_wins / n_trades, 4) if n_trades else None),
@@ -438,6 +558,7 @@ def _build_venue(settings, venue_cls=None) -> ExecutionVenue | None:
             settings.demo_api_key or "",
             settings.demo_api_secret or "",
             recv_window_ms=settings.bybit_demo_recv_window_ms,
+            maker_first=settings.stream_execution_maker_first,
         )
         equity = venue.balance()
     except Exception:
@@ -477,15 +598,20 @@ def main() -> None:
         max_trades=settings.stream_execution_max_trades,
         window_ms=settings.stream_window_ms,
         venue=venue,
+        cost_filter_lambda=settings.stream_execution_cost_filter_lambda,
+        hold_until_decay=settings.stream_execution_hold_until_decay,
     )
     logger.info(
-        "execution consuming %s → %s (venue=%s, notional=$%.0f, slip=%sbps, taker=%sbps)",
+        "execution consuming %s → %s (venue=%s, notional=$%.0f, slip=%sbps, taker=%sbps, "
+        "lambda=%s, hold_until_decay=%s)",
         settings.stream_kafka_topic_features,
         settings.stream_redis_execution_prefix,
         "bybit-demo" if venue is not None else "paper",
         settings.stream_execution_notional_usd,
         settings.stream_execution_slippage_bps,
         settings.stream_execution_taker_fee_bps,
+        settings.stream_execution_cost_filter_lambda,
+        settings.stream_execution_hold_until_decay,
     )
     try:
         simulator.run_forever(

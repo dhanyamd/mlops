@@ -213,10 +213,10 @@ def test_market_features_endpoint_reads_redis(monkeypatch: pytest.MonkeyPatch) -
         kv = client.app.state.kv
         assert kv is not None
         kv.push_json(
-            "feature:crypto:5m:BTCUSDT", {"symbol": "BTCUSDT", "window_start_ms": 100}, maxlen=10
+            "feature:crypto:1h:BTCUSDT", {"symbol": "BTCUSDT", "window_start_ms": 100}, maxlen=10
         )
         kv.push_json(
-            "feature:crypto:5m:BTCUSDT", {"symbol": "BTCUSDT", "window_start_ms": 200}, maxlen=10
+            "feature:crypto:1h:BTCUSDT", {"symbol": "BTCUSDT", "window_start_ms": 200}, maxlen=10
         )
         resp = client.get("/api/market/features/btcusdt?limit=5")
     body = resp.json()
@@ -242,7 +242,7 @@ def test_market_predict_endpoint_reads_redis(monkeypatch: pytest.MonkeyPatch) ->
         kv = client.app.state.kv
         assert kv is not None
         kv.set_json(
-            "prediction:crypto:5m:BTCUSDT",
+            "prediction:crypto:1h:BTCUSDT",
             {"symbol": "BTCUSDT", "predicted_return": 0.001, "direction": "LONG"},
         )
         resp = client.get("/api/market/predict/btcusdt")
@@ -267,7 +267,7 @@ def test_market_simulation_endpoint_reads_redis(monkeypatch: pytest.MonkeyPatch)
         kv = client.app.state.kv
         assert kv is not None
         kv.set_json(
-            "simulation:crypto:5m:BTCUSDT",
+            "simulation:crypto:1h:BTCUSDT",
             {"symbol": "BTCUSDT", "base_price": 100.0, "var95": -0.02},
         )
         resp = client.get("/api/market/simulation/btcusdt")
@@ -293,7 +293,7 @@ def test_market_strategy_endpoint_reads_redis(monkeypatch: pytest.MonkeyPatch) -
         kv = client.app.state.kv
         assert kv is not None
         kv.set_json(
-            "strategy:crypto:5m:BTCUSDT",
+            "strategy:crypto:1h:BTCUSDT",
             {
                 "symbol": "BTCUSDT",
                 "n_windows": 30,
@@ -317,7 +317,7 @@ def test_market_validation_endpoint_reads_redis(monkeypatch: pytest.MonkeyPatch)
         kv = client.app.state.kv
         assert kv is not None
         kv.set_json(
-            "strategy:crypto:5m:BTCUSDT",
+            "strategy:crypto:1h:BTCUSDT",
             {
                 "symbol": "BTCUSDT",
                 "n_windows": 30,

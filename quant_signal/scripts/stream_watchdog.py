@@ -69,15 +69,22 @@ def _subprocess(args: list[str]) -> None:
 
 
 def heal_flink() -> None:
-    """Restart Flink from a clean state (the manual remediation, automated)."""
+    """Restart Flink from a clean state (the manual remediation, automated).
+
+    Both window jobs are resubmitted: the 1h live trading clock and the 5m
+    benchmark/Alpha-Autopsy book. Each has its own consumer group so deleting
+    offsets is per-job.
+    """
     settings = get_settings()
     jm = settings.stream_flink_jobmanager_container
     tm = settings.stream_flink_taskmanager_container
     rp = settings.stream_redpanda_container
-    group = settings.stream_flink_consumer_group
-    sql_path = settings.stream_flink_sql_path
+    jobs = [
+        (settings.stream_flink_consumer_group, settings.stream_flink_sql_path),
+        (settings.stream_flink_consumer_group_5m, settings.stream_flink_sql_path_5m),
+    ]
 
-    # Cancel any running SQL job (best-effort; the job may already be gone).
+    # Cancel any running SQL jobs (best-effort; the jobs may already be gone).
     _subprocess(
         [
             "docker",
@@ -90,19 +97,21 @@ def heal_flink() -> None:
             "); do curl -s -X PATCH http://localhost:8081/jobs/$j?mode=cancel; done",
         ]
     )
-    _subprocess(["docker", "exec", rp, "rpk", "group", "delete", group])
+    for group, _ in jobs:
+        _subprocess(["docker", "exec", rp, "rpk", "group", "delete", group])
     _subprocess(["docker", "restart", jm, tm])
     time.sleep(20)
-    _subprocess(
-        [
-            "docker",
-            "exec",
-            jm,
-            "bash",
-            "-c",
-            f"sql-client.sh -f {sql_path} -d",
-        ]
-    )
+    for _, sql_path in jobs:
+        _subprocess(
+            [
+                "docker",
+                "exec",
+                jm,
+                "bash",
+                "-c",
+                f"sql-client.sh -f {sql_path} -d",
+            ]
+        )
 
 
 def run_once(kv: KVStore, *, threshold: float, fix: bool) -> bool:

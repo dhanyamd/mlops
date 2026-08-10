@@ -48,7 +48,58 @@ from scipy import stats
 from config.settings import Settings
 from stream.predictor import ConformalInterval, _direction, _features, _model
 
-_WINDOWS_PER_YEAR = 365 * 24 * 12  # 5m windows, 24/7 crypto calendar
+
+def _windows_per_year(sorted_windows: Sequence[Mapping]) -> float:
+    """Annualization factor derived from the data's own cadence.
+
+    The 5m-era constant (365×24×12) silently mis-annualized the Sharpe once
+    the pipeline moved to 1h windows. Instead of hardcoding a cadence, read
+    it from the median spacing between consecutive window closes: hourly data
+    → ~8 760 windows/year, 5m → ~105 120. The median (not mean) is robust to
+    a single long gap (downtime, a dropped window); unknown cadence defaults
+    to hourly.
+    """
+    ends = [int(w["window_end_ms"]) for w in sorted_windows if w.get("window_end_ms") is not None]
+    deltas = [b - a for a, b in zip(ends, ends[1:]) if b > a]
+    if not deltas:
+        return 365.0 * 24.0
+    median_ms = statistics.median(deltas)
+    if median_ms <= 0:
+        return 365.0 * 24.0
+    return 365.0 * 24.0 * 3_600_000.0 / median_ms
+
+
+def _cross_returns(
+    cross_windows: Mapping[str, Sequence[Mapping]],
+    symbol: str,
+    window_end: int,
+) -> dict[str, float]:
+    """Lagged returns of each cross symbol from windows ending strictly before
+    ``window_end`` — the same rule the live predictor applies online.
+
+    For each cross symbol take its last two closes whose windows ended before
+    this one → a realized return the model would actually know at decision
+    time (no lookahead). Warm-up pairs are omitted; the sign is deliberately
+    NOT hardcoded (the seesaw vs positive-spillover literature disagrees —
+    see ``stream/predictor.py``).
+    """
+    returns: dict[str, float] = {}
+    for cross, windows in cross_windows.items():
+        if cross == symbol:
+            continue
+        closes = [
+            (int(w["window_end_ms"]), float(w["close"]))
+            for w in windows
+            if w.get("window_end_ms") is not None and isinstance(w.get("close"), (int, float))
+        ]
+        closes = [h for h in closes if h[0] < window_end]
+        if len(closes) < 2:
+            continue
+        older, newer = closes[-2], closes[-1]
+        if older[0] >= newer[0] or newer[1] == 0:
+            continue
+        returns[cross] = newer[1] / older[1] - 1.0
+    return returns
 
 
 def _spearmanr(x: Sequence[float], y: Sequence[float]) -> float:
@@ -114,12 +165,17 @@ def evaluate_predictor(
     residual_window: int = 200,
     taker_cost: float = 0.0005,
     n_blocks: int = 4,
+    direction_threshold: float = 0.0005,
+    cross_windows: Mapping[str, Sequence[Mapping]] | None = None,
 ) -> dict:
     """Progressive validation of the live predictor over historical windows.
 
     ``windows`` are the same feature-window dicts the predictor consumes (each
     with ``symbol, close, open, high, low, vwap, volume, bar_count,
-    window_end_ms``), oldest-first. Returns a plain report dict.
+    window_end_ms``), oldest-first. ``cross_windows`` maps each cross symbol to
+    its own window history; when given, the replay feeds each window the lagged
+    cross-coin returns the live predictor uses, so the offline gate tests the
+    exact feature set the online model sees. Returns a plain report dict.
     """
     sorted_windows = sorted(
         (w for w in windows if w.get("window_end_ms") is not None),
@@ -146,7 +202,16 @@ def evaluate_predictor(
     position: str = "FLAT"
 
     for msg in sorted_windows:
-        features = _features(msg)
+        cross = (
+            _cross_returns(
+                cross_windows,
+                str(msg.get("symbol") or "").upper(),
+                int(msg["window_end_ms"]),
+            )
+            if cross_windows
+            else None
+        )
+        features = _features(msg, cross)
         if features is None:
             continue
         close = float(msg["close"])
@@ -172,7 +237,7 @@ def evaluate_predictor(
 
         y_hat = float(model.predict_one(features))
         interval = conformal.predict(y_hat)
-        direction = _direction(y_hat)
+        direction = _direction(y_hat, direction_threshold)
         last_features, last_close = features, close
         last_y_hat, last_interval, last_direction = y_hat, interval, direction
 
@@ -228,7 +293,7 @@ def evaluate_predictor(
     strat_sharpe = (
         statistics.fmean(strat_rets)
         / (statistics.pstdev(strat_rets) + 1e-12)
-        * math.sqrt(_WINDOWS_PER_YEAR)
+        * math.sqrt(_windows_per_year(sorted_windows))
         if strat_rets
         else None
     )

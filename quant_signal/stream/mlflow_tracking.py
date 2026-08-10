@@ -55,6 +55,21 @@ _GATE_METRICS = (
 )
 _GATE_INT_METRICS = ("n_windows", "n_scored")
 
+# Sweep-winner metrics worth tracking from a research-harness run. The winner
+# is the best of ``n_trials`` configurations; its Sharpe and DSR are only
+# meaningful next to the search size and the expected-max-under-noise floor.
+_RESEARCH_METRICS = (
+    "annual_sharpe_strategy",
+    "excess_return",
+    "ic",
+    "direction_accuracy",
+    "deflated_sharpe",
+    "total_return_strategy",
+    "total_return_buyhold",
+    "coverage",
+    "skill_vs_zero",
+)
+
 
 def _try_import_mlflow():
     """Return the mlflow module or None (optional dependency)."""
@@ -179,6 +194,69 @@ def track_gate_report(
                 symbol=symbol,
                 passes=report.get("passes"),
                 deflated_sharpe=report.get("deflated_sharpe"),
+            )
+            return mlflow.active_run().info.run_id
+    except Exception:  # noqa: BLE001 - tracking must never break the API
+        log.exception("mlflow_tracking_failed", symbol=symbol)
+        return None
+
+
+def track_research_sweep(
+    symbol: str,
+    summary: dict,
+    *,
+    n_trials: int,
+    method: str,
+) -> str | None:
+    """Log one research-harness sweep to MLflow Tracking.
+
+    Records the winner's parameters and metrics alongside the search size and
+    the expected-max-Sharpe-under-noise floor, so a sweep run is filterable by
+    ``winner_passes`` and reproducible. The full sweep (leaderboard + winner +
+    failures) is attached as a JSON artifact. Returns the run id, or None
+    when tracking is disabled or mlflow is not installed. Never raises —
+    tracking must not fail the calling script.
+    """
+    settings = get_settings()
+    if not settings.mlflow_tracking_enabled:
+        return None
+    mlflow = _try_import_mlflow()
+    if mlflow is None:
+        log.info("mlflow_tracking_unavailable", symbol=symbol)
+        return None
+    try:
+        mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
+        mlflow.set_experiment(settings.mlflow_experiment_name)
+        with mlflow.start_run(run_name=f"research-sweep-{symbol.lower()}"):
+            winner = summary.get("winner") or {}
+            mlflow.log_params(
+                {
+                    "symbol": symbol,
+                    "n_trials": n_trials,
+                    "method": method,
+                    "search_objective": settings.research_objective,
+                    **{k: v for k, v in (winner.get("params") or {}).items()},
+                }
+            )
+            metrics = {
+                key: float(winner["report"][key])
+                for key in _RESEARCH_METRICS
+                if key in winner.get("report", {}) and winner["report"][key] is not None
+            }
+            metrics["winner_passes"] = 1.0 if winner.get("passes") else 0.0
+            metrics["winner_clears_noise_floor"] = (
+                1.0 if summary.get("winner_clears_noise_floor") else 0.0
+            )
+            if summary.get("expected_max_sharpe_noise") is not None:
+                metrics["expected_max_sharpe_noise"] = float(summary["expected_max_sharpe_noise"])
+            if metrics:
+                mlflow.log_metrics(metrics)
+            mlflow.log_dict(summary, "sweep.json")
+            log.info(
+                "mlflow_tracking_logged",
+                symbol=symbol,
+                passes=winner.get("passes"),
+                deflated_sharpe=winner.get("deflated_sharpe"),
             )
             return mlflow.active_run().info.run_id
     except Exception:  # noqa: BLE001 - tracking must never break the API

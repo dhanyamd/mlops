@@ -19,6 +19,7 @@ from stream.kv import FakeKV
 from stream.predictor import (
     ConformalInterval,
     OnlinePredictor,
+    _direction,
     _features,
     prediction_key,
     strategy_key,
@@ -261,6 +262,17 @@ def test_predictor_learns_trend_and_writes_prediction() -> None:
     assert "coverage" in stored and "alpha" in stored
 
 
+def test_direction_threshold_filters_noise() -> None:
+    """Predictions below the trade threshold must stay FLAT (no fee bleed),
+    and the same lean must trade once it clears the threshold."""
+    assert _direction(0.0005, 0.001) == "FLAT"
+    assert _direction(-0.0005, 0.001) == "FLAT"
+    assert _direction(0.00005, 0.0001) == "FLAT"
+    assert _direction(0.00015, 0.0001) == "LONG"  # legacy 1e-4 behavior
+    assert _direction(0.0011, 0.001) == "LONG"
+    assert _direction(-0.0011, 0.001) == "SHORT"
+
+
 def test_predictor_ignores_malformed_messages() -> None:
     kv = FakeKV()
     predictor = OnlinePredictor(kv, prediction_prefix="prediction:crypto:5m")
@@ -273,7 +285,7 @@ def test_features_reject_implausible_ratio_windows() -> None:
     """Corrupt bars must never become features. Both real-world failure modes
     are caught: an ``open``/``close`` pair off by orders of magnitude
     (ret_in_window=650) and a ``close`` shifted so the open→close move is
-    still implausibly large (ret_in_window=0.208, far above the 5% bound)."""
+    still implausibly large (ret_in_window=0.6, far above the 50% 1h bound)."""
     corrupt_price_units = {
         "symbol": "BTCUSDT",
         "open": 100.0,
@@ -289,7 +301,7 @@ def test_features_reject_implausible_ratio_windows() -> None:
         "open": 100.0,
         "high": 121.5,
         "low": 99.0,
-        "close": 120.8,
+        "close": 160.0,
         "vwap": 111.9,
         "volume": 10800.0,
         "bar_count": 9,
@@ -308,6 +320,117 @@ def test_features_reject_implausible_ratio_windows() -> None:
         "bar_count": 5,
     }
     assert _features(sane) is not None
+
+
+def test_predictor_cross_coin_features_use_only_lagged_leader_windows() -> None:
+    """The seesaw/lead-lag feature set: a follower's model sees the leaders'
+    returns from windows that closed BEFORE it — never the current window."""
+    kv = FakeKV()
+    predictor = OnlinePredictor(
+        kv,
+        prediction_prefix="prediction:crypto:5m",
+        cross_symbols=["BTCUSDT", "ETHUSDT"],
+    )
+    base = 1_786_378_500_000
+    # Leaders first: BTC 100 -> 99 -> 98 (down), ETH 100 -> 101 -> 102 (up).
+    # The follower's model at t uses the leaders' close-to-close returns over
+    # their most recent completed window (t-1), never the current window.
+    for i, (btc_close, eth_close) in enumerate([(100.0, 100.0), (99.0, 101.0)]):
+        predictor.handle(
+            {
+                "symbol": "BTCUSDT",
+                "window_end_ms": base - 600_000 + i * 300_000,
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": btc_close,
+                "vwap": 100.0,
+                "volume": 1000.0,
+                "bar_count": 5,
+            }
+        )
+        predictor.handle(
+            {
+                "symbol": "ETHUSDT",
+                "window_end_ms": base - 600_000 + i * 300_000,
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": eth_close,
+                "vwap": 100.0,
+                "volume": 1000.0,
+                "bar_count": 5,
+            }
+        )
+    predictor.handle(
+        {
+            "symbol": "ETHUSDT",
+            "window_end_ms": base - 300_000,
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 101.0,
+            "vwap": 100.0,
+            "volume": 1000.0,
+            "bar_count": 5,
+        }
+    )
+    # Follower window at t: sees BTC's previous-bar return (100 -> 99) and
+    # ETH's (100 -> 101), but NOT this window's own close as a feature source.
+    predictor.handle(
+        {
+            "symbol": "SOLUSDT",
+            "window_end_ms": base,
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.5,
+            "vwap": 100.6,
+            "volume": 1000.0,
+            "bar_count": 5,
+        }
+    )
+    sol = predictor._state("SOLUSDT")
+    assert sol.last_features is not None
+    assert sol.last_features["lag_btcusdt_ret"] == pytest.approx(-0.01)
+    assert sol.last_features["lag_ethusdt_ret"] == pytest.approx(0.01)
+    # A window with only the follower (no cross history yet) still predicts:
+    # features degrade gracefully, the model is never blocked.
+    predictor2 = OnlinePredictor(
+        kv, prediction_prefix="prediction:crypto:5m", cross_symbols=["BTCUSDT"]
+    )
+    predictor2.handle(
+        {
+            "symbol": "SOLUSDT",
+            "window_end_ms": base,
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.5,
+            "vwap": 100.6,
+            "volume": 1000.0,
+            "bar_count": 5,
+        }
+    )
+    sol2 = predictor2._state("SOLUSDT")
+    assert "lag_btcusdt_ret" not in (sol2.last_features or {})
+    # The leader's own model never uses its own lag as a feature.
+    predictor.handle(
+        {
+            "symbol": "BTCUSDT",
+            "window_end_ms": base,
+            "open": 99.0,
+            "high": 100.0,
+            "low": 98.0,
+            "close": 99.5,
+            "vwap": 99.5,
+            "volume": 1000.0,
+            "bar_count": 5,
+        }
+    )
+    btc = predictor._state("BTCUSDT")
+    assert "lag_btcusdt_ret" not in (btc.last_features or {})
+    assert "lag_ethusdt_ret" in (btc.last_features or {})
 
 
 def test_predictor_not_poisoned_by_corrupt_feature_window() -> None:
