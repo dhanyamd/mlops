@@ -1,0 +1,8 @@
+# Provider caches + local state never enter the repo.
+.terraform/
+*.tfstate
+*.tfstate.*
+
+# Real variable files hold account-specific values; keep the .example tracked.
+terraform.tfvars
+*.auto.tfvars

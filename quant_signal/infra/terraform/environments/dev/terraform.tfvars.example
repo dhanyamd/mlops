@@ -1,0 +1,15 @@
+# Copy to terraform.tfvars and fill in. Everything has a safe default EXCEPT
+# the secret ARNs, which you should only set once the Secrets Manager entries
+# exist (see infra/terraform/README.md).
+
+environment = "dev"
+region      = "us-east-1"
+
+# The stack runs without broker credentials until you create the Secrets
+# Manager entries and pass their ARNs here. After that, re-run `apply` and
+# the execution role + task definitions pick them up automatically.
+# bybit_demo_api_key_secret_arn    = "arn:aws:secretsmanager:us-east-1:<acct>:secret:quant-signal/bybit-demo-api-key-XXXXXX"
+# bybit_demo_api_secret_secret_arn = "arn:aws:secretsmanager:us-east-1:<acct>:secret:quant-signal/bybit-demo-api-secret-XXXXXX"
+
+# Email that CloudWatch alarms fan into (leave empty for topic-only).
+# alerts_email = "ops@example.com"

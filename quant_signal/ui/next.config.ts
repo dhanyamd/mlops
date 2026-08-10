@@ -1,6 +1,9 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // Lean Docker runtime: emits a self-contained .next/standalone tree so the
+  // image only carries the server, not node_modules (next dev ignores this).
+  output: "standalone",
   allowedDevOrigins: ["127.0.0.1", "localhost"],
   async rewrites() {
     // Proxy all /api/* calls to the FastAPI backend during development. Keeps

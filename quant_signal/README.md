@@ -1,270 +1,362 @@
 # quant_signal
 
-Production-grade quant signal platform: **Snowflake-backed pipelines** with
-**Spark**, data quality, and full observability. Built from research on how
-quant research houses (Two Sigma / Man AHL patterns) actually run data
-infrastructure.
+Production-grade quant signal platform — **Snowflake-backed batch pipelines**,
+a **Kafka → Flink → Redis realtime layer**, research-driven model validation,
+and data quality enforced at every stage. Designed like the data platforms of
+quant research houses (Two Sigma / Man AHL patterns).
 
-> Status: **Full build — M0–M5 plus the prediction promotion gate.** Config,
-> Snowflake client, structured logging, idempotent bootstrap, dbt with enforced
-> contracts, real ingestion (Yahoo/EDGAR/FRED/Binance/Alpaca) into
-> Bronze→Silver→Gold with latency telemetry, the PEAD event study, and a
-> read-only FastAPI + Next.js dashboard. A production streaming layer — Redpanda
-> (Kafka API) → Flink SQL (5m event-time windows) → Redis online store → API —
-> powers real-time crypto features, online prediction with conformal intervals,
-> Monte Carlo simulation, and QuantPad-style strategy validation. A **promotion
-> gate** (progressive validation + Deflated Sharpe) replays real feature
-> history and decides, honestly, whether a model may actually trade. The Signal
-> Terminal renders the full Monte Carlo visualization stack: a forward fan
-> chart with the 10k-simulated path spaghetti (QuantPad "all paths"), an
-> outcome-colored equity fan, an efficiency-cloud pass-probability landscape
-> (pain vs. gain scatter), and terminal / drawdown distributions. A **stream
-> watchdog** auto-heals a stalled Flink feature pipeline and a **pipeline-health
-> strip** (event-time, per-stage maturity) keeps the terminal honest about what
-> is actually fresh. No code is
-> hardcoded: every credential and connection value comes from the environment.
+**Status:** full build, running locally and deployed to AWS via Terraform.
 
-## Non-negotiables
+---
 
-- **Nothing hardcoded.** All config via `pydantic-settings` from env vars
-  (`config/settings.py`). Secrets use `Field(repr=False)` (never logged),
-  dbt's `DBT_ENV_SECRET_*` prefix (auto-scrubbed from logs), and every query
-  carries a `query_tag` for credit/cost attribution.
-- **Fail fast.** A missing auth method or a malformed account identifier
-  raises `ValidationError` at startup — misconfig never silently half-runs.
-- **Reproducible infra.** `make bootstrap` idempotently creates the database,
-  warehouse, schemas, and least-privilege roles (`QUANT_INGEST` /
-  `QUANT_TRANSFORMER` / `QUANT_READER`).
-- **Quality as contract.** Every silver/gold dbt model must declare a full
-  column contract (`contract: enforced: true`) or the build fails.
-- **Structured logs.** JSON lines via `structlog`; secrets never logged.
+## Table of contents
 
-## Stack (this folder)
+1. [Build log](#build-log)
+2. [Architecture](#architecture)
+3. [Key capabilities](#key-capabilities)
+4. [Technology stack](#technology-stack)
+5. [Repository layout](#repository-layout)
+6. [Getting started](#getting-started)
+7. [Local runbook](#local-runbook)
+8. [AWS deployment](#aws-deployment)
+9. [Continuous integration](#continuous-integration)
+10. [Design principles](#design-principles)
+11. [Notes & references](#notes--references)
+
+---
+
+## Build log
+
+| Build | What | Delivered |
+|---|---|---|
+| **#1** | Autonomous research harness | Offline config sweep → MLflow → per-symbol leaderboards in Redis, read by the live predictor (`stream/research_harness.py`, `make stream-research`) |
+| **#2** | Data quality / SLA layer | 8 quality dimensions + lineage manifest per window, served at `/api/market/quality` (`stream/data_quality.py`, `make stream-quality`) |
+| **#3** | AWS IaC + CI + docs | MSK → Flink-on-Fargate → ElastiCache → ECS agents + UI behind an ALB; CloudWatch alarms + SNS; remote state; CI with `terraform fmt`/`validate` |
+
+Every credential and threshold comes from the environment — nothing hardcoded.
+
+---
+
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph Batch["Batch (Snowflake)"]
+        ING[ingest/ · Yahoo · EDGAR · FRED · Binance · Alpaca]
+        DBT[dbt Silver→Gold · enforced contracts]
+        ING --> BRONZE[(Snowflake Bronze)]
+        BRONZE --> DBT --> MART[(Snowflake Silver/Gold)]
+    end
+
+    subgraph Realtime["Realtime (Kafka protocol)"]
+        PROD[stream/producer]
+        PROD -->|raw bars| KAFKA[(Redpanda local / MSK AWS)]
+        FLINK[Flink SQL · 5m / 1h windows]
+        KAFKA --> FLINK -->|features| KAFKA
+        MAT[stream/materializer] --> REDIS[(Redis online store)]
+        KAFKA --> MAT
+    end
+
+    MART --> API[api/main · FastAPI]
+    REDIS --> API
+    PRED[stream/predictor · conformal + MC] --> REDIS
+    QUAL[data_quality · SLA checks] --> REDIS
+    API --> UI[ui/ · Next.js Signal Terminal]
+    UI --> ALB[ALB · ECS on AWS]
+```
+
+The realtime feature pipeline, end to end:
+
+```
+Binance producer → Redpanda (crypto.bars.raw) → Flink SQL 5m/1h TUMBLE windows
+   → Redpanda (crypto.features.*) → materializer → Redis online store → /api/market/*
+```
+
+The API reads from Redis (<500 ms, never touching Kafka or Snowflake); a stream
+watchdog auto-heals a stalled Flink pipeline and a pipeline-health strip keeps
+the dashboard honest about what is actually fresh.
+
+---
+
+## Key capabilities
+
+- **Batch (Snowflake).** Idempotent bootstrap (database, warehouse, schemas,
+  least-privilege roles), real ingestion (Yahoo / SEC EDGAR / FRED / Binance /
+  Alpaca) into Bronze→Silver→Gold with latency telemetry, and dbt with
+  enforced column contracts (`make bootstrap`, `make dbt-run`).
+- **Realtime.** Redpanda (Kafka API) → Flink SQL event-time windows → Redis
+  online store; the same broker protocol runs on AWS MSK.
+- **Online prediction.** River online learner with conformal intervals + Monte
+  Carlo simulation; a **promotion gate** (progressive validation + Deflated
+  Sharpe) decides honestly whether a model may trade.
+- **Research harness.** Hyperparameters are swept, tracked to MLflow, and
+  leaderboarded — not guessed.
+- **Data quality.** 8 dimensions + lineage, scored per symbol/window and served
+  over the API.
+- **Observability.** Per-stage freshness, self-healing watchdog, and (on AWS)
+  CloudWatch alarms + SNS + a platform dashboard.
+- **Signal Terminal.** Next.js dashboard rendering the full MC visualization
+  stack (forward fan, equity fan, pass-probability landscape, drawdown/terminal
+  distributions).
+
+---
+
+## Technology stack
 
 | Concern | Tool |
 |---|---|
-| Config | `pydantic-settings` |
+| Config | `pydantic-settings` (env-driven, secrets masked) |
 | Warehouse | Snowflake (`snowflake-connector-python`) |
 | Transform + quality | `dbt-core` + `dbt-snowflake` (contracts, tests) |
-| Statistical tests | `dbt_expectations` |
-| Data observability | `elementary` (anomaly/schema-drift detection) |
-| Stream broker | Redpanda (Kafka API) — `confluent-kafka` producer/consumer |
+| Statistical tests / observability | `dbt_expectations` · `elementary` |
+| Stream broker | Redpanda (local) / Amazon MSK (AWS) — Kafka API, `confluent-kafka` |
 | Stream processing | Flink SQL (`flink:1.19.3`), checkpointed event-time windows |
 | Online store | Redis 7 (`redis-py`), bounded feature lists |
-| Orchestration (later) | Prefect |
-| Distributed compute (later) | Spark + `spark-snowflake` connector |
+| Research / validation | MLflow tracking · River progressive validation |
+| Data quality | `stream/data_quality.py` (Soda/Elementary-style) |
+| Orchestration | Prefect |
+| Distributed compute | Spark + `spark-snowflake` connector (pandas fallback runs without Java) |
+| Runtime (AWS) | ECS Fargate · ECR · MSK · ElastiCache · S3 · CloudWatch + SNS — Terraform |
+| UI | Next.js · ECharts / Recharts |
 
-## Layout
+---
+
+## Repository layout
 
 ```
 quant_signal/
-├── config/
-│   ├── settings.py         # pydantic-settings: env-driven, secrets masked
-│   └── logging.py          # structlog JSON logging (level from env)
-├── db/
-│   ├── snowflake.py        # SnowflakeClient: query/insert/ping, query_tag
-│   ├── bootstrap.py        # idempotent infra bootstrap (make bootstrap)
-│   └── sql/bootstrap.sql   # DB, warehouse, schemas, least-privilege roles
-├── dbt/
-│   ├── profiles.yml        # creds ONLY via env_var(...), never plaintext
-│   ├── dbt_project.yml     # silver/gold: contracts enforced at project level
-│   ├── packages.yml        # dbt_expectations + elementary
-│   └── models/             # sources.yml + silver/gold models with contracts
-├── api/
-│   ├── main.py             # FastAPI: /api/market, /pead, /fundamentals, /ws/market
-│   ├── db.py               # read-only query layer over Silver/Gold
-│   └── stream.py           # live stream hub: Kafka consumer + ring buffer + WS fan-out
-├── stream/                 # M3 streaming stack (all bus/KV logic testable via fakes)
-│   ├── producer.py         # standalone Binance minute-bar producer → Kafka
-│   ├── materializer.py     # Kafka → Redis online store (live bars + 5m features)
-│   ├── predictor.py        # online River model + conformal intervals → Redis
-│   ├── predictive_eval.py  # promotion gate: progressive validation + Deflated Sharpe
-│   ├── mlflow_tracking.py  # MLflow tracking for validation + gate runs (optional extra)
-│   ├── simulation.py       # Monte Carlo forward fan chart (percentiles, VaR/ES)
-│   ├── pipeline_health.py  # event-time per-stage freshness summary (health strip)
-│   ├── strategy_mc.py      # QuantPad-style strategy pass-probability bootstrap
-│   ├── bus.py              # MessageBus (KafkaBus / FakeBus for hermetic tests)
-│   ├── kv.py               # KVStore (RedisKV / FakeKV)
-│   ├── bars.py             # provider DataFrames → JSON bar payloads
-│   └── flink/              # Dockerfile + crypto_features.sql (5m event-time windows)
-├── docker-compose.yml      # redpanda + redis + flink-jobmanager/taskmanager
-├── scripts/                # ping.py, run_dbt.py, pead_backtest.py, seed_stream_demo.py, stream_watchdog.py
-├── ui/                     # Next.js dashboard (Market/Fundamentals/PEAD/...)
-├── tests/                  # config + connection-param + API tests (no live DB)
-└── Makefile                # setup / lint / test / bootstrap / dbt / api / ui / stream-*
+├── config/                  # pydantic-settings + structlog JSON logging
+├── db/                      # Snowflake client, idempotent bootstrap, bootstrap.sql
+├── ingest/                  # providers (Yahoo/EDGAR/FRED/Binance/Alpaca), store, quality
+├── flows/                   # batch orchestration: ingest_*, feature_engineering, materialize
+├── dbt/                     # dbt project: profiles, contracts, silver/gold models
+├── stream/                  # realtime: producer, materializer, predictor, simulation,
+│   │                        #   quality, research harness, watchdog, flink jobs
+│   └── flink/               # Dockerfile + crypto_features.sql (5m/1h windows)
+├── api/                     # FastAPI: /api/market/*, /pead, /fundamentals, /ws/market
+├── ui/                      # Next.js Signal Terminal
+├── infra/terraform/         # AWS IaC: modules + environments/dev (S3 backend, runbook)
+├── scripts/                 # thin CLIs: ping, run_dbt, run_research, run_quality, watchdog…
+├── tests/                   # hermetic tests — no live DB required
+├── Dockerfile               # app image (agents + API)
+├── docker-compose.yml       # redpanda + redis + flink-jobmanager/taskmanager
+└── Makefile                 # setup / lint / test / bootstrap / dbt / api / ui / stream-*
 ```
 
-## Setup (needs a Snowflake trial account)
+---
 
-1. Sign up at `signup.snowflake.com` (free trial, $400 credits, no card).
-2. In Snowsight, create a warehouse `QUANT_WH` (XS, auto-suspend 60s) under
-   **Admin → Warehouses** (or note an existing one like `COMPUTE_WH`).
-3. Copy `.env.example` → `.env` and fill in your Snowflake values (both the
-   `SNOWFLAKE_*` and matching `DBT_*` variables). Your password is the one you
-   set at signup — Snowflake never shows it back.
-4. Install, verify, bootstrap:
+## Getting started
+
+**Prerequisites:** Python 3.11+ with `uv`, Docker (for the streaming stack),
+and a free Snowflake trial account (`signup.snowflake.com`, $400 credits).
 
 ```bash
 cd quant_signal
 make setup        # uv sync (runtime + dev deps)
 make dbt-setup    # uv sync (adds dbt-core + adapter)
 make check        # ruff + pytest — no Snowflake needed
-make bootstrap    # creates QUANT DB, QUANT_WH, schemas, roles (idempotent)
-make ping         # verifies the live connection (SELECT 1)
-make dbt-debug    # verifies the dbt connection
-make dbt-deps     # installs dbt_expectations + elementary
-make dbt-run      # builds silver/gold with contracts + tests
 ```
 
-## Using the client
+### Snowflake bootstrap (one-time)
+
+1. In Snowsight create a warehouse `QUANT_WH` (XS, auto-suspend 60s).
+2. Copy `.env.example` → `.env` and fill in the `SNOWFLAKE_*` and `DBT_*`
+   variables.
+3. Bootstrap and verify:
+
+```bash
+make bootstrap    # idempotent: DB, warehouse, schemas, least-privilege roles
+make ping         # SELECT 1 over the live connection
+make dbt-debug    # verify the dbt connection
+make dbt-deps     # install dbt_expectations + elementary
+make dbt-run      # build silver/gold with enforced contracts + tests
+```
+
+### Using the client
 
 ```python
 from db.snowflake import SnowflakeClient
 
 client = SnowflakeClient()
-print(client.ping())                       # True once connected
+print(client.ping())                           # True once connected
 df = client.query_df("SELECT 1 AS one")
-client.insert_df(df, table_name="my_table")  # appends into QUANT.BRONZE
+client.insert_df(df, table_name="my_table")    # appends into QUANT.BRONZE
 ```
 
-## Dashboard (live UI over the marts)
+---
 
-The read-only dashboard serves the *same* numbers the CLI shows — market bars,
-PIT fundamentals, the PEAD event study, macro series, and pipeline latency.
-Nothing is mocked; every page queries Silver/Gold in real time.
+## Local runbook
+
+### Dashboard + live market stream
 
 ```bash
 make api   # FastAPI on :8000 (needs .env; MFA passcode via env or prompt)
-make ui    # Next.js on :3000 — proxies /api/* to :8000, so browsers stay same-origin
+make ui    # Next.js on :3000 — proxies /api/* to :8000, same-origin
 ```
 
-Open `http://localhost:3000`. The API is also directly usable:
-`curl localhost:8000/api/pead`, `/api/market/AAPL?days=750`, `/api/fundamentals/AAPL`,
-`/api/metrics/pipeline`, `/api/macro?series=VIXCLS`,
-`/api/market/gate/BTCUSDT`, and `/api/market/validation/BTCUSDT?track=true`
-(track logs the run to MLflow). The PEAD endpoint recomputes
-the ~10s event study at most once per 60s (env `API_PEAD_CACHE_TTL_SECONDS`).
+Open `http://localhost:3000`. Direct API calls:
 
-### Live market stream (near-real-time showcase)
+```bash
+curl localhost:8000/api/pead
+curl localhost:8000/api/market/AAPL?days=750
+curl localhost:8000/api/fundamentals/AAPL
+curl localhost:8000/api/metrics/pipeline
+curl localhost:8000/api/market/live/BTCUSDT          # live bars (from Kafka)
+curl localhost:8000/api/market/features/BTCUSDT      # 5m features (from Redis)
+curl localhost:8000/api/market/gate/BTCUSDT          # promotion-gate verdict
+curl localhost:8000/api/market/quality               # data quality + lineage
+curl localhost:8000/api/market/research/BTCUSDT      # research leaderboard
+```
 
-While the API runs it also drives a **live minute-bar stream** from Binance
-(`api/stream.py`): a background poller fetches recent crypto bars every
-`STREAM_POLL_SECONDS`, upserts them to `BRONZE.CRYPTO_BARS` (best-effort —
-a Snowflake outage degrades to a warning, never kills the stream), and
-broadcasts deltas over WebSocket. No hardcoded instruments: the symbol set is
-`INGEST_DEFAULT_CRYPTO_SYMBOLS` from the environment.
-
-- Snapshot REST: `curl localhost:8000/api/market/live/BTCUSDT`
-- Live WebSocket: `wscat -c 'ws://localhost:8000/ws/market?symbol=BTCUSDT'`
-
+Live WebSocket: `wscat -c 'ws://localhost:8000/ws/market?symbol=BTCUSDT'`.
 The stream is on by default; set `STREAM_ENABLED=false` for a pure query API.
 
-### Streaming stack (M3): Kafka → Flink → Redis
-
-The **real-time feature pipeline** runs alongside the Snowflake batch layer:
-a standalone producer publishes Binance minute bars to Redpanda (Kafka API),
-a **Flink SQL job** computes 5-minute event-time windows (OHLCV, VWAP,
-bar count) with checkpoints, and a **materializer** lands both live bars and
-window features into a Redis **online store**. The API serves them from Redis
-(<500ms, never touching Kafka or Snowflake):
-
-```
-BinanceProducer → Redpanda(crypto.bars.raw) → Flink SQL 5m TUMBLE
-   → Redpanda(crypto.features.5m) → materializer → Redis → /api/market/*
-```
-
-Bring the stack up (needs Docker):
+### Streaming stack (Kafka → Flink → Redis)
 
 ```bash
 make stream-infra            # docker compose up -d --build (redpanda, redis, flink)
-make stream-topics           # create the Kafka topics (Flink requires them to exist)
-make stream-flink-submit     # deploy the crypto_features.sql job (detached)
-make stream-flink-status     # check job state (expect RUNNING)
+make stream-topics           # create Kafka topics (Flink requires them to exist)
+make stream-flink-submit     # deploy crypto_features.sql (5m windows, detached)
+make stream-flink-submit-1h  # deploy crypto_features_1h.sql (1h windows)
+make stream-flink-status     # expect RUNNING
 ```
 
-Then run the live ingestion + online store in two terminals:
+Then, in two terminals:
 
 ```bash
 make stream-producer         # poll Binance → publish raw bars (real market data)
 make stream-materializer     # consume raw + features → Redis
 ```
 
-For a fast end-to-end check without waiting on Binance, seed synthetic bars
-into the current + previous 5-minute buckets (the Flink window fires within
-~2 minutes): `make stream-seed`. Verify with:
+For a fast end-to-end check without Binance, seed synthetic bars:
+`make stream-seed` (the Flink window fires within ~2 minutes).
+
+> **Notes.** Topics must exist before the Flink job starts. Redis maps to host
+> **:6380** (`STREAM_REDIS_URL=redis://localhost:6380`). The Flink image pins
+> the Kafka connector JAR with correct ownership and a writable checkpoint dir,
+> or the job restarts with `ClassNotFoundException` / `IOException`.
+
+### Research harness (Build #1)
+
+Sweep the predictor's config grid offline against the same learn-then-predict
+loop the live model uses; every run is tracked to MLflow and per-symbol
+leaderboards land in Redis.
 
 ```bash
-curl localhost:8000/api/market/live/BTCUSDT         # hub ring buffer (from Kafka)
-curl localhost:8000/api/market/features/BTCUSDT     # 5m features (from Redis)
+make stream-research
+curl localhost:8000/api/market/research/BTCUSDT
 ```
 
-Notes:
-- The Kafka topics **must exist** before the Flink job starts (`make stream-topics`
-  is idempotent); Redpanda auto-creates topics on produce, but Flink's source
-  enumerator fails with `UnknownTopicOrPartitionException` if they're absent.
-- Redis maps to host **:6380** so it never collides with a host Redis on :6379
-  (`STREAM_REDIS_URL=redis://localhost:6380`).
-- The Flink image pins the Kafka connector JAR with correct ownership
-  (`chown flink:flink`, `chmod 644`) and a writable checkpoint dir — both are
-  required or the job restarts on `ClassNotFoundException`/`IOException`.
-- The old M2 in-API poller is demo-grade; the standalone `stream-producer` +
-  Kafka path is the production ingestion route. Streaming writes to Snowflake
-  only best-effort today (Kafka → Snowflake via Snowpipe Streaming is planned).
+While the grid is cold the leaderboard honestly reports `winner: None`.
 
-### Pipeline health + self-healing watchdog (observability)
+### Data quality / SLA (Build #2)
 
-The live stack watches itself:
+Score the online store across **8 dimensions** (freshness, latency, volume
+coverage, completeness, ordering, schema, value sanity, duplicate-free) with a
+per-window **lineage manifest**, so a degraded number is traceable to the
+source that caused it.
 
-- `GET /api/market/health/summary` reports per-stage freshness — produce /
-  features / predict / simulate / strategy — as true ages in seconds computed
-  from the live artifact timestamps in Redis. The Signal Terminal renders it as
-  a 6-stage LED strip (`stream/pipeline_health.py`).
-- `scripts/stream_watchdog.py` runs on a timer, detects a stalled pipeline
-  (window features falling behind raw bars), and with `--fix` restarts the
-  Flink jobmanager/taskmanager and resubmits the SQL job:
-  `make stream-watchdog` (or run directly with `--interval 60 --fix`).
+```bash
+make stream-quality
+curl localhost:8000/api/market/quality
+```
 
-Both are hermetic-unit-tested (`tests/test_pipeline_health.py`,
-`tests/test_stream_watchdog.py`), including the ms-as-seconds unit regression.
+Warm-up is reported honestly — a fresh 1h pipeline shows volume `critical`,
+never silently ignored.
 
-### Prediction promotion gate (validation before trading)
+### Prediction promotion gate
 
-The research literature is blunt: single-asset, next-window return prediction
-is the *weakest* return-prediction setting (Gu, Kelly & Xiu 2020), and naive
-backtesting is "the most dangerous tool in finance" (López de Prado). So before
-the live predictor is allowed to emit LONG/SHORT, `stream/predictive_eval.py`
-replays its exact learn-then-predict loop over the stored feature-window
-history and scores it honestly:
+Before the live predictor may emit LONG/SHORT, `stream/predictive_eval.py`
+replays its exact learn-then-predict loop over stored feature history and
+checks: progressive validation, transaction-cost-adjusted P&L, IC / direction
+accuracy vs naive baselines, conformal coverage, block stability, and
+**Deflated Sharpe** (corrected for multiple testing). A model may learn but not
+trade until `passes_gate()` clears everything:
 
-- **progressive validation** (test-then-train, River's canonical protocol);
-- **transaction-cost-adjusted P&L** — taker cost charged per position flip, vs
-  buy-and-hold;
-- **IC + direction accuracy**; **naive baselines** (predict-zero and
-  persistence) reported as MASE skill;
-- **conformal coverage** vs nominal alpha (the ACI contract);
-- **stability across contiguous blocks** (signal must not be one lucky period);
-- **Deflated Sharpe Ratio** charged for the number of trials the model has gone
-  through — the multiple-testing correction (Bailey & López de Prado).
+```bash
+curl localhost:8000/api/market/validation/BTCUSDT?track=true   # → MLflow
+curl localhost:8000/api/market/gate/BTCUSDT
+```
 
-The verdict is `passes_gate()`: a model may learn but must not trade until it
-clears every check. It is served by `/api/market/gate/{symbol}` and recorded to
-MLflow with `?track=true` (filterable by a `passes` 0/1 metric). All thresholds
-are env-driven (`STREAM_GATE_*` in `config/settings.py`); the default is
-deliberately strict — most real models will fail, which is the point.
+### Pipeline health + watchdog
 
-## Notes
+- `GET /api/market/health/summary` → per-stage freshness (produce / features /
+  predict / simulate / strategy) rendered as a 6-stage LED strip.
+- `scripts/stream_watchdog.py` restarts a stalled Flink job with `--fix`:
 
-- **No API key.** Snowflake authenticates with account + user + password (or
-  RSA key-pair via `SNOWFLAKE_PRIVATE_KEY_FILE`). Snowflake is SaaS-only; your
-  machine talks to your cloud trial account.
-- **MFA.** New Snowflake accounts require MFA for password logins. Enroll in
-  Snowsight (user menu → Settings → Authentication → Duo or an authenticator
-  app — **not** a passkey, which can't be used programmatically), set
-  `SNOWFLAKE_USE_MFA=true`, and the connector uses `username_password_mfa`
-  with Duo push. The first connection prompts once; `ALLOW_CLIENT_MFA_CACHING`
-  (set by `make bootstrap`) caches the token ~4h. For fully non-interactive
-  automation later, use key-pair auth instead (MFA doesn't apply to it).
-- **Spark → Snowflake** (next milestones): the `spark-snowflake` connector has
-  no native stream sink — you write via `foreachBatch`. Streaming holds
-  sessions/stages open and burns credits; keep the warehouse small +
-  auto-suspend.
+```bash
+make stream-watchdog          # or: python -m scripts.stream_watchdog --interval 60 --fix
+```
+
+---
+
+## AWS deployment
+
+The same platform as managed infrastructure in `infra/terraform/`:
+**MSK** (managed Kafka) → **Flink on Fargate** → **S3 checkpoints** →
+**ElastiCache Redis** → ECS agents + Next.js UI behind an **ALB**, with
+CloudWatch alarms + SNS + a platform dashboard.
+
+Highlights (research-backed): Service Connect for in-cluster DNS, task-role-only
+credentials (Bybit demo keys via Secrets Manager — never env or logs), and a
+3-broker MSK cluster as the Kafka durability floor.
+
+```
+infra/terraform/
+├── modules/            networking · storage · msk · iam · ecr · ecs · observability
+└── environments/dev/   S3 backend + DynamoDB lock, module wiring, outputs
+```
+
+```bash
+cd infra/terraform/environments/dev
+terraform init          # configures the S3 backend
+terraform plan
+terraform apply
+```
+
+**Full runbook** (backend bootstrap, secrets, Flink job submission via
+`ecs exec`): [`infra/terraform/README.md`](infra/terraform/README.md).
+
+---
+
+## Continuous integration
+
+`.github/workflows/quant-signal-ci.yml` runs on every PR/push:
+
+- **lint + test** — `uv sync --frozen` + `ruff check .` + `pytest`
+- **dbt contract checks** — `dbt parse` and (when Snowflake secrets exist) a
+  full `dbt build --target ci` that only touches `CI_*` schemas
+- **IaC sanity** — `terraform fmt -check` + `terraform validate` on every
+  module and the dev environment (no AWS credentials required)
+
+---
+
+## Design principles
+
+- **Nothing hardcoded.** All config via `pydantic-settings` from env vars;
+  secrets use `Field(repr=False)`, dbt's `DBT_ENV_SECRET_*` prefix, and every
+  query carries a `query_tag` for credit/cost attribution.
+- **Fail fast.** Misconfiguration raises `ValidationError` at startup — it
+  never silently half-runs.
+- **Reproducible infra.** `make bootstrap` is idempotent; Terraform state is
+  remote with locking.
+- **Quality as contract.** Every silver/gold dbt model declares a full column
+  contract or the build fails; runtime data quality is scored per window.
+- **Honesty over polish.** Warm-up states are reported as such; a model that
+  fails the promotion gate stays off — that's the intended behavior.
+- **Structured logs.** JSON lines via `structlog`; secrets never logged.
+
+---
+
+## Notes & references
+
+- **Snowflake auth.** No API key. Password (with MFA via `username_password_mfa`
+  + Duo push) or RSA key-pair (`SNOWFLAKE_PRIVATE_KEY_FILE`). Prefer key-pair
+  for non-interactive automation. `ALLOW_CLIENT_MFA_CACHING` caches the MFA
+  token ~4h.
+- **Spark → Snowflake.** The `spark-snowflake` connector has no native stream
+  sink — write via `foreachBatch`. Keep the warehouse small + auto-suspend.
+- **Design literature.** Model validation and platform posture follow Gu,
+  Kelly & Xiu (2020) on the weakness of single-asset return prediction;
+  López de Prado on overfitting/backtesting; Bailey & López de Prado on
+  Deflated Sharpe; and Two Sigma / Man AHL–style data-platform patterns.

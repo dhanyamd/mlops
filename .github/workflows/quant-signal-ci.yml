@@ -14,7 +14,7 @@ jobs:
         working-directory: quant_signal
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v9
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -39,7 +39,7 @@ jobs:
       DBT_SNOWFLAKE_DATABASE: QUANT
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v9
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -85,7 +85,7 @@ jobs:
       DBT_SNOWFLAKE_WAREHOUSE: ${{ secrets.DBT_SNOWFLAKE_WAREHOUSE }}
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v9
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -95,3 +95,33 @@ jobs:
         run: uv run dbt deps --project-dir dbt --profiles-dir dbt
       - name: Build + contract-test models against the CI schema
         run: uv run dbt build --project-dir dbt --profiles-dir dbt --target ci
+
+  # IaC sanity on every PR: formatting + `terraform validate` for every module
+  # and the dev environment root. `init -backend=false` skips the S3 backend so
+  # the job needs no AWS credentials (and never touches state).
+  terraform-validate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: quant_signal/infra/terraform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+      - name: Format check
+        run: |
+          if ! terraform fmt -recursive -check .; then
+            echo "::error::terraform files are not formatted — run: terraform fmt -recursive"
+            exit 1
+          fi
+      - name: Validate modules
+        run: |
+          for d in modules/*/; do
+            (cd "$d" && terraform init -backend=false -input=false && terraform validate)
+          done
+      - name: Validate dev environment
+        run: |
+          cd environments/dev
+          terraform init -backend=false -input=false
+          terraform validate
