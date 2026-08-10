@@ -37,6 +37,23 @@ from stream.kv import KVStore, RedisKV
 
 logger = get_logger(__name__)
 
+# Sanity bounds. A 5-minute crypto window with a ratio feature (open→close,
+# high→low, vwap→close) beyond 10% is a corrupt bar, not a real move. Even in
+# the hyper-volatile 2017-18 era, 5-min BTC log returns topped out near ~10%
+# (Catania & Sandholdt, "Bitcoin at High Frequency", JRFM 12(1):36, 2019,
+# Table 4); today it is far less — BTC 1-year realized volatility is ~42%
+# annualized (Ark Invest, Q2 2026), i.e. ~0.13% per 5-min 1σ, and our own
+# feed's clean BTC/ETH windows stay under ~0.5%. Rejecting such windows stops
+# the online scalers from being poisoned: River's maintainers document that
+# its online StandardScaler is unstable when a feature changes abruptly
+# (online-ml/river#335) — a few corrupt-window learns run the model away to
+# absurd predictions that online learning can never forget.
+_MAX_FEATURE_RATIO = 0.1
+# A 5-minute close-to-close return beyond 10% is implausible (real moves are
+# ~<1%, and 10% ≈ 77σ of today's 5-min volatility); skip learning on it so a
+# corrupt close can't explode the target scaler or the conformal residuals.
+_MAX_REALIZED = 0.1
+
 
 def prediction_key(prefix: str, symbol: str) -> str:
     return f"{prefix}:{symbol.upper()}"
@@ -95,18 +112,30 @@ def _features(msg: Mapping) -> dict[FeatureName, float] | None:
     """Numeric feature dict from a Flink 5m window, or None if malformed.
 
     Uses only current-window values (no lookahead). Missing/NaN fields are
-    dropped so River never sees a non-numeric feature.
+    dropped so River never sees a non-numeric feature, and windows whose ratio
+    features are implausible (a corrupt bar, e.g. an ``open`` or ``close`` off
+    by orders of magnitude) are rejected outright so the online model can
+    never learn on garbage.
     """
     features: dict[FeatureName, float] = {}
     close = msg.get("close")
     if not isinstance(close, (int, float)) or close != close or close == 0:
         return None
     if isinstance(msg.get("open"), (int, float)) and msg["open"]:
-        features["ret_in_window"] = close / msg["open"] - 1.0
+        ret_in_window = close / msg["open"] - 1.0
+        if abs(ret_in_window) > _MAX_FEATURE_RATIO:
+            return None
+        features["ret_in_window"] = ret_in_window
     if isinstance(msg.get("high"), (int, float)) and isinstance(msg.get("low"), (int, float)):
-        features["range_pct"] = (msg["high"] - msg["low"]) / close
+        range_pct = (msg["high"] - msg["low"]) / close
+        if abs(range_pct) > _MAX_FEATURE_RATIO:
+            return None
+        features["range_pct"] = range_pct
     if isinstance(msg.get("vwap"), (int, float)) and msg["vwap"]:
-        features["vwap_spread"] = (msg["vwap"] - close) / close
+        vwap_spread = (msg["vwap"] - close) / close
+        if abs(vwap_spread) > _MAX_FEATURE_RATIO:
+            return None
+        features["vwap_spread"] = vwap_spread
     if isinstance(msg.get("volume"), (int, float)):
         features["log_volume"] = math.log1p(float(msg["volume"]))
     if isinstance(msg.get("bar_count"), int):
@@ -204,10 +233,19 @@ class OnlinePredictor:
 
         if state.last_features is not None and state.last_close is not None and close != 0:
             realized = close / state.last_close - 1.0
-            state.model.learn_one(state.last_features, realized)
-            if state.last_y_hat is not None and state.last_interval is not None:
-                state.conformal.update(realized, state.last_y_hat, state.last_interval)
-            self._record_period(state, state.last_direction, realized)
+            if abs(realized) > _MAX_REALIZED:
+                logger.warning(
+                    "skipping learning: implausible realized=%.4f at %s (close=%s, prev_close=%s)",
+                    realized,
+                    window_end,
+                    close,
+                    state.last_close,
+                )
+            else:
+                state.model.learn_one(state.last_features, realized)
+                if state.last_y_hat is not None and state.last_interval is not None:
+                    state.conformal.update(realized, state.last_y_hat, state.last_interval)
+                self._record_period(state, state.last_direction, realized)
 
         y_hat = float(state.model.predict_one(features))
         interval = state.conformal.predict(y_hat)

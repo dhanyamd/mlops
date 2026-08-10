@@ -16,7 +16,13 @@ import random
 import pytest
 
 from stream.kv import FakeKV
-from stream.predictor import ConformalInterval, OnlinePredictor, prediction_key, strategy_key
+from stream.predictor import (
+    ConformalInterval,
+    OnlinePredictor,
+    _features,
+    prediction_key,
+    strategy_key,
+)
 from stream.simulation import MonteCarloEngine, SimulationConsumer, simulation_key
 
 # ── ACI conformal intervals ─────────────────────────────────────────────────
@@ -261,6 +267,147 @@ def test_predictor_ignores_malformed_messages() -> None:
     predictor.handle({"symbol": "BTCUSDT"})  # no numeric close
     predictor.handle({"close": 100.0})  # no symbol
     assert kv.get_json(prediction_key("prediction:crypto:5m", "BTCUSDT")) is None
+
+
+def test_features_reject_implausible_ratio_windows() -> None:
+    """Corrupt bars must never become features. Both real-world failure modes
+    are caught: an ``open``/``close`` pair off by orders of magnitude
+    (ret_in_window=650) and a ``close`` shifted so the open→close move is
+    still implausibly large (ret_in_window=0.208, far above the 5% bound)."""
+    corrupt_price_units = {
+        "symbol": "BTCUSDT",
+        "open": 100.0,
+        "high": 65211.0,
+        "low": 99.0,
+        "close": 65100.0,
+        "vwap": 541.0,
+        "volume": 1000.0,
+        "bar_count": 5,
+    }
+    corrupt_small_close = {
+        "symbol": "BTCUSDT",
+        "open": 100.0,
+        "high": 121.5,
+        "low": 99.0,
+        "close": 120.8,
+        "vwap": 111.9,
+        "volume": 10800.0,
+        "bar_count": 9,
+    }
+    assert _features(corrupt_price_units) is None
+    assert _features(corrupt_small_close) is None
+    # A plausible window is still accepted.
+    sane = {
+        "symbol": "BTCUSDT",
+        "open": 100.0,
+        "high": 101.0,
+        "low": 99.0,
+        "close": 100.5,
+        "vwap": 100.6,
+        "volume": 1000.0,
+        "bar_count": 5,
+    }
+    assert _features(sane) is not None
+
+
+def test_predictor_not_poisoned_by_corrupt_feature_window() -> None:
+    """A corrupt window must be dropped without corrupting the online model:
+    a sane trend learned afterwards still predicts a sane magnitude."""
+    kv = FakeKV()
+    predictor = OnlinePredictor(
+        kv,
+        prediction_prefix="prediction:crypto:5m",
+        strategy_prefix="strategy:crypto:5m",
+    )
+    corrupt = {
+        "symbol": "BTCUSDT",
+        "window_end_ms": 100_000,
+        "open": 100.0,
+        "high": 65211.0,
+        "low": 99.0,
+        "close": 65100.0,
+        "vwap": 541.0,
+        "volume": 1000.0,
+        "bar_count": 5,
+    }
+    predictor.handle(corrupt)  # must be rejected before touching the model
+    assert kv.get_json(prediction_key("prediction:crypto:5m", "BTCUSDT")) is None
+    for i in range(80):
+        predictor.handle(_feature_window("btcusdt", i))
+    stored = kv.get_json(prediction_key("prediction:crypto:5m", "BTCUSDT"))
+    assert stored is not None
+    assert abs(stored["predicted_return"]) < 0.1  # sane magnitude, not 1e9
+    assert -0.1 <= stored["interval_low"] <= stored["interval_high"] <= 0.1
+
+
+def test_predictor_skips_learning_on_implausible_realized() -> None:
+    """A corrupt close that implies a >10% 5m move must not be learned: it
+    would otherwise explode the target scaler and compound equity to 1e33."""
+    kv = FakeKV()
+    predictor = OnlinePredictor(
+        kv,
+        prediction_prefix="prediction:crypto:5m",
+        strategy_prefix="strategy:crypto:5m",
+    )
+    windows = [
+        # window 0: baseline close 100
+        {
+            "symbol": "BTCUSDT",
+            "window_end_ms": 0,
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.0,
+            "vwap": 100.0,
+            "volume": 1000.0,
+            "bar_count": 5,
+        },
+        # window 1: corrupt close 120.8 (open 65000) -> ret_in_window=-0.998 rejected
+        {
+            "symbol": "BTCUSDT",
+            "window_end_ms": 300_000,
+            "open": 65000.0,
+            "high": 65001.0,
+            "low": 64999.0,
+            "close": 120.8,
+            "vwap": 65000.0,
+            "volume": 1000.0,
+            "bar_count": 5,
+        },
+        # window 2: sane close 65100, but realized vs window 0 = +650 -> skipped
+        {
+            "symbol": "BTCUSDT",
+            "window_end_ms": 600_000,
+            "open": 65002.0,
+            "high": 65003.0,
+            "low": 65001.0,
+            "close": 65100.0,
+            "vwap": 65002.0,
+            "volume": 1000.0,
+            "bar_count": 5,
+        },
+        # window 3: realized vs 65100 is sane -> learned
+        {
+            "symbol": "BTCUSDT",
+            "window_end_ms": 900_000,
+            "open": 65102.0,
+            "high": 65103.0,
+            "low": 65101.0,
+            "close": 65150.0,
+            "vwap": 65102.0,
+            "volume": 1000.0,
+            "bar_count": 5,
+        },
+    ]
+    for w in windows:
+        predictor.handle(w)
+    strat = kv.get_json(strategy_key("strategy:crypto:5m", "BTCUSDT"))
+    assert strat is not None
+    assert strat["n_windows"] == 1  # only the single sane matured period recorded
+    assert all(0.9 <= e <= 1.1 for e in strat["strategy_equity"])
+    stored = kv.get_json(prediction_key("prediction:crypto:5m", "BTCUSDT"))
+    assert stored is not None
+    assert abs(stored["predicted_return"]) < 0.1
 
 
 def test_predictor_tracks_strategy_equity_vs_buyhold() -> None:
