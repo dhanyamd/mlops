@@ -15,6 +15,9 @@ Research-backed constraints (Bybit v5 Open API Demo docs; pybit issue #203):
     confirmed by polling ``get_order_history`` (``avgPrice`` / ``cumExecQty`` /
     ``cumExecFee``/``cumFeeDetail``) and reconciled against the open-position
     list each window.
+  - The HTTP client is bounded (3s timeout, no retries, retry codes disabled):
+    a rate-limited demo API must fail fast — never block the consumer thread —
+    or the Kafka consumer exceeds its max-poll interval and the engine dies.
   - USDT perpetuals (category "linear", one-way mode) support both LONG and
     SHORT — matching the paper engine's position model — with a lot-size step
     read from the instrument info (``lotSizeFilter.qtyStep``), never hardcoded.
@@ -73,11 +76,21 @@ class BybitDemoVenue:
         api_secret: str,
         recv_window_ms: int = 5000,
     ) -> None:
+        # Bounded HTTP client: pybit's default 10s timeout + its rate-limit
+        # retry sleep (ErrCode 10006 waits until the limit resets — minutes!)
+        # stalled the consumer thread on a slow demo API and crashed the engine
+        # with a Kafka max-poll-exceeded error. So: 3s per request, no retries,
+        # and rate-limit/retry codes disabled (retry_codes={-1} is a non-empty
+        # sentinel — pybit replaces an empty set with its defaults). Failures
+        # surface immediately and the fill-poll loop retries at its own pace.
         self._http = HTTP(
             demo=True,
             api_key=api_key,
             api_secret=api_secret,
             recv_window=recv_window_ms,
+            timeout=3,
+            max_retries=1,
+            retry_codes={-1},
         )
 
     # ── market data helpers ─────────────────────────────────────────────────

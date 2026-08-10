@@ -114,6 +114,12 @@ class KafkaBus:
                 "auto.commit.interval.ms": 2000,
                 "socket.keepalive.enable": True,
                 "socket.timeout.ms": _CONSUMER_SOCKET_TIMEOUT_MS,
+                # A handler that touches a slow external venue (e.g. Bybit Demo
+                # fill confirmation) must be allowed to exceed the default 5min
+                # poll window without the consumer leaving the group. The venue
+                # HTTP calls are time-bounded, so this is a safety net, not a
+                # license to block.
+                "max.poll.interval.ms": 600000,
             }
         )
 
