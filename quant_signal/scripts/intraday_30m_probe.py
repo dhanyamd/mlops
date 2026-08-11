@@ -1,27 +1,34 @@
-"""30-minute intraday-timing probe on REAL BRONZE CRYPTO_BARS minute history.
+"""Resolution-parameterized intraday-timing probe (5m / 30m) on REAL BRONZE
+CRYPTO_BARS minute history.
 
-Tests two single-asset mechanisms at 30m resolution where the samples are real
-(185 days x 48 half-hours ~ 8.9k bars per symbol, vs the 2-12-trade 1h washout):
+Tests two single-asset mechanisms at a selectable bar resolution where the
+samples are real (185 days: 30m ~8.9k bars/symbol, 5m ~53k bars/symbol):
 
 A) Shen/Urquhart/Wang (Financial Review 57(2) 2022, Tianjin Univ.) timing
-   structure: the FIRST half-hour (ONFH) and the SECOND-TO-LAST half-hour (SLH)
-   predict the LAST half-hour of a session. Paper: Sharpe 1.72, 16.7%/yr on
-   SPX half-hours, mechanism = liquidity provision + disposition effect.
-   Crypto has no single institutional "session", so we let the DATA pick the
-   close slot: for each of the 48 UTC half-hour slots s we define a 24h session
+   structure: the FIRST bar and the SECOND-TO-LAST bar of a session predict
+   the LAST bar. Paper: Sharpe 1.72, 16.7%/yr on SPX half-hours, mechanism =
+   liquidity provision + disposition effect. Crypto has no single
+   institutional "session", so we let the DATA pick the close slot: for each
+   UTC slot s (48 half-hours or 288 5-min slots) we define a 24h session
    ending at s and test Last_s = a + b1*First_s + b2*SLH_s across days. Every
    slot is reported (the search extent is disclosed, never just the winner).
 
-B) Washout mean-reversion at 30m (the 1h version traded 2-12 times in 6
-   months — underpowered; 30m quadruples the sample). Reversal is the
-   crypto-specific intraday effect (Wen, Bouri, Xu & Zhao, N. Am. J. Econ.
-   & Finance 62, 2022). Direction is learned, never hardcoded (Liu, Wang &
-   Yan, Applied Econ Letters 30(12), 2023: the sign FLIPS across eras).
+B) Washout mean-reversion at the selected resolution (the 1h version traded
+   2-12 times in 6 months — underpowered; 30m ~4x and 5m ~24x the sample).
+   Reversal is the crypto-specific intraday effect (Wen, Bouri, Xu & Zhao,
+   N. Am. J. Econ. & Finance 62, 2022). Regime-Gated Washout (RGW) conditions
+   the fade-vs-ride choice on the own-asset 24h RV vs its 7d baseline; the
+   direction is LEARNED walk-forward, never hardcoded (Liu, Wang & Yan,
+   Applied Econ Letters 30(12), 2023: the sign FLIPS across eras).
 
-Both are net of the 10 bps taker round trip; a config only counts as passing
-if mean net per trade clears the lambda=2 x 10 bps = 20 bps band.
+C) Funding-clock (00/08/16 UTC) vol/return profile (Hansen & Kim,
+   Duke/Yonsei 2026) — does the burst exist in OUR data?
 
-Run:  uv run python -m scripts.intraday_30m_probe [--out docs/probe_30m.json]
+All results are net of the 10 bps taker round trip; a config only counts as
+passing if mean net per trade clears the lambda=2 x 10 bps = 20 bps band.
+
+Run:  uv run python -m scripts.intraday_30m_probe [--resolution 30m|5m]
+                                                      [--out docs/probe_30m.json]
 """
 
 from __future__ import annotations
@@ -29,6 +36,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
@@ -40,27 +48,73 @@ from scripts.backfill_feature_windows import fetch_bars
 logger = get_logger(__name__)
 
 _HOUR_MS = 3_600_000
-_30M_MS = 1_800_000
 _DAY_MS = 86_400_000
-_SLOTS_PER_DAY = 48
 _TAKER_ROUND_TRIP = 0.001  # 10 bps taker, the gate's cost basis
 _GATE_LAMBDA = 2.0  # x round-trip cost = 20 bps net band
 
-# Washout grid at 30m: return horizon k (bars), entry z, hold H (bars), EMA span (bars).
-_K_GRID = [2, 4, 8]  # 1h, 2h, 4h
-_Z_GRID = [2.0, 2.5, 3.0]
-_H_GRID = [2, 4, 8]
-_EMA_GRID = [96, 400]  # 48h, ~8.3 days (Keel's 200h daily analog)
 
-# Regime-Gated Washout (RGW) grid + regime window. The own-asset vol regime
-# (24h RV vs its 7d baseline) decides fade-vs-ride on the SAME washout signal.
-_RGW_K = [2, 4]
-_RGW_Z = [2.0, 2.5]
-_RGW_H = [2, 4]
-_RGW_EMA = [96, 400]
-_WF_SPLIT = 0.6  # walk-forward: first 60% of events learn, last 40% are OOS
-_RV_WIN = 48  # 24h of 30m bars
-_RV_BASELINE = 336  # 7d of 30m bars
+@dataclass(frozen=True)
+class Resolution:
+    """Grid + regime windows for one bar resolution. Holds/EMA are in bars."""
+
+    name: str
+    bar_ms: int
+    rv_win: int  # 24h of bars
+    rv_baseline: int  # 7d of bars
+    washout_k: tuple[int, ...]  # return horizon k in bars (1h/2h/4h)
+    washout_z: tuple[float, ...]
+    washout_hold: tuple[int, ...]
+    washout_ema: tuple[int, ...]  # ~48h and ~8.3d (Keel's 200h daily analog)
+    rgw_k: tuple[int, ...]
+    rgw_z: tuple[float, ...]
+    rgw_hold: tuple[int, ...]
+    rgw_ema: tuple[int, ...]
+    wf_split: float = 0.6  # walk-forward: first 60% of events learn, last 40% OOS
+
+    @property
+    def bars_per_hour(self) -> int:
+        return _HOUR_MS // self.bar_ms
+
+    @property
+    def slots_per_day(self) -> int:
+        return 24 * self.bars_per_hour
+
+    @property
+    def funding_stride(self) -> int:
+        return 8 * self.bars_per_hour  # 00/08/16 UTC marks
+
+
+RES_30M = Resolution(
+    name="30m",
+    bar_ms=1_800_000,
+    rv_win=48,
+    rv_baseline=336,
+    washout_k=(2, 4, 8),
+    washout_z=(2.0, 2.5, 3.0),
+    washout_hold=(2, 4, 8),
+    washout_ema=(96, 400),
+    rgw_k=(2, 4),
+    rgw_z=(2.0, 2.5),
+    rgw_hold=(2, 4),
+    rgw_ema=(96, 400),
+)
+
+RES_5M = Resolution(
+    name="5m",
+    bar_ms=300_000,
+    rv_win=288,
+    rv_baseline=2016,
+    washout_k=(12, 24, 48),
+    washout_z=(2.0, 2.5, 3.0),
+    washout_hold=(6, 12, 24),
+    washout_ema=(576, 2400),
+    rgw_k=(12, 24),
+    rgw_z=(2.0, 2.5),
+    rgw_hold=(6, 12),
+    rgw_ema=(576, 2400),
+)
+
+_RESOLUTIONS = {"30m": RES_30M, "5m": RES_5M}
 
 
 def _aggregate(bars: pd.DataFrame, bucket_ms: int) -> pd.DataFrame:
@@ -84,32 +138,34 @@ def _aggregate(bars: pd.DataFrame, bucket_ms: int) -> pd.DataFrame:
     return agg.sort_values(["symbol", "window_start_ms"]).reset_index(drop=True)
 
 
-def _slot_returns(bars30m: pd.DataFrame) -> pd.DataFrame:
-    """Per-slot returns across adjacent 30m bars only (no gap leakage)."""
-    df = bars30m.sort_values("window_start_ms").reset_index(drop=True)
-    df["slot"] = (df["window_start_ms"] % _DAY_MS) // _30M_MS
+def _slot_returns(bars: pd.DataFrame, res: Resolution) -> pd.DataFrame:
+    """Per-slot returns across adjacent bars only (no gap leakage)."""
+    df = bars.sort_values("window_start_ms").reset_index(drop=True)
+    df["slot"] = (df["window_start_ms"] % _DAY_MS) // res.bar_ms
     df["dt"] = df["window_start_ms"].diff()
     df["ret"] = df["close"].shift(-1) / df["close"] - 1.0
     df["next_slot"] = df["slot"].shift(-1)
-    adj = (df["dt"] == _30M_MS) & df["ret"].notna()
+    adj = (df["dt"] == res.bar_ms) & df["ret"].notna()
     return df.loc[adj, ["window_start_ms", "slot", "close", "ret"]].reset_index(drop=True)
 
 
-def _shen_slot(results: pd.DataFrame, slot: int) -> dict:
+def _shen_slot(results: pd.DataFrame, slot: int, res: Resolution) -> dict:
     """Shen structure for one session boundary: First/SLH predict Last.
 
-    Session = the 48 slots ending at ``slot``. First = slot (s-47), SLH =
-    slot (s-1), Last = slot s. Alignment uses the ABSOLUTE 30m slot index
-    (ts // 30m) so a session that wraps a UTC day boundary lines up correctly
-    and a missing bar (gap) simply drops that day. Pooled across all sessions.
+    Session = the ``slots_per_day`` slots ending at ``slot``. First = slot
+    (s-slots+1), SLH = slot (s-1), Last = slot s. Alignment uses the ABSOLUTE
+    slot index (ts // bar_ms) so a session that wraps a UTC day boundary lines
+    up correctly and a missing bar (gap) simply drops that day. Pooled across
+    all sessions.
     """
+    slots = res.slots_per_day
     df = results.copy()
-    df["abs_slot"] = df["window_start_ms"] // _30M_MS
+    df["abs_slot"] = df["window_start_ms"] // res.bar_ms
     rets_s = df.set_index("abs_slot")["ret"]
-    last = df.loc[df["abs_slot"] % _SLOTS_PER_DAY == slot].set_index("abs_slot")["ret"]
+    last = df.loc[df["abs_slot"] % slots == slot].set_index("abs_slot")["ret"]
     if last.empty:
         return {"slot": slot, "n_days": 0}
-    first = rets_s.reindex(last.index - (_SLOTS_PER_DAY - 1)).to_numpy()
+    first = rets_s.reindex(last.index - (slots - 1)).to_numpy()
     slh = rets_s.reindex(last.index - 1).to_numpy()
     joined = pd.DataFrame(
         {"first": first, "slh": slh, "last": last.to_numpy()}, index=last.index
@@ -135,7 +191,7 @@ def _shen_slot(results: pd.DataFrame, slot: int) -> dict:
     raw = rule * y
     gross = float(np.mean(raw))
     se_rule = float(np.std(raw, ddof=1) / math.sqrt(len(raw)))
-    sharpe = (gross / se_rule * math.sqrt(_SLOTS_PER_DAY * 365.0)) if se_rule > 0 else 0.0
+    sharpe = (gross / se_rule * math.sqrt(slots * 365.0)) if se_rule > 0 else 0.0
     return {
         "slot": slot,
         "n_days": int(len(joined)),
@@ -150,9 +206,22 @@ def _shen_slot(results: pd.DataFrame, slot: int) -> dict:
     }
 
 
-def _contiguous_runs(returns: pd.DataFrame) -> list[pd.DataFrame]:
+def _rolling_z(ret: np.ndarray, window: int) -> np.ndarray:
+    """Rolling z of ``ret`` against its trailing ``window`` (excludes current).
+
+    Population std (ddof=0) via shifted rolling mean-of-squares so the value
+    equals the per-window np.mean/np.std the 30m probe used, vectorized.
+    """
+    s = pd.Series(ret)
+    mu = s.rolling(window).mean().shift(1).to_numpy()
+    var = (s**2).rolling(window).mean().shift(1).to_numpy() - mu**2
+    sd = np.sqrt(np.clip(var, 0.0, None))
+    return np.where(np.isfinite(sd) & (sd > 0), (ret - mu) / sd, np.nan)
+
+
+def _contiguous_runs(returns: pd.DataFrame, res: Resolution) -> list[pd.DataFrame]:
     starts = returns["window_start_ms"].to_numpy()
-    gaps = np.where(np.diff(starts) != _30M_MS)[0] + 1
+    gaps = np.where(np.diff(starts) != res.bar_ms)[0] + 1
     bounds = [0] + list(gaps) + [len(returns)]
     runs: list[pd.DataFrame] = []
     for i in range(len(bounds) - 1):
@@ -170,32 +239,29 @@ def _ema(values: np.ndarray, span: float) -> np.ndarray:
 
 
 def _washout_config(
-    results: pd.DataFrame, *, k: int, z_entry: float, hold: int, ema_span: int
+    results: pd.DataFrame, res: Resolution, *, k: int, z_entry: float, hold: int, ema_span: int
 ) -> dict:
     trades: list[dict] = []
-    for run in _contiguous_runs(results):
+    w = res.rv_baseline
+    for run in _contiguous_runs(results, res):
         closes = run["close"].to_numpy()
         n = len(closes)
-        if n < 336 + k + 1:
+        if n < w + k + 1:
             continue
         ema = _ema(closes, ema_span)
         ret_k = np.empty(n)
         ret_k[:k] = np.nan
         ret_k[k:] = closes[k:] / closes[:-k] - 1.0
+        z = _rolling_z(ret_k, w)
         flat_until = 0
-        for t in range(336, n):
-            if t < flat_until or math.isnan(ret_k[t]):
+        for t in np.flatnonzero(np.isfinite(z) & (np.abs(z) >= z_entry)):
+            if t < flat_until:
                 continue
-            hist = ret_k[t - 336 : t]
-            mu, sd = float(np.mean(hist)), float(np.std(hist))
-            if sd == 0.0 or math.isnan(sd):
-                continue
-            z = (ret_k[t] - mu) / sd
             trend_up = closes[t] > ema[t]
             side = (
                 1
-                if (z <= -z_entry and trend_up)
-                else (-1 if (z >= z_entry and not trend_up) else None)
+                if (z[t] <= -z_entry and trend_up)
+                else (-1 if (z[t] >= z_entry and not trend_up) else None)
             )
             if side is None:
                 continue
@@ -210,7 +276,7 @@ def _washout_config(
     gross = np.array([t["gross"] for t in trades])
     mean_net = float(np.mean(net))
     sd = float(np.std(net, ddof=1)) if len(net) > 1 else 0.0
-    trades_per_year = 365.0 * _SLOTS_PER_DAY / hold
+    trades_per_year = 365.0 * res.slots_per_day / hold
     sharpe = (mean_net / sd * math.sqrt(trades_per_year)) if sd > 0 else 0.0
     return {
         "k": k,
@@ -228,16 +294,17 @@ def _washout_config(
 
 
 def _run_regime_trades(
-    run: pd.DataFrame, *, k: int, z_entry: float, hold: int, ema_span: int
+    run: pd.DataFrame, res: Resolution, *, k: int, z_entry: float, hold: int, ema_span: int
 ) -> list[dict]:
     """RGW over one contiguous run. Calm regime fades the washout (reversal /
     liquidity provision); stress regime rides it (momentum continuation). The
     regime is the own-asset 24h realized vol vs its rolling 7d baseline — no
     cross-coin, no lookahead. Direction is learned per regime, never hardcoded.
     """
+    w = res.rv_baseline
     closes = run["close"].to_numpy()
     n = len(closes)
-    if n < _RV_BASELINE + k + 1:
+    if n < w + k + 1:
         return []
     ema = _ema(closes, ema_span)
     log_ret = np.log(closes[1:] / closes[:-1])
@@ -249,36 +316,30 @@ def _run_regime_trades(
     # trailing 7d mean. RV at t uses only log-rets < t (shift(1) closes the
     # window before t) so there is no lookahead.
     lr = pd.Series(log_ret)
-    rv = lr.shift(1).rolling(_RV_WIN).std()
-    baseline = rv.shift(1).rolling(_RV_BASELINE).mean()
+    rv = lr.shift(1).rolling(res.rv_win).std()
+    baseline = rv.shift(1).rolling(w).mean()
     shock = (rv / baseline).to_numpy()  # NaN wherever not enough history
     shock = np.where(np.isfinite(shock), shock, 1.0)
 
+    z = _rolling_z(ret_k, w)
     trades: list[dict] = []
     flat_until = 0
-    for t in range(_RV_BASELINE, n):
-        if t < flat_until or math.isnan(ret_k[t]):
-            continue
-        hist = ret_k[t - _RV_BASELINE : t]
-        mu, sd = float(np.mean(hist)), float(np.std(hist))
-        if sd == 0.0 or math.isnan(sd):
-            continue
-        z = (ret_k[t] - mu) / sd
-        if abs(z) < z_entry:
+    for t in np.flatnonzero(np.isfinite(z) & (np.abs(z) >= z_entry)):
+        if t < flat_until:
             continue
         trend_up = closes[t] > ema[t]
         calm = shock[t] <= 1.0
         if calm:
             side = (
                 1
-                if (z <= -z_entry and trend_up)
-                else (-1 if (z >= z_entry and not trend_up) else None)
+                if (z[t] <= -z_entry and trend_up)
+                else (-1 if (z[t] >= z_entry and not trend_up) else None)
             )
         else:
             side = (
                 1
-                if (z >= z_entry and trend_up)
-                else (-1 if (z <= -z_entry and not trend_up) else None)
+                if (z[t] >= z_entry and trend_up)
+                else (-1 if (z[t] <= -z_entry and not trend_up) else None)
             )
         if side is None:
             continue
@@ -298,17 +359,19 @@ def _run_regime_trades(
 
 
 def _regime_gated_config(
-    results: pd.DataFrame, *, k: int, z_entry: float, hold: int, ema_span: int
+    results: pd.DataFrame, res: Resolution, *, k: int, z_entry: float, hold: int, ema_span: int
 ) -> dict:
     trades: list[dict] = []
-    for run in _contiguous_runs(results):
-        trades.extend(_run_regime_trades(run, k=k, z_entry=z_entry, hold=hold, ema_span=ema_span))
+    for run in _contiguous_runs(results, res):
+        trades.extend(
+            _run_regime_trades(run, res, k=k, z_entry=z_entry, hold=hold, ema_span=ema_span)
+        )
     if not trades:
         return {"k": k, "z_entry": z_entry, "hold_h": hold, "ema_h": ema_span, "n": 0}
     net = np.array([t["net"] for t in trades])
     mean_net = float(np.mean(net))
     sd = float(np.std(net, ddof=1)) if len(net) > 1 else 0.0
-    trades_per_year = 365.0 * _SLOTS_PER_DAY / hold
+    trades_per_year = 365.0 * res.slots_per_day / hold
     sharpe = (mean_net / sd * math.sqrt(trades_per_year)) if sd > 0 else 0.0
 
     def _leg(regime: str) -> dict:
@@ -341,7 +404,7 @@ def _regime_gated_config(
 
 
 def _event_pnls(
-    run: pd.DataFrame, *, k: int, z_entry: float, hold: int, ema_span: int
+    run: pd.DataFrame, res: Resolution, *, k: int, z_entry: float, hold: int, ema_span: int
 ) -> list[dict]:
     """Washout events with BOTH candidate styles' net pnl + regime + ts.
 
@@ -351,9 +414,10 @@ def _event_pnls(
     short the breakdown down); each is None when the trend disagrees with it.
     Everything is known strictly from trailing data.
     """
+    w = res.rv_baseline
     closes = run["close"].to_numpy()
     n = len(closes)
-    if n < _RV_BASELINE + k + 1:
+    if n < w + k + 1:
         return []
     ema = _ema(closes, ema_span)
     log_ret = np.log(closes[1:] / closes[:-1])
@@ -362,26 +426,18 @@ def _event_pnls(
     ret_k[k:] = closes[k:] / closes[:-k] - 1.0
 
     lr = pd.Series(log_ret)
-    rv = lr.shift(1).rolling(_RV_WIN).std()
-    baseline = rv.shift(1).rolling(_RV_BASELINE).mean()
+    rv = lr.shift(1).rolling(res.rv_win).std()
+    baseline = rv.shift(1).rolling(w).mean()
     shock = (rv / baseline).to_numpy()
     shock = np.where(np.isfinite(shock), shock, 1.0)
 
+    z = _rolling_z(ret_k, w)
     events: list[dict] = []
-    for t in range(_RV_BASELINE, n):
-        if math.isnan(ret_k[t]):
-            continue
-        hist = ret_k[t - _RV_BASELINE : t]
-        mu, sd = float(np.mean(hist)), float(np.std(hist))
-        if sd == 0.0 or math.isnan(sd):
-            continue
-        z = (ret_k[t] - mu) / sd
-        if abs(z) < z_entry:
-            continue
+    for t in np.flatnonzero(np.isfinite(z) & (np.abs(z) >= z_entry)):
         exit_t = min(t + hold, n - 1)
         r = float(np.prod(1.0 + run["ret"].iloc[t:exit_t].to_numpy()) - 1.0)
         trend_up = closes[t] > ema[t]
-        up_wash = z > 0
+        up_wash = z[t] > 0
         fade = (
             (r - _TAKER_ROUND_TRIP)
             if (not up_wash and trend_up)
@@ -404,7 +460,14 @@ def _event_pnls(
 
 
 def _walk_forward_config(
-    results: pd.DataFrame, *, k: int, z_entry: float, hold: int, ema_span: int, split: float
+    results: pd.DataFrame,
+    res: Resolution,
+    *,
+    k: int,
+    z_entry: float,
+    hold: int,
+    ema_span: int,
+    split: float,
 ) -> dict:
     """Learn fade-vs-ride per regime in-sample, trade the choice out-of-sample.
 
@@ -414,8 +477,8 @@ def _walk_forward_config(
     is disclosed and the per-regime choice is reported.
     """
     events: list[dict] = []
-    for run in _contiguous_runs(results):
-        events.extend(_event_pnls(run, k=k, z_entry=z_entry, hold=hold, ema_span=ema_span))
+    for run in _contiguous_runs(results, res):
+        events.extend(_event_pnls(run, res, k=k, z_entry=z_entry, hold=hold, ema_span=ema_span))
     if not events:
         return {
             "k": k,
@@ -485,7 +548,7 @@ def _walk_forward_config(
     pnls = np.array([p for _, p in oos_pnls])
     mean_net = float(np.mean(pnls))
     sd = float(np.std(pnls, ddof=1)) if len(pnls) > 1 else 0.0
-    trades_per_year = 365.0 * _SLOTS_PER_DAY / hold
+    trades_per_year = 365.0 * res.slots_per_day / hold
     sharpe = (mean_net / sd * math.sqrt(trades_per_year)) if sd > 0 else 0.0
     by_regime: dict[str, dict] = {}
     for regime in ("calm", "stress"):
@@ -512,8 +575,8 @@ def _walk_forward_config(
     }
 
 
-def _funding_clock(results: pd.DataFrame) -> dict:
-    """Volatility + return by UTC 30m slot, highlighting the 8h funding marks
+def _funding_clock(results: pd.DataFrame, res: Resolution) -> dict:
+    """Volatility + return by UTC slot, highlighting the 8h funding marks
     (00:00 / 08:00 / 16:00 UTC — Binance perpetual funding times).
 
     Hansen & Kim (Duke/Yonsei 2026): volatility/volume burst around these
@@ -526,14 +589,14 @@ def _funding_clock(results: pd.DataFrame) -> dict:
     for _, row in results.iterrows():
         per_slot.setdefault(int(row["slot"]), []).append(float(row["ret"]))
     slots = []
-    for slot in range(_SLOTS_PER_DAY):
+    for slot in range(res.slots_per_day):
         rets = np.array(per_slot.get(slot, []))
         if rets.size < 20:
             continue
         slots.append(
             {
-                "utc_min": slot * 30,
-                "is_funding": bool(slot % 16 == 0),  # 00:00 / 08:00 / 16:00 UTC marks
+                "utc_min": slot * res.bar_ms // 60_000,
+                "is_funding": bool(slot % res.funding_stride == 0),  # 00/08/16 UTC marks
                 "n": int(rets.size),
                 "mean_bps": round(1e4 * float(rets.mean()), 2),
                 "vol_bps": round(1e4 * float(rets.std(ddof=1)), 2),
@@ -554,48 +617,49 @@ def _funding_clock(results: pd.DataFrame) -> dict:
     }
 
 
-def probe_symbol(bars30m: pd.DataFrame, symbol: str) -> dict:
-    rets = _slot_returns(bars30m)
+def probe_symbol(bars: pd.DataFrame, res: Resolution, symbol: str) -> dict:
+    rets = _slot_returns(bars, res)
     out: dict = {
         "symbol": symbol,
-        "n_bars": int(len(bars30m)),
+        "resolution": res.name,
+        "n_bars": int(len(bars)),
         "n_returns": int(len(rets)),
     }
     if rets.empty:
-        out["error"] = "no adjacent 30m returns"
+        out["error"] = "no adjacent returns"
         return out
 
-    shen_rows = [_shen_slot(rets, s) for s in range(_SLOTS_PER_DAY)]
+    shen_rows = [_shen_slot(rets, s, res) for s in range(res.slots_per_day)]
     out["shen_slots"] = shen_rows
     active = [r for r in shen_rows if r.get("n_days", 0) >= 30]
     best = max(active, key=lambda r: r["rule_sharpe_ann"]) if active else None
     out["shen_best"] = best
 
     out["washout"] = [
-        _washout_config(rets, k=k, z_entry=z, hold=h, ema_span=e)
-        for k in _K_GRID
-        for z in _Z_GRID
-        for h in _H_GRID
-        for e in _EMA_GRID
+        _washout_config(rets, res, k=k, z_entry=z, hold=h, ema_span=e)
+        for k in res.washout_k
+        for z in res.washout_z
+        for h in res.washout_hold
+        for e in res.washout_ema
     ]
 
     out["regime_gated"] = [
-        _regime_gated_config(rets, k=k, z_entry=z, hold=h, ema_span=e)
-        for k in _RGW_K
-        for z in _RGW_Z
-        for h in _RGW_H
-        for e in _RGW_EMA
+        _regime_gated_config(rets, res, k=k, z_entry=z, hold=h, ema_span=e)
+        for k in res.rgw_k
+        for z in res.rgw_z
+        for h in res.rgw_hold
+        for e in res.rgw_ema
     ]
 
     out["walk_forward"] = [
-        _walk_forward_config(rets, k=k, z_entry=z, hold=h, ema_span=e, split=_WF_SPLIT)
-        for k in _RGW_K
-        for z in _RGW_Z
-        for h in _RGW_H
-        for e in _RGW_EMA
+        _walk_forward_config(rets, res, k=k, z_entry=z, hold=h, ema_span=e, split=res.wf_split)
+        for k in res.rgw_k
+        for z in res.rgw_z
+        for h in res.rgw_hold
+        for e in res.rgw_ema
     ]
 
-    out["funding_clock"] = _funding_clock(rets)
+    out["funding_clock"] = _funding_clock(rets, res)
     return out
 
 
@@ -618,27 +682,35 @@ def main() -> None:
     configure_logging()
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument(
+        "--resolution", default="30m", choices=sorted(_RESOLUTIONS), help="bar resolution"
+    )
+    parser.add_argument(
         "--symbols", default=None, help="comma-separated symbols (default: ingest defaults)"
     )
     parser.add_argument("--out", default=None, help="JSON output path (default: print only)")
     args = parser.parse_args()
 
+    res = _RESOLUTIONS[args.resolution]
     settings = get_settings()
     symbols = (
         csv_list(args.symbols) if args.symbols else csv_list(settings.ingest_default_crypto_symbols)
     )
     bars = fetch_bars(settings, symbols)
-    bars30m = _aggregate(bars, _30M_MS)
+    bars_r = _aggregate(bars, res.bar_ms)
     logger.info(
-        "intraday_30m_aggregated", bars=len(bars30m), symbols=sorted(bars30m["symbol"].unique())
+        "intraday_probe_aggregated",
+        resolution=res.name,
+        bars=len(bars_r),
+        symbols=sorted(bars_r["symbol"].unique()),
     )
 
     results: list[dict] = []
     for symbol in symbols:
-        sym = bars30m[bars30m["symbol"] == symbol.upper()]
-        results.append(probe_symbol(sym, symbol.upper()))
+        sym = bars_r[bars_r["symbol"] == symbol.upper()]
+        results.append(probe_symbol(sym, res, symbol.upper()))
 
     payload = {
+        "resolution": res.name,
         "symbols": results,
         "taker_round_trip_bps": 1e4 * _TAKER_ROUND_TRIP,
         "gate_bps": _GATE_LAMBDA * 1e4 * _TAKER_ROUND_TRIP,
@@ -646,13 +718,13 @@ def main() -> None:
     if args.out:
         with open(args.out, "w") as fh:
             json.dump(payload, fh, indent=2)
-        logger.info("intraday_30m_written", path=args.out)
+        logger.info("intraday_probe_written", path=args.out)
 
     for r in results:
         if "error" in r:
             print(f"\n{r['symbol']}: {r['error']}")
             continue
-        print(f"\n=== {r['symbol']} — {r['n_returns']} 30m returns ===")
+        print(f"\n=== {r['symbol']} — {r['n_returns']} {res.name} returns ===")
         best = r["shen_best"]
         print("\n[Shen timing structure — best session-boundary slot]")
         if best:
@@ -669,7 +741,7 @@ def main() -> None:
         else:
             print("  insufficient data in any slot")
         w = _df(r["washout"]).sort_values("sharpe_net_ann", ascending=False)
-        print("\n[Washout at 30m — top configs by net Sharpe (all reported)]")
+        print("\n[Washout — top configs by net Sharpe (all reported)]")
         print(w.head(8).to_string(index=False))
         rg = _df(r["regime_gated"]).sort_values("sharpe_net_ann", ascending=False)
         print("\n[RGW — Regime-Gated Washout (my design): calm→fade, stress→ride]")
@@ -694,7 +766,7 @@ def main() -> None:
         print(wf.head(8)[cols].to_string(index=False))
         fc = r["funding_clock"]
         if fc:
-            print("\n[Funding-clock (Hansen & Kim 2026) — 30m vol/return at 00/08/16 UTC marks]")
+            print("\n[Funding-clock (Hansen & Kim 2026) — vol/return at 00/08/16 UTC marks]")
             print(
                 f"  funding-mark vol {fc['funding_mean_vol_bps']} bps vs other "
                 f"{fc['other_mean_vol_bps']} bps (ratio {fc['funding_vol_ratio']}) | "

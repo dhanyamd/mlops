@@ -1,7 +1,9 @@
 {
+  "resolution": "30m",
   "symbols": [
     {
       "symbol": "BTCUSDT",
+      "resolution": "30m",
       "n_bars": 8826,
       "n_returns": 8817,
       "shen_slots": [
@@ -368,13 +370,13 @@
         {
           "slot": 30,
           "n_days": 184,
-          "b1_first": 0.1768,
-          "b2_slh": 0.103,
-          "se_b1": 0.0863,
-          "r2": 0.035,
-          "rule_gross_bps": 1.84,
-          "rule_net_bps": -8.16,
-          "rule_sharpe_ann": 113.92,
+          "b1_first": 0.1834,
+          "b2_slh": 0.1019,
+          "se_b1": 0.0869,
+          "r2": 0.0358,
+          "rule_gross_bps": 2.14,
+          "rule_net_bps": -7.86,
+          "rule_sharpe_ann": 130.8,
           "rule_activity": 0.5380434782608695
         },
         {
@@ -2284,9 +2286,9 @@
             "utc_min": 900,
             "is_funding": false,
             "n": 185,
-            "mean_bps": 2.96,
-            "vol_bps": 40.73,
-            "t": 0.99
+            "mean_bps": 2.66,
+            "vol_bps": 41.03,
+            "t": 0.88
           },
           {
             "utc_min": 930,
@@ -2434,6 +2436,7 @@
     },
     {
       "symbol": "ETHUSDT",
+      "resolution": "30m",
       "n_bars": 8826,
       "n_returns": 8817,
       "shen_slots": [
@@ -2800,13 +2803,13 @@
         {
           "slot": 30,
           "n_days": 184,
-          "b1_first": 0.2088,
-          "b2_slh": 0.0725,
-          "se_b1": 0.0874,
-          "r2": 0.0374,
-          "rule_gross_bps": 1.72,
-          "rule_net_bps": -8.28,
-          "rule_sharpe_ann": 82.37,
+          "b1_first": 0.2124,
+          "b2_slh": 0.0702,
+          "se_b1": 0.0889,
+          "r2": 0.0368,
+          "rule_gross_bps": 2.3,
+          "rule_net_bps": -7.7,
+          "rule_sharpe_ann": 106.97,
           "rule_activity": 0.5706521739130435
         },
         {
@@ -4758,9 +4761,9 @@
             "utc_min": 900,
             "is_funding": false,
             "n": 185,
-            "mean_bps": 2.2,
-            "vol_bps": 49.51,
-            "t": 0.61
+            "mean_bps": 1.63,
+            "vol_bps": 50.32,
+            "t": 0.44
           },
           {
             "utc_min": 930,
@@ -4900,14 +4903,15 @@
           }
         ],
         "funding_mean_vol_bps": 39.47,
-        "other_mean_vol_bps": 40.87,
-        "funding_vol_ratio": 0.966,
+        "other_mean_vol_bps": 40.89,
+        "funding_vol_ratio": 0.965,
         "funding_mean_ret_bps": 0.84,
-        "other_mean_ret_bps": -0.08
+        "other_mean_ret_bps": -0.09
       }
     },
     {
       "symbol": "SOLUSDT",
+      "resolution": "30m",
       "n_bars": 28,
       "n_returns": 23,
       "shen_slots": [
@@ -5916,6 +5920,7 @@
     },
     {
       "symbol": "XRPUSDT",
+      "resolution": "30m",
       "n_bars": 28,
       "n_returns": 23,
       "shen_slots": [
