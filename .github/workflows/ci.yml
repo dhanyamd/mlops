@@ -3,8 +3,22 @@ name: CI
 on:
   push:
     branches: [main, master]
+    # The root project is the legacy mlops-academy learning stack. Scope CI to
+    # its own paths so quant_signal pushes don't run (and fail) this job.
+    paths:
+      - "fraud_detection/**"
+      - "demand_forecasting/**"
+      - "shared/**"
+      - "pyproject.toml"
+      - ".github/workflows/ci.yml"
   pull_request:
     branches: [main, master]
+    paths:
+      - "fraud_detection/**"
+      - "demand_forecasting/**"
+      - "shared/**"
+      - "pyproject.toml"
+      - ".github/workflows/ci.yml"
 
 jobs:
   lint-and-test:
