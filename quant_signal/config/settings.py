@@ -530,6 +530,17 @@ class Settings(BaseSettings):
     # s3://{lake_bucket}/{namespace}/{table}.
     lake_namespace: str = "gold"
     lake_table_features: str = "features"
+    # Snapshot retention (hours). Repeated exports keep old snapshots (time
+    # travel), but unbounded snapshot history is the #1 Iceberg metadata trap
+    # at scale — manifest bookkeeping becomes the latency floor. Expire
+    # snapshots older than this on every export (7 days default).
+    lake_snapshot_retention_hours: float = 168.0
+    # Coarse identity partition column. Iceberg's scaling rule: partition on
+    # the coarsest grain that prunes your dominant query pattern and stay well
+    # under a few thousand partitions; finer grains make metadata planning the
+    # bottleneck. SYMBOL is 32 low-cardinality values — right-sized for
+    # per-symbol scans and time-series backtests.
+    lake_partition_by: str = "SYMBOL"
     # Catalog database file (SQLite). Absolute under the project so it works
     # from any CWD; the whole lake/ dir is gitignored as local state.
     lake_catalog_uri: str = Field(

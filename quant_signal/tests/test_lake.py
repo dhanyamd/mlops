@@ -74,11 +74,34 @@ def test_to_arrow_casts_ns_timestamps_to_us() -> None:
     assert arrow.schema.field("symbol").type == "string"
 
 
+def test_partition_column_resolves_from_schema() -> None:
+    # Partitioning is applied by column name (the pyiceberg-recommended path);
+    # the configured column is used only when it exists in the exported schema.
+    from flows import lake_export
+
+    assert (
+        lake_export._partition_column(_settings(lake_partition_by="SYMBOL"), ["SYMBOL", "CLOSE"])
+        == "SYMBOL"
+    )
+
+
+def test_partition_column_absent_or_unconfigured_is_none() -> None:
+    from flows import lake_export
+
+    assert (
+        lake_export._partition_column(_settings(lake_partition_by="TIMESTAMP"), ["SYMBOL"]) is None
+    )
+    assert lake_export._partition_column(_settings(lake_partition_by=""), ["SYMBOL"]) is None
+
+
 @pytest.mark.skipif(
     os.environ.get("QUANTSIGNAL_TEST_LAKE") != "1",
     reason="set QUANTSIGNAL_TEST_LAKE=1 to round-trip against the local MinIO",
 )
 def test_lake_round_trip_against_minio() -> None:
+    import time
+    import uuid
+
     import pandas as pd
     import pyarrow as pa
 
@@ -89,8 +112,10 @@ def test_lake_round_trip_against_minio() -> None:
         lake_access_key="minioadmin",
         lake_secret_key="minioadmin",
         lake_bucket="quant-lake-test",
-        lake_namespace="test_ns",
+        lake_namespace=f"test_ns_{uuid.uuid4().hex[:8]}",
         lake_catalog_uri="sqlite:////tmp/quant_lake_test_catalog.db",
+        lake_partition_by="symbol",
+        lake_snapshot_retention_hours=1e-6,
     )
     lake_export.ensure_bucket(settings)
     catalog = lake_export._catalog(settings)
@@ -101,10 +126,22 @@ def test_lake_round_trip_against_minio() -> None:
         pd.DataFrame({"symbol": ["BTCUSDT", "ETHUSDT"], "value": [1.0, 2.0]}),
         preserve_index=False,
     )
-    table = catalog.create_table_if_not_exists(identifier, schema=arrow.schema)
+    table = lake_export._create_or_load(catalog, identifier, arrow.schema, settings)
+    # coarse identity partition applied at create time (spec is immutable)
+    assert table.spec().fields and table.spec().fields[0].name == "symbol"
     table.overwrite(arrow)
 
     back = catalog.load_table(identifier).scan().to_pandas()
     assert len(back) == 2
     assert sorted(back["symbol"]) == ["BTCUSDT", "ETHUSDT"]
     assert catalog.load_table(identifier).current_snapshot() is not None
+
+    # a second overwrite then expires snapshots older than the retention window
+    # (sub-millisecond), proving overwrite-per-run stays bounded time travel:
+    # old snapshots gone, exactly the current one retained
+    time.sleep(0.1)
+    table.overwrite(arrow)
+    assert lake_export._expire_snapshots(catalog, identifier, settings) >= 1
+    snapshots = catalog.load_table(identifier).snapshots() or []
+    assert len(snapshots) == 1
+    assert snapshots[0].snapshot_id == catalog.load_table(identifier).current_snapshot().snapshot_id

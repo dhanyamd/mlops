@@ -7,9 +7,13 @@ deploy). The same tables therefore move to S3 unchanged by swapping
 ``LAKE_ENDPOINT`` — the AWS IaC storage module already provisions the bucket.
 
 Each ``--source`` export runs an idempotent *overwrite*: one new snapshot per
-run, and old snapshots stay readable (time travel). A mart rebuild is a safe
-re-run. ``--verify`` round-trips the table through the catalog to prove the
-files, schema and snapshot history are intact.
+run, and old snapshots stay readable (time travel) — up to the configured
+retention, after which they are expired so metadata can't grow without bound
+(the Iceberg scaling trap). New tables are partitioned on a coarse low-
+cardinality column (``LAKE_PARTITION_BY``, default SYMBOL = 32 values) per
+the "partition coarsely, stay well under a few thousand partitions" rule.
+``--verify`` round-trips the table through the catalog to prove the files,
+schema and snapshot history are intact.
 
 Run with ``make lake-export`` / ``make lake-query`` (needs the ``lake`` extra:
 ``uv sync --extra lake``).
@@ -19,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -29,6 +34,7 @@ if TYPE_CHECKING:
     import pandas as pd
     import pyarrow as pa
     from pyiceberg.catalog.sql import SqlCatalog
+    from pyiceberg.table import StaticTable
 
 log = get_logger("flows.lake_export")
 
@@ -115,6 +121,100 @@ def _to_arrow(df: "pd.DataFrame") -> "pa.Table":
     return table.cast(target) if target != table.schema else table
 
 
+def _partition_column(settings: Settings, schema_names: list[str]) -> str | None:
+    """The configured partition column if it exists in the exported schema.
+
+    Returns None when partitioning is not configured or the column is absent
+    (an export would otherwise create an unpartitioned table despite a bogus
+    ``LAKE_PARTITION_BY``).
+    """
+    column = settings.lake_partition_by
+    if not column:
+        return None
+    if column not in schema_names:
+        log.warning("lake_partition_column_missing", column=column, columns=schema_names)
+        return None
+    return column
+
+
+def _create_or_load(
+    catalog: "SqlCatalog",
+    identifier: tuple[str, str],
+    arrow_schema: "pa.Schema",
+    settings: Settings,
+) -> "StaticTable":
+    """Create a (partitioned) table if absent, otherwise load it.
+
+    Partitioning is applied by column *name* via ``create_table_transaction``
+    + ``update_spec().add_identity`` — the pyiceberg-recommended path. An
+    id-based ``PartitionSpec`` cannot be paired with a pyarrow schema: the
+    catalog converts it to an Iceberg schema whose field ids are -1
+    placeholders, so a spec's ``source_id`` never resolves (``ValueError:
+    Could not find in old schema``, apache/iceberg-python#1100). Matching by
+    name sidesteps field-id assignment entirely, and Iceberg only applies a
+    spec at create time.
+    """
+    if not catalog.table_exists(identifier):
+        column = _partition_column(settings, arrow_schema.names)
+        with catalog.create_table_transaction(identifier, schema=arrow_schema) as txn:
+            if column:
+                with txn.update_spec() as update_spec:
+                    update_spec.add_identity(column)
+    return catalog.load_table(identifier)
+
+
+def _partition_status(settings: Settings, table: "StaticTable") -> str:
+    """Human summary of the table's actual partition spec.
+
+    A table created before partitioning was enabled stays unpartitioned (Iceberg
+    applies a spec at create time); report the truth rather than claiming the
+    configured column is in effect.
+    """
+    fields = table.spec().fields
+    if not fields:
+        return "unpartitioned"
+    return ", ".join(f"{f.name}: {f.transform}" for f in fields)
+
+
+def _expire_snapshots(
+    catalog: "SqlCatalog",
+    identifier: tuple[str, str],
+    settings: Settings,
+) -> int:
+    """Expire snapshots older than the retention window (metadata hygiene).
+
+    Iceberg keeps every snapshot by default; without expiry the metadata log
+    grows without bound and scan planning slows — the classic lake-scale trap.
+    The cutoff is wall-clock based, so time travel is bounded to the retention
+    window (default 7 days) regardless of run frequency. Returns the number of
+    snapshots removed.
+    """
+    retention_hours = settings.lake_snapshot_retention_hours
+    if retention_hours <= 0:
+        log.info("lake_retention_disabled", retention_hours=retention_hours)
+        return 0
+    from pyiceberg.table import Transaction
+    from pyiceberg.table.update.snapshot import ExpireSnapshots
+
+    table = catalog.load_table(identifier)
+    before = len(table.snapshots() or [])
+    if before == 0:
+        return 0
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=retention_hours)
+    ExpireSnapshots(transaction=Transaction(table, autocommit=True)).older_than(cutoff).commit()
+    after = len(catalog.load_table(identifier).snapshots() or [])
+    expired = before - after
+    if expired:
+        log.info(
+            "lake_snapshots_expired",
+            expired=expired,
+            retained=after,
+            retention_hours=retention_hours,
+            cutoff=cutoff.isoformat(),
+        )
+    return expired
+
+
 def export_features(
     settings: Settings,
     *,
@@ -125,7 +225,9 @@ def export_features(
 
     Reads ``{GOLD_SCHEMA}.{source_table}`` via the Snowflake client, then
     overwrites the Iceberg table ``{namespace}.{table}`` with one new snapshot
-    (old snapshots retained = time travel). Returns row count + snapshot id.
+    (old snapshots retained = time travel, bounded by the configured retention,
+    after which ``_expire_snapshots`` removes them). Returns row count,
+    snapshot id and expiry stats.
     """
     from db.snowflake import SnowflakeClient
 
@@ -135,26 +237,41 @@ def export_features(
     df = client.query_df(f'SELECT * FROM "{settings.snowflake_database}"."{gold}"."{source_table}"')
     if df.empty:
         log.info("lake_export_no_rows", table=f"{gold}.{source_table}")
-        return {"rows": 0, "snapshot_id": None}
+        return {"rows": 0, "snapshot_id": None, "partitioned_by": None, "expired_snapshots": 0}
 
     arrow = _to_arrow(df)
     catalog = _catalog(settings)
     catalog.create_namespace_if_not_exists(settings.lake_namespace)
     identifier = (settings.lake_namespace, settings.lake_table_features)
-    table = catalog.create_table_if_not_exists(identifier, schema=arrow.schema)
+    table = _create_or_load(catalog, identifier, arrow.schema, settings)
+    partition_status = _partition_status(settings, table)
+    if partition_status == "unpartitioned" and settings.lake_partition_by:
+        log.warning(
+            "lake_table_not_partitioned",
+            table=identifier,
+            column=settings.lake_partition_by,
+            hint="created before partitioning was enabled; drop or migrate the "
+            "table to apply LAKE_PARTITION_BY (Iceberg specs are fixed at create time)",
+        )
     table.overwrite(arrow)
     snapshot = table.current_snapshot()
+    expired = _expire_snapshots(catalog, identifier, settings)
 
     log.info(
         "lake_export_done",
         table=f"{settings.lake_namespace}.{settings.lake_table_features}",
         rows=len(df),
         snapshot_id=snapshot.snapshot_id if snapshot else None,
+        partition=partition_status,
+        expired_snapshots=expired,
     )
     return {
         "table": f"{settings.lake_namespace}.{settings.lake_table_features}",
         "rows": len(df),
         "snapshot_id": snapshot.snapshot_id if snapshot else None,
+        "partitioned_by": settings.lake_partition_by or None,
+        "partition_status": partition_status,
+        "expired_snapshots": expired,
     }
 
 
@@ -162,8 +279,9 @@ def verify(settings: Settings) -> dict[str, Any]:
     """Round-trip proof: read the Iceberg table back through the catalog.
 
     Returns row count from a fresh scan (from object storage, not Snowflake),
-    the current snapshot, and the retained snapshot history — the time-travel
-    evidence that overwrite-per-run is versioning, not replacement.
+    the current snapshot, the retained snapshot history — the time-travel
+    evidence that overwrite-per-run is versioning, not replacement — and the
+    actual partition spec + retention window in effect.
     """
     catalog = _catalog(settings)
     identifier = (settings.lake_namespace, settings.lake_table_features)
@@ -174,18 +292,23 @@ def verify(settings: Settings) -> dict[str, Any]:
         {"snapshot_id": snap.snapshot_id, "timestamp_ms": snap.timestamp_ms}
         for snap in (table.snapshots() or [])
     ]
+    partition_status = _partition_status(settings, table)
 
     log.info(
         "lake_verify_done",
         table=identifier,
         rows=len(scanned),
         snapshots=len(history),
+        partition=partition_status,
+        retention_hours=settings.lake_snapshot_retention_hours,
         current_snapshot_id=current.snapshot_id if current else None,
     )
     return {
         "table": identifier,
         "rows": len(scanned),
         "current_snapshot_id": current.snapshot_id if current else None,
+        "partition_status": partition_status,
+        "retention_hours": settings.lake_snapshot_retention_hours,
         "snapshots": history,
     }
 

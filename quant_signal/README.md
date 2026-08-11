@@ -280,6 +280,21 @@ readable, so the lake is versioned with time travel, not replaced. The same
 tables move to real S3 unchanged by swapping `LAKE_ENDPOINT` (the AWS IaC
 storage module already provisions the bucket).
 
+The lake is built to scale:
+
+- **Coarse partitioning.** Tables are partitioned on the coarsest grain that
+  prunes the dominant query pattern (`LAKE_PARTITION_BY`, default `SYMBOL` = 32
+  low-cardinality values). Iceberg's rule is to stay *well under a few thousand
+  partitions* — finer grains turn metadata planning into the scan bottleneck.
+  Partitioning is applied by column name at create time (Iceberg specs are
+  fixed then; the pyiceberg-recommended `create_table_transaction` +
+  `update_spec().add_identity` path, which sidesteps the pyarrow↔Iceberg field-id
+  mismatch in apache/iceberg-python#1100).
+- **Bounded time travel.** Unbounded snapshot history is the #1 Iceberg metadata
+  trap at scale — manifest bookkeeping becomes the latency floor. Every export
+  expires snapshots older than `LAKE_SNAPSHOT_RETENTION_HOURS` (7 days default),
+  so versioning is bounded regardless of run frequency.
+
 ```bash
 uv sync --extra lake
 make lake-export          # GOLD.FEATURES → gold.features (new snapshot)
@@ -287,7 +302,8 @@ make lake-query           # round-trip read back + snapshot history (time travel
 ```
 
 Credentials and the bucket come from the environment (`LAKE_ENABLED`,
-`LAKE_ACCESS_KEY`, `LAKE_SECRET_KEY`, `LAKE_BUCKET`, ...) — never hardcoded.
+`LAKE_ACCESS_KEY`, `LAKE_SECRET_KEY`, `LAKE_BUCKET`, `LAKE_PARTITION_BY`,
+`LAKE_SNAPSHOT_RETENTION_HOURS`, ...) — never hardcoded.
 
 ### Prediction promotion gate
 

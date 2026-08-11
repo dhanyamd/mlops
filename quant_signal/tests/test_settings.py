@@ -53,6 +53,20 @@ def test_stream_venue_and_watchdog_defaults(monkeypatch: pytest.MonkeyPatch) -> 
     assert s.stream_execution_hold_until_decay is True
 
 
+def test_lake_defaults_applied(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SNOWFLAKE_ACCOUNT", "acct123")
+    monkeypatch.setenv("SNOWFLAKE_USER", "devuser")
+    monkeypatch.setenv("SNOWFLAKE_PASSWORD", "p")
+    s = Settings(_env_file=None)
+
+    assert s.lake_enabled is False
+    assert s.lake_snapshot_retention_hours == 168.0
+    assert s.lake_partition_by == "SYMBOL"
+    assert s.lake_bucket == "quant-lake"
+    assert s.lake_namespace == "gold"
+    assert s.lake_table_features == "features"
+
+
 def test_key_pair_auth_detected(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SNOWFLAKE_ACCOUNT", "acct123")
     monkeypatch.setenv("SNOWFLAKE_USER", "devuser")
