@@ -100,6 +100,22 @@ def test_evaluate_predictor_needs_small_minimum_and_skips_malformed() -> None:
     assert evaluate_predictor([{"symbol": "BTCUSDT"}]) == {"n_windows": 0}
 
 
+def test_evaluate_predictor_feature_modes_all_score_the_same_windows() -> None:
+    """Every feature-mode ablation scores the same windows (features never
+    reject a window) and produces a well-formed report — the honest ablation
+    chain for the harness."""
+    windows = [_feature_window("BTCUSDT", i) for i in range(150)]
+    cross = {"ETHUSDT": [_feature_window("ETHUSDT", i) for i in range(150)]}
+    n_scored = set()
+    for mode in ("single", "history", "vol", "cross"):
+        report = evaluate_predictor(windows, cross_windows=cross, feature_mode=mode)
+        n_scored.add(report["n_scored"])
+        assert report["n_scored"] > 0
+        assert isinstance(report["skill_vs_zero"], float)
+        assert report["_strat_rets"]
+    assert len(n_scored) == 1  # identical coverage across all variants
+
+
 # ── passes_gate: the promotion predicate ────────────────────────────────────
 
 

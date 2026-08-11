@@ -46,7 +46,14 @@ import numpy as np
 from scipy import stats
 
 from config.settings import Settings
-from stream.predictor import ConformalInterval, _direction, _features, _model
+from stream.predictor import (
+    _STRESS_SHOCK_THRESHOLD,
+    ConformalInterval,
+    _direction,
+    _features,
+    _model,
+    _own_history_features,
+)
 
 
 def _windows_per_year(sorted_windows: Sequence[Mapping]) -> float:
@@ -100,6 +107,44 @@ def _cross_returns(
             continue
         returns[cross] = newer[1] / older[1] - 1.0
     return returns
+
+
+def _cross_vols(
+    cross_windows: Mapping[str, Sequence[Mapping]],
+    symbol: str,
+    window_end: int,
+) -> dict[str, float]:
+    """Trailing realized-vol of the vol-transmitter cross symbols, strictly
+    before ``window_end`` — mirrors the live predictor's ``_cross_vols``.
+
+    The state-dependent spillover channel of SA-Log-HAR (Fu, Zhu & Liu, Jinan
+    Univ., arXiv:2507.22409): the transmitters' 24h realized vol, vol-shock and
+    the tail-amplification ``stress_max``/``stress_count`` regime aggregates are
+    all known when this window opens (no lookahead). Warm-up is graceful — a
+    transmitter with fewer than ~25 past closes contributes nothing.
+    """
+    vols: dict[str, float] = {}
+    shocks: list[float] = []
+    for cross, windows in cross_windows.items():
+        if cross == symbol:
+            continue
+        closes = [
+            float(w["close"])
+            for w in windows
+            if w.get("window_end_ms") is not None
+            and isinstance(w.get("close"), (int, float))
+            and int(w["window_end_ms"]) < window_end
+        ]
+        feat = _own_history_features(closes)
+        if "rv_24h" in feat:
+            vols[f"lag_{cross.lower()}_rv24h"] = feat["rv_24h"]
+        if "vol_shock" in feat:
+            vols[f"lag_{cross.lower()}_vol_shock"] = feat["vol_shock"]
+            shocks.append(feat["vol_shock"])
+    if shocks:
+        vols["stress_max"] = max(shocks)
+        vols["stress_count"] = float(sum(1 for s in shocks if s >= _STRESS_SHOCK_THRESHOLD))
+    return vols
 
 
 def _spearmanr(x: Sequence[float], y: Sequence[float]) -> float:
@@ -167,6 +212,7 @@ def evaluate_predictor(
     n_blocks: int = 4,
     direction_threshold: float = 0.0005,
     cross_windows: Mapping[str, Sequence[Mapping]] | None = None,
+    feature_mode: str = "cross",
 ) -> dict:
     """Progressive validation of the live predictor over historical windows.
 
@@ -174,8 +220,18 @@ def evaluate_predictor(
     with ``symbol, close, open, high, low, vwap, volume, bar_count,
     window_end_ms``), oldest-first. ``cross_windows`` maps each cross symbol to
     its own window history; when given, the replay feeds each window the lagged
-    cross-coin returns the live predictor uses, so the offline gate tests the
-    exact feature set the online model sees. Returns a plain report dict.
+    cross-coin features the live predictor uses, so the offline gate tests the
+    exact feature set the online model sees. ``feature_mode`` selects the
+    feature-set variant (the harness's ablation axis):
+
+      - ``"single"``  — current-window own features only;
+      - ``"history"`` — + own multi-scale realized vol (HAR-RV);
+      - ``"vol"``     — + cross-vol spillover from the transmitters (incl.
+                        ``stress_max`` / ``stress_count`` regime aggregates);
+      - ``"cross"``   — + lagged cross-coin returns: the FULL live set
+                        (default).
+
+    Returns a plain report dict.
     """
     sorted_windows = sorted(
         (w for w in windows if w.get("window_end_ms") is not None),
@@ -201,20 +257,36 @@ def evaluate_predictor(
     last_direction: str | None = None
     position: str = "FLAT"
 
+    use_history = feature_mode in ("history", "vol", "cross")
+    use_cross_vols = feature_mode in ("vol", "cross")
+    use_cross_returns = feature_mode == "cross"
+    own_closes: list[float] = []
+
     for msg in sorted_windows:
+        close = float(msg["close"]) if isinstance(msg.get("close"), (int, float)) else None
+        if close is None:
+            continue
+        symbol = str(msg.get("symbol") or "").upper()
+        window_end = int(msg["window_end_ms"])
         cross = (
-            _cross_returns(
-                cross_windows,
-                str(msg.get("symbol") or "").upper(),
-                int(msg["window_end_ms"]),
-            )
-            if cross_windows
+            _cross_returns(cross_windows, symbol, window_end)
+            if cross_windows and use_cross_returns
             else None
         )
-        features = _features(msg, cross)
+        cross_vols = (
+            _cross_vols(cross_windows, symbol, window_end)
+            if cross_windows and use_cross_vols
+            else None
+        )
+        features = _features(
+            msg,
+            cross,
+            own_closes=list(own_closes) if use_history else None,
+            cross_vols=cross_vols,
+        )
         if features is None:
+            own_closes.append(close)
             continue
-        close = float(msg["close"])
         if last_features is not None and last_close and close != 0 and last_y_hat is not None:
             realized = close / last_close - 1.0
             model.learn_one(last_features, realized)
@@ -240,6 +312,7 @@ def evaluate_predictor(
         direction = _direction(y_hat, direction_threshold)
         last_features, last_close = features, close
         last_y_hat, last_interval, last_direction = y_hat, interval, direction
+        own_closes.append(close)
 
     if len(preds) < 3:
         return {

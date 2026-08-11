@@ -230,6 +230,15 @@ class Settings(BaseSettings):
     # 5m gross / 0.07-0.08 bps net (73-84% annualized) after realistic costs.
     # Lagged leaders for SOL/XRP are the documented tradeable edge at 5m.
     stream_prediction_cross_symbols: str = "BTCUSDT,ETHUSDT"
+    # Vol-transmitter symbols (Jinan SA-Log-HAR, Fu/Zhu/Liu arXiv:2507.22409;
+    # TVTP-MS-HAR, Mathematics 13(15), 2025): XRP/XLM/LTC are NET vol
+    # transmitters whose spillovers AMPLIFY at both tails — their trailing
+    # 24h realized vol and vol-shock feed every model as the state-dependent
+    # early-warning channel, and their shock state drives the regime gate.
+    # NOTE: the transmitter hierarchy is SAMPLE-dependent (FinInnov 2025:
+    # BTC/ETH transmit) — so the coefficients are learned online, never
+    # hardcoded; this list only names who is ALLOWED to act as a vol source.
+    stream_prediction_vol_symbols: str = "XRPUSDT,SOLUSDT"
     # Monte Carlo engine: paths (a power of two so the Sobol low-discrepancy
     # net keeps its (0,m,s)-net stratification property — Niederreiter 1992),
     # forward horizon (5m steps), trailing 5m windows used to estimate the
@@ -369,10 +378,16 @@ class Settings(BaseSettings):
     # = λ × round-trip taker cost (λ=2 @ 10bps = the live 20bps band).
     research_lambda_values: str = "0.0,0.5,1.0,1.5,2.0,2.5,3.0"
     research_taker_cost_values: str = "0.0005,0.001"
-    # Feature-set variants: "single" = own-symbol features only; "cross" adds
-    # the lagged cross-coin returns the live predictor uses (sign learned
-    # online, never hardcoded — the seesaw/spillover literature disagrees).
-    research_feature_modes: str = "single,cross"
+    # Feature-set variants (ablation chain toward the live set):
+    #   "single"  = current-window own features only (baseline)
+    #   "history" = + own multi-scale realized vol (HAR-RV: lag_ret, rv_1h/4h/24h,
+    #               vol_shock — Corsi 2009; the Jinan vol-spillover line extends it)
+    #   "vol"     = + cross-vol spillover from the transmitters (lag_<x>_rv24h,
+    #               lag_<x>_vol_shock, stress_max, stress_count — SA-Log-HAR)
+    #   "cross"   = + lagged cross-coin RETURNS too (the full LIVE feature set;
+    #               sign learned online, never hardcoded — the spillover
+    #               direction is sample-dependent across the literature).
+    research_feature_modes: str = "single,history,vol,cross"
     # Search method: "grid" = exhaustive Cartesian product (small spaces);
     # "random" = seeded budget-constrained draws (large spaces) — same
     # coverage-per-sample argument as qbx-research's latin_hypercube.

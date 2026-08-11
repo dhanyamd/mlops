@@ -11,16 +11,19 @@ Covers the three M3.5 pieces that matter for correctness:
 
 from __future__ import annotations
 
+import math
 import random
 
 import pytest
 
 from stream.kv import FakeKV
 from stream.predictor import (
+    _STRESS_SHOCK_THRESHOLD,
     ConformalInterval,
     OnlinePredictor,
     _direction,
     _features,
+    _own_history_features,
     prediction_key,
     strategy_key,
 )
@@ -629,3 +632,116 @@ def test_warm_start_replays_stored_feature_history() -> None:
     simulation = kv.get_json(simulation_key("simulation:crypto:5m", "BTCUSDT"))
     assert simulation is not None
     assert simulation["base_price"] == history[-1]["close"]
+
+
+# ── Own-symbol history features (HAR-RV multi-scale vol + vol-shock) ────────
+
+
+def test_own_history_features_multi_scale_vol_and_shock() -> None:
+    closes = [100.0 * math.exp(0.001 * i + 0.01 * math.sin(i)) for i in range(30)]
+    feat = _own_history_features(closes)
+    assert "lag_ret" in feat and "rv_1h" in feat
+    assert feat["lag_ret"] == pytest.approx(closes[-1] / closes[-2] - 1.0)
+    assert feat["rv_1h"] == pytest.approx(abs(closes[-1] / closes[-2] - 1.0))
+    assert feat["rv_4h"] > 0.0
+    assert feat["rv_24h"] > 0.0
+    assert 0.0 <= feat["vol_shock"] <= 10.0  # clipped against scaler poisoning
+
+
+def test_own_history_features_warmup_graceful() -> None:
+    assert _own_history_features([]) == {}
+    assert _own_history_features([100.0]) == {}
+    f2 = _own_history_features([100.0, 101.0])
+    assert set(f2) == {"lag_ret", "rv_1h"}
+    f4 = _own_history_features([100.0, 101.0, 102.0, 103.0, 104.0])
+    assert "rv_4h" in f4 and "rv_24h" not in f4 and "vol_shock" not in f4
+    f25 = _own_history_features([100.0 + i for i in range(26)])
+    assert "rv_24h" in f25 and "vol_shock" in f25
+
+
+def test_own_history_features_ignores_corrupt_bar() -> None:
+    """A corrupt close must not leak into the multi-scale vol or the shock."""
+    closes = [100.0] * 26 + [100000.0, 101000.0]
+    feat = _own_history_features(closes)
+    assert feat["lag_ret"] == pytest.approx(0.01)  # last sane return
+    # If the 999x (100 -> 100000) return leaked in, rv_24h ~ sqrt(999^2/24) ~ 204.
+    assert feat["rv_24h"] < 0.01
+
+
+def test_own_history_features_prefix_stable_no_lookahead() -> None:
+    """Features for a window depend only on closes strictly before it: a longer
+    history changes nothing once the trailing 24h window is covered."""
+    full = [100.0 * math.exp(0.002 * i + 0.01 * math.sin(i)) for i in range(40)]
+    assert _own_history_features(full) == _own_history_features(full[-25:])
+
+
+def test_predictor_feeds_own_history_after_warmup() -> None:
+    kv = FakeKV()
+    predictor = OnlinePredictor(kv, prediction_prefix="prediction:crypto:1h")
+    predictor.handle(_feature_window("btcusdt", 0))
+    assert "lag_ret" not in (predictor._state("BTCUSDT").last_features or {})
+    for i in range(1, 30):
+        predictor.handle(_feature_window("btcusdt", i))
+    feat = predictor._state("BTCUSDT").last_features
+    assert feat is not None
+    assert "lag_ret" in feat and "rv_4h" in feat and "rv_24h" in feat
+    assert feat["lag_ret"] == pytest.approx((100.5 + 28) / (100.5 + 27) - 1.0)
+
+
+# ── Cross-vol spillover features + stress regime aggregates ─────────────────
+
+
+def _vol_transmitter_windows(symbol: str, base: int, n: int = 30) -> list[dict]:
+    """Flat ~0.1% baseline, then a 5% shock hour — a tail shock vs its day."""
+    windows: list[dict] = []
+    for i in range(n):
+        if i == n - 1:
+            close = 100.0 * 1.05
+        else:
+            close = 100.0 * (1.0 + 0.001 * math.sin(i))
+        windows.append(
+            {
+                "symbol": symbol,
+                "window_start_ms": base - (n + 1 - i) * 300_000,
+                "window_end_ms": base - (n - i) * 300_000,
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": close,
+                "vwap": 100.0,
+                "volume": 1000.0,
+                "bar_count": 5,
+            }
+        )
+    return windows
+
+
+def test_predictor_feeds_cross_vol_and_stress_aggregates() -> None:
+    kv = FakeKV()
+    predictor = OnlinePredictor(
+        kv,
+        prediction_prefix="prediction:crypto:1h",
+        vol_symbols=["SOLUSDT"],
+    )
+    base = 1_786_378_500_000
+    for w in _vol_transmitter_windows("SOLUSDT", base):
+        predictor.handle(w)
+    predictor.handle(
+        {
+            "symbol": "BTCUSDT",
+            "window_end_ms": base,
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.5,
+            "vwap": 100.6,
+            "volume": 1000.0,
+            "bar_count": 5,
+        }
+    )
+    feat = predictor._state("BTCUSDT").last_features
+    assert feat is not None
+    assert feat["lag_solusdt_rv24h"] > 0.0
+    assert feat["lag_solusdt_vol_shock"] >= _STRESS_SHOCK_THRESHOLD
+    assert feat["stress_max"] >= feat["lag_solusdt_vol_shock"]
+    assert feat["stress_count"] >= 1.0

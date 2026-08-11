@@ -22,9 +22,10 @@ in-process, no external state.
 from __future__ import annotations
 
 import math
+import statistics
 import threading
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
 from river import compose, linear_model, optim, preprocessing
@@ -55,6 +56,16 @@ _MAX_FEATURE_RATIO = 0.5
 # are <~5%, and 50% ≈ 68σ of hourly volatility); skip learning on it so a
 # corrupt close can't explode the target scaler or the conformal residuals.
 _MAX_REALIZED = 0.5
+# Rolling per-symbol close registry length (~3 days at 1h cadence): the
+# multi-scale realized-vol features (HAR-RV family) need a 24h window plus a
+# lag, so a full day of history is the floor; 3 days lets the 24h vol ride
+# over the current day's regime without looking back into pre-warm-up noise.
+_OWN_HISTORY_MAX_WINDOWS = 72
+# A transmitter is in a "stress" state when its trailing-hour vol-shock is at
+# least this many times its 24h baseline. That is the high-vol tail of Jinan's
+# quantile ladder (τ=0.95) — the regime where spillovers AMPLIFY and the fade
+# edge lives. Only shocks in that state count toward the stress aggregates.
+_STRESS_SHOCK_THRESHOLD = 2.0
 
 
 def prediction_key(prefix: str, symbol: str) -> str:
@@ -110,15 +121,76 @@ class ConformalInterval:
         return sum(self._hits) / len(self._hits)
 
 
+def _own_history_features(closes: Sequence[float]) -> dict[FeatureName, float]:
+    """Own-symbol history features from past hourly closes (strictly prior).
+
+    Multi-scale realized volatility follows the HAR-RV family (Corsi, "A
+    Simple Approximate Long-Memory Model of Realized Volatility", JFE 92(2),
+    2009) — the daily/half-day/hourly decomposition the Chinese vol-spillover
+    line extends (SA-Log-HAR, Fu, Zhu & Liu, Jinan Univ., arXiv:2507.22409):
+    volatility is long-memory and clusters, so the trailing realized vol at
+    several scales is the most literature-supported predictor of the next
+    window's volatility.
+
+    Features (computed only from closes STRICTLY before the current window —
+    no lookahead):
+
+      lag_ret    last realized close-to-close return (momentum/persistence)
+      rv_1h      realized vol of the most recent hour = |lag_ret|
+      rv_4h      sqrt of mean squared return over the last 4 hours
+      rv_24h     sqrt of mean squared return over the last 24 hours
+      vol_shock  rv_1h / rv_24h — the tail-amplification/stress indicator
+                 (Jinan: spillovers amplify at the tails), clipped to
+                 [0, 10] so a single panic hour can't poison the online
+                 scaler.
+
+    Warm-up is graceful: fewer than 2 closes → no features; the longer-scale
+    vols appear only once enough history exists. Returns are sanity-filtered
+    with the same ``_MAX_FEATURE_RATIO`` bound as the window features, so one
+    corrupt bar can't blow up a rolling variance (River's online StandardScaler
+    is unstable under abrupt feature shifts — online-ml/river#335).
+    """
+    returns: list[float] = []
+    for c0, c1 in zip(closes, closes[1:]):
+        if not (isinstance(c0, (int, float)) and isinstance(c1, (int, float))):
+            continue
+        if c0 == 0 or c0 != c0 or c1 != c1:
+            continue
+        ret = c1 / c0 - 1.0
+        if abs(ret) <= _MAX_FEATURE_RATIO:
+            returns.append(ret)
+    if not returns:
+        return {}
+    features: dict[FeatureName, float] = {"lag_ret": returns[-1]}
+    rv_1h = abs(returns[-1])
+    features["rv_1h"] = rv_1h
+    if len(returns) >= 4:
+        features["rv_4h"] = math.sqrt(statistics.fmean(r * r for r in returns[-4:]))
+    if len(returns) >= 24:
+        rv_24h = math.sqrt(statistics.fmean(r * r for r in returns[-24:]))
+        features["rv_24h"] = rv_24h
+        if rv_24h > 0:
+            features["vol_shock"] = min(max(rv_1h / rv_24h, 0.0), 10.0)
+    return features
+
+
 def _features(
-    msg: Mapping, cross_returns: Mapping[str, float] | None = None
+    msg: Mapping,
+    cross_returns: Mapping[str, float] | None = None,
+    own_closes: Sequence[float] | None = None,
+    cross_vols: Mapping[str, float] | None = None,
 ) -> dict[FeatureName, float] | None:
     """Numeric feature dict from a Flink 1h window, or None if malformed.
 
-    Uses only current-window values (no lookahead). ``cross_returns`` carries
-    each cross symbol's realized return over the window that closed BEFORE this
-    one (computed by the caller from the cross-close registry, so only past
-    closes are used). Missing/NaN fields are dropped so River never sees a
+    Uses only current-window values plus, when ``own_closes`` is given, the
+    symbol's own trailing closes (each one strictly before this window — the
+    no-lookahead guarantee). ``cross_returns`` carries each cross symbol's
+    realized return over the window that closed BEFORE this one (computed by
+    the caller from the cross-close registry, so only past closes are used).
+    ``cross_vols`` carries each vol-transmitter symbol's trailing realized vol
+    and vol-shock over windows strictly before this one (the state-dependent
+    spillover channel of SA-Log-HAR — Fu, Zhu & Liu, Jinan Univ.,
+    arXiv:2507.22409). Missing/NaN fields are dropped so River never sees a
     non-numeric feature, and windows whose ratio features are implausible (a
     corrupt bar, e.g. an ``open`` or ``close`` off by orders of magnitude) are
     rejected outright so the online model can never learn on garbage.
@@ -146,6 +218,12 @@ def _features(
         features["log_volume"] = math.log1p(float(msg["volume"]))
     if isinstance(msg.get("bar_count"), int):
         features["bar_count"] = float(msg["bar_count"])
+    if own_closes is not None:
+        features.update(_own_history_features(own_closes))
+    if cross_vols:
+        for cross, value in cross_vols.items():
+            if isinstance(value, (int, float)) and value == value:
+                features[cross] = float(value)
     if cross_returns:
         for cross, ret in cross_returns.items():
             if isinstance(ret, (int, float)) and ret == ret and abs(ret) <= _MAX_FEATURE_RATIO:
@@ -232,6 +310,19 @@ class OnlinePredictor:
     execution filter (|r̂| > λ·c) instead of raw high-frequency scalping is our
     novel extension: whether lead-lag survives hourly (and nets of taker
     fees) is untested in the literature.
+
+    Own-symbol history (HAR-RV family): every model also sees its own trailing
+    multi-scale realized volatility — lagged return, 1h/4h/24h realized vol
+    and a vol-shock ratio (Corsi 2009; the decomposition the Chinese
+    vol-spillover line extends). Volatility is long-memory and clusters, so
+    these are the most literature-supported features for the next window.
+    Cross-symbol VOLATILITY spillover (SA-Log-HAR, Fu, Zhu & Liu, Jinan Univ.
+    arXiv:2507.22409; TVTP-MS-HAR, Mathematics 13(15), 2025): the ``vol_symbols``
+    (XRP/XLM/LTC — net vol transmitters whose centrality does NOT track market
+    cap) feed their trailing realized vol and vol-shock into every follower
+    model, because the transmission is persistent and AMPLIFIES at both tails.
+    All three channels — current window, own history, cross vol — are computed
+    from data strictly before the current window: no lookahead.
     """
 
     def __init__(
@@ -246,6 +337,7 @@ class OnlinePredictor:
         residual_window: int = 200,
         direction_threshold: float = 0.002,
         cross_symbols: list[str] | None = None,
+        vol_symbols: list[str] | None = None,
     ) -> None:
         self._kv = kv
         self._prediction_prefix = prediction_prefix
@@ -253,6 +345,11 @@ class OnlinePredictor:
         self._strategy_maxlen = strategy_maxlen
         self._direction_threshold = direction_threshold
         self._cross_symbols = [s.upper() for s in (cross_symbols or [])]
+        # Vol-transmitter symbols (Jinan SA-Log-HAR: XRP/XLM/LTC are net vol
+        # transmitters whose spillovers AMPLIFY at the tails — cap ≠ systemic
+        # role). Their trailing realized-vol and vol-shock are fed into every
+        # focal model as the state-dependent early-warning channel.
+        self._vol_symbols = [s.upper() for s in (vol_symbols or [])]
         self._states: dict[str, _SymbolState] = {}
         self._default = (alpha, gamma, residual_window)
         # Rolling cross-symbol close registry: symbol -> (window_end_ms, close).
@@ -276,9 +373,9 @@ class OnlinePredictor:
         if hist and hist[-1][0] >= window_end:
             return
         hist.append((window_end, close))
-        # Keep ~24h of windows (1h cadence) for lag computation — a full day
-        # of the leader's hourly closes.
-        while len(hist) > 24:
+        # Keep ~3 days of windows (1h cadence) so the multi-scale realized-vol
+        # features (HAR-RV: 24h window + lag) have enough history to work with.
+        while len(hist) > _OWN_HISTORY_MAX_WINDOWS:
             del hist[0]
 
     def _cross_returns(self, symbol: str, window_end: int) -> dict[str, float]:
@@ -304,6 +401,36 @@ class OnlinePredictor:
                 returns[cross] = newer[1] / older[1] - 1.0
         return returns
 
+    def _cross_vols(self, window_end: int) -> dict[str, float]:
+        """Trailing realized-vol of each vol transmitter, strictly before this window.
+
+        The state-dependent spillover channel of SA-Log-HAR (Fu, Zhu & Liu,
+        Jinan Univ., arXiv:2507.22409): XRP/XLM/LTC transmit realized vol to
+        BTC/ETH and the transmission AMPLIFIES at both tails. Their 24h
+        realized vol and vol-shock are known when this window opens (no
+        lookahead) — the early-warning features a follower model can trade on.
+        Warm-up is graceful: a transmitter with fewer than ~25 past closes
+        simply contributes nothing yet.
+        """
+        vols: dict[str, float] = {}
+        shocks: list[float] = []
+        for cross in self._vol_symbols:
+            hist = [c for end, c in self._closes.get(cross, []) if end < window_end]
+            feat = _own_history_features(hist)
+            if "rv_24h" in feat:
+                vols[f"lag_{cross.lower()}_rv24h"] = feat["rv_24h"]
+            if "vol_shock" in feat:
+                vols[f"lag_{cross.lower()}_vol_shock"] = feat["vol_shock"]
+                shocks.append(feat["vol_shock"])
+        if shocks:
+            # Tail-amplification regime aggregates (SA-Log-HAR / TVTP-MS-HAR,
+            # Jinan Univ.): spillovers AMPLIFY at both tails, so the strongest
+            # transmitter shock and the count of transmitters currently in a
+            # shock state are the regime-gate inputs the strategy fades on.
+            vols["stress_max"] = max(shocks)
+            vols["stress_count"] = float(sum(1 for s in shocks if s >= _STRESS_SHOCK_THRESHOLD))
+        return vols
+
     def handle(self, msg: dict) -> None:
         """One feature window: learn from the *previous* window's target, then
         predict the next return and write the conformal interval to the store.
@@ -323,7 +450,9 @@ class OnlinePredictor:
         # most-recent completed window is available to followers this bar.
         self._record_close(symbol, window_end, close)
         cross = self._cross_returns(symbol, window_end)
-        features = _features(msg, cross)
+        own_closes = [c for end, c in self._closes.get(symbol, []) if end < window_end]
+        cross_vols = self._cross_vols(window_end)
+        features = _features(msg, cross, own_closes=own_closes, cross_vols=cross_vols)
         if features is None:
             return
         state = self._state(symbol)
@@ -460,6 +589,7 @@ def main() -> None:
         residual_window=settings.stream_prediction_residual_window,
         direction_threshold=settings.stream_prediction_direction_threshold,
         cross_symbols=csv_list(settings.stream_prediction_cross_symbols),
+        vol_symbols=csv_list(settings.stream_prediction_vol_symbols),
     )
     logger.info(
         "predictor consuming %s → %s (alpha=%s, gamma=%s, direction_threshold=%s, cross=%s)",

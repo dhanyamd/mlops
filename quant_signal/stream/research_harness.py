@@ -104,12 +104,14 @@ def run_sweep(
     the winner is the best of ``len(candidates)`` trials on the same data, and
     every trial is recorded so the search's full extent is disclosed — never
     just the winner (qbx-research / Bailey & López de Prado). Feature mode
-    "cross" feeds the lagged cross-coin returns; "single" uses own-symbol
-    features only.
+    selects the ablation variant ("single" / "history" / "vol" / "cross" —
+    see ``evaluate_predictor``); "vol" and "cross" feed the cross-vol
+    spillover features and need ``cross_windows``.
     """
     trials: list[dict] = []
     for params in candidates:
-        use_cross = params.get("feature_mode") == "cross" and cross_windows is not None
+        mode = params.get("feature_mode")
+        use_cross = mode in ("vol", "cross") and cross_windows is not None
         report = evaluate_predictor(
             windows,
             alpha=alpha,
@@ -119,6 +121,7 @@ def run_sweep(
             n_blocks=n_blocks,
             direction_threshold=float(params["direction_threshold"]),
             cross_windows=cross_windows if use_cross else None,
+            feature_mode=str(mode or "single"),
         )
         trials.append({"params": dict(params), "report": report})
     return trials
