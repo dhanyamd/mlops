@@ -31,7 +31,6 @@ import math
 
 import numpy as np
 import pandas as pd
-from scipy import stats
 
 from config.logging import configure_logging, get_logger
 from config.settings import csv_list, get_settings
@@ -280,7 +279,8 @@ def main() -> None:
         ]
         print(show[cols].to_string(index=False))
         print(
-            f"\nBest Sharpe deflated for {len(all_results)} trials: {payload['best_sharpe_deflated']}"
+            f"\nBest Sharpe deflated for {len(all_results)} trials: "
+            f"{payload['best_sharpe_deflated']}"
         )
         print(f"Gate band (λ=2 × 10 bps): {payload['gate_bps']:.0f} bps net per trade")
     else:

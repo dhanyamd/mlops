@@ -208,7 +208,8 @@ def main() -> None:
         if "overnight_minus_us" in r:
             d = r["overnight_minus_us"]
             print(
-                f"overnight − US:                  {d['diff_bps']:+.1f} bps/hr  t={d['t']}  p={d['p']}"
+                "overnight − US:                  "
+                f"{d['diff_bps']:+.1f} bps/hr  t={d['t']}  p={d['p']}"
             )
         qp = r["qp_21_to_23"]
         print(
@@ -221,8 +222,10 @@ def main() -> None:
             f"{on['net_taker_bps']:+.1f} bps/day net taker (n={on['n']}, t={on['t']})"
         )
         print(
-            f"\nWeekend hourly {r['weekend_hourly']['mean_bps']:+.1f} bps (n={r['weekend_hourly']['n']}) vs "
-            f"weekday {r['weekday_hourly']['mean_bps']:+.1f} bps (n={r['weekday_hourly']['n']})"
+            f"\nWeekend hourly {r['weekend_hourly']['mean_bps']:+.1f} bps "
+            f"(n={r['weekend_hourly']['n']}) vs "
+            f"weekday {r['weekday_hourly']['mean_bps']:+.1f} bps "
+            f"(n={r['weekday_hourly']['n']})"
         )
 
 
