@@ -14,6 +14,9 @@ dbt/dbt_packages/
 dbt/logs/
 dbt/.user.yml
 
+# Iceberg lake catalog (local SQLite state — never commit)
+lake/
+
 # Test / lint caches
 .pytest_cache/
 .coverage

@@ -32,6 +32,7 @@ quant research houses (Two Sigma / Man AHL patterns).
 | **#1** | Autonomous research harness | Offline config sweep → MLflow → per-symbol leaderboards in Redis, read by the live predictor (`stream/research_harness.py`, `make stream-research`) |
 | **#2** | Data quality / SLA layer | 8 quality dimensions + lineage manifest per window, served at `/api/market/quality` (`stream/data_quality.py`, `make stream-quality`) |
 | **#3** | AWS IaC + CI + docs | MSK → Flink-on-Fargate → ElastiCache → ECS agents + UI behind an ALB; CloudWatch alarms + SNS; remote state; CI with `terraform fmt`/`validate` |
+| **#4** | Data lake (Iceberg) | The Snowflake mart is versioned to an Apache Iceberg table on S3-compatible storage (MinIO locally, real S3 on AWS) with snapshot history / time travel (`flows/lake_export.py`, `make lake-export` / `lake-query`) |
 
 Every credential and threshold comes from the environment — nothing hardcoded.
 
@@ -46,6 +47,7 @@ flowchart LR
         DBT[dbt Silver→Gold · enforced contracts]
         ING --> BRONZE[(Snowflake Bronze)]
         BRONZE --> DBT --> MART[(Snowflake Silver/Gold)]
+        MART --> LAKE[(Iceberg lake · MinIO/S3)]
     end
 
     subgraph Realtime["Realtime (Kafka protocol)"]
@@ -93,6 +95,9 @@ the dashboard honest about what is actually fresh.
   leaderboarded — not guessed.
 - **Data quality.** 8 dimensions + lineage, scored per symbol/window and served
   over the API.
+- **Data lake (Iceberg).** The mart is versioned to an open-table-format lake
+  (MinIO local / S3 AWS) with snapshot history and time travel
+  (`make lake-export`).
 - **Observability.** Per-stage freshness, self-healing watchdog, and (on AWS)
   CloudWatch alarms + SNS + a platform dashboard.
 - **Signal Terminal.** Next.js dashboard rendering the full MC visualization
@@ -263,6 +268,26 @@ curl localhost:8000/api/market/quality
 
 Warm-up is reported honestly — a fresh 1h pipeline shows volume `critical`,
 never silently ignored.
+
+### Data lake — Iceberg (Build #4)
+
+The Snowflake mart (`GOLD.FEATURES`, ...) is versioned to an **Apache Iceberg**
+table on S3-compatible object storage. Iceberg is storage-agnostic: the catalog
+(SQLite locally, JDBC/Postgres in a shared deployment) tracks schema +
+snapshots while Parquet data files live on object storage. Each export is an
+idempotent *overwrite* that adds a **new snapshot** — old snapshots stay
+readable, so the lake is versioned with time travel, not replaced. The same
+tables move to real S3 unchanged by swapping `LAKE_ENDPOINT` (the AWS IaC
+storage module already provisions the bucket).
+
+```bash
+uv sync --extra lake
+make lake-export          # GOLD.FEATURES → gold.features (new snapshot)
+make lake-query           # round-trip read back + snapshot history (time travel)
+```
+
+Credentials and the bucket come from the environment (`LAKE_ENABLED`,
+`LAKE_ACCESS_KEY`, `LAKE_SECRET_KEY`, `LAKE_BUCKET`, ...) — never hardcoded.
 
 ### Prediction promotion gate
 

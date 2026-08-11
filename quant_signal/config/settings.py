@@ -509,6 +509,33 @@ class Settings(BaseSettings):
     clickhouse_password: str = "mlops"
     clickhouse_database: str = "quant"
 
+    # ── Data lake (Iceberg on S3-compatible object storage) ─────────────────
+    # Open-table-format tier: the Snowflake mart (GOLD.FEATURES, ...) is
+    # versioned to an Apache Iceberg table on MinIO/S3. Iceberg is storage-
+    # agnostic, so the exact same tables run on real S3 later by swapping the
+    # endpoint — the AWS Terraform's storage module already provisions the
+    # bucket (infra/terraform/modules/storage). Catalog backend is a SQLAlchemy
+    # URI: SQLite for local dev, a JDBC/Postgres URI for a shared catalog.
+    lake_enabled: bool = False
+    # S3-compatible endpoint (HTTP URL — MinIO/S3 path-style addressing is
+    # derived from the host; never prefix with s3://).
+    lake_endpoint: str = "http://localhost:9000"
+    # Credentials for the object store (MinIO root user in dev; IAM keys in AWS).
+    lake_access_key: str | None = Field(default=None, repr=False)
+    lake_secret_key: str | None = Field(default=None, repr=False)
+    lake_region: str = "us-east-1"
+    # Bucket that holds the Iceberg warehouse (created idempotently on export).
+    lake_bucket: str = "quant-lake"
+    # Iceberg warehouse URI = the bucket root; tables land at
+    # s3://{lake_bucket}/{namespace}/{table}.
+    lake_namespace: str = "gold"
+    lake_table_features: str = "features"
+    # Catalog database file (SQLite). Absolute under the project so it works
+    # from any CWD; the whole lake/ dir is gitignored as local state.
+    lake_catalog_uri: str = Field(
+        default_factory=lambda: f"sqlite:///{PROJECT_ROOT}/lake/catalog.db"
+    )
+
     @property
     def has_bybit_demo_credentials(self) -> bool:
         return bool(
@@ -555,6 +582,11 @@ class Settings(BaseSettings):
             raise ValueError(
                 "Snowflake auth requires either SNOWFLAKE_PASSWORD or "
                 "SNOWFLAKE_PRIVATE_KEY_FILE to be set"
+            )
+        if self.lake_enabled and (not self.lake_access_key or not self.lake_secret_key):
+            raise ValueError(
+                "LAKE_ENABLED=true requires LAKE_ACCESS_KEY and LAKE_SECRET_KEY "
+                "to be set (the object-store credentials)"
             )
         return self
 

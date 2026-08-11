@@ -53,6 +53,14 @@ features: ## Compute rolling/as-of features over BRONZE bars -> GOLD.FEATURES (n
 features-spark: ## Same batch via PySpark (needs Java 17+; connector JAR auto-fetched by Spark)
 	$(ENV) $(PYTHON) python flows/feature_engineering.py --source snowflake
 
+## Data lake (Iceberg on MinIO/S3) ─────────────────────────────────────────────
+
+lake-export: ## Version the Snowflake mart to an Iceberg table on MinIO (needs `lake` extra)
+	$(ENV) $(PYTHON) python flows/lake_export.py --mode export
+
+lake-query: ## Round-trip verify: read the Iceberg table back + show snapshot history
+	$(ENV) $(PYTHON) python flows/lake_export.py --mode verify
+
 ## dbt ────────────────────────────────────────────────────────────────────────
 
 dbt-deps: ## Install dbt packages (dbt_expectations, elementary)
