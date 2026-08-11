@@ -10,6 +10,11 @@ Design principles (prod engineer):
 - **Observable.** Every call logs JSON with ``elapsed_ms`` and ``query_tag``.
 - **Idempotent helpers.** ``upsert_df`` (MERGE) for incremental pipelines,
   ``insert_df`` append for raw landing.
+- **Bounded retry on idempotent writes only.** Transient stage-upload failures
+  (e.g. connector 253003 "exceeded maximum retries", ECONNRESET) are retried
+  with exponential backoff + full jitter. Retries are safe *only* for the
+  atomic, idempotent write paths — reads and ``execute`` are never retried so
+  a half-applied DELETE/UPDATE can never be replayed.
 
 Supports password, password+MFA (TOTP with token caching), and key-pair (JWT)
 authentication.
@@ -17,13 +22,15 @@ authentication.
 
 from __future__ import annotations
 
+import functools
 import getpass
 import os
+import random
 import re
 import sys
 import time
 from contextlib import contextmanager
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator, TypeVar
 
 import pandas as pd
 import snowflake.connector
@@ -49,6 +56,64 @@ def _validate_identifier(name: str) -> str:
 def _q(name: str) -> str:
     """Quote a validated, uppercased identifier."""
     return f'"{_validate_identifier(name).upper()}"'
+
+
+# Transient stage-upload failures the connector retries internally until it
+# gives up (e.g. errno 253003 "exceeded maximum retries" on PUT/GET, ECONNRESET).
+# The connector's retry *cap* isn't configurable via connect() args
+# (``backoff_policy`` only stretches the wait between attempts), so production
+# callers bound a jittered retry at the application layer. Safe only for the
+# atomic, idempotent write helpers below — reads/``execute`` are never wrapped.
+_RETRY_BASE_S = 2.0
+_RETRY_CAP_S = 30.0
+_MAX_WRITE_RETRIES = 4
+_STAGE_UPLOAD_ERRNO = 253003
+
+_T = TypeVar("_T")
+
+
+def _is_transient(exc: BaseException) -> bool:
+    """True for network-class failures that are safe to retry."""
+    errno = getattr(exc, "errno", None)
+    if errno == _STAGE_UPLOAD_ERRNO:
+        return True
+    msg = str(exc)
+    if "253003" in msg:
+        return True
+    return isinstance(exc, (ConnectionError, TimeoutError, OSError))
+
+
+def retry_transient_writes(fn: Callable[..., _T]) -> Callable[..., _T]:
+    """Retry an atomic, idempotent write on transient network failure.
+
+    Exponential backoff with full jitter between attempts. Fails fast on
+    non-transient errors and never retries beyond ``_MAX_WRITE_RETRIES``
+    (bounded latency; an idempotent MERGE/temp-table write is safe to replay).
+    """
+
+    @functools.wraps(fn)
+    def wrapper(self: SnowflakeClient, *args: Any, **kwargs: Any) -> _T:
+        last: BaseException | None = None
+        for attempt in range(_MAX_WRITE_RETRIES + 1):
+            try:
+                return fn(self, *args, **kwargs)
+            except Exception as exc:
+                last = exc
+                if not _is_transient(exc) or attempt >= _MAX_WRITE_RETRIES:
+                    raise
+                delay = random.uniform(0, min(_RETRY_CAP_S, _RETRY_BASE_S * (2**attempt)))
+                log.warning(
+                    "snowflake_transient_write_retry",
+                    attempt=attempt + 1,
+                    delay_s=round(delay, 2),
+                    error=str(exc)[:300],
+                )
+                time.sleep(delay)
+        if last is not None:
+            raise last
+        raise RuntimeError("retry loop exited without a result")  # pragma: no cover
+
+    return wrapper
 
 
 class SnowflakeClient:
@@ -181,6 +246,7 @@ class SnowflakeClient:
 
     # ── Writes ───────────────────────────────────────────────────────────────
 
+    @retry_transient_writes
     def insert_df(
         self,
         df: pd.DataFrame,
@@ -192,6 +258,10 @@ class SnowflakeClient:
         bulk_upload_chunks: bool = False,
     ) -> int:
         """Append a DataFrame into ``{database}.{schema}.{table_name}``.
+
+        Wrapped in a bounded jittered retry for transient stage-upload
+        failures (``retry_transient_writes``) — a staged append is atomic.
+
 
         Uses ``write_pandas`` (staged upload → COPY INTO). Empty input is a
         no-op. Returns rows written; raises if Snowflake reports failure.
@@ -237,6 +307,7 @@ class SnowflakeClient:
         )
         return int(nrows)
 
+    @retry_transient_writes
     def upsert_df(
         self,
         df: pd.DataFrame,
@@ -248,6 +319,10 @@ class SnowflakeClient:
         temp_table: str | None = None,
     ) -> int:
         """Idempotent incremental load: MERGE into an existing table.
+
+        Wrapped in a bounded jittered retry for transient stage-upload
+        failures (``retry_transient_writes``) — the temp-table → MERGE → drop
+        sequence is atomic and safe to replay.
 
         - Table is created on first run (schema inferred from the DataFrame).
         - ``merge_keys`` decide MATCHED (UPDATE) vs NOT MATCHED (INSERT).

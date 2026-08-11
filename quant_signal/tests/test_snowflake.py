@@ -313,3 +313,86 @@ def test_split_statements_ignores_semicolons_inside_comments() -> None:
         "CREATE DATABASE IF NOT EXISTS QUANT",
         "CREATE WAREHOUSE IF NOT EXISTS QUANT_WH\n    WITH WAREHOUSE_SIZE = 'XSMALL'",
     ]
+
+
+# ── Transient write retry (prod hardening: 253003 PUT/GET stage uploads) ─────
+
+
+def _fast_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sfmod, "_RETRY_BASE_S", 0.001)
+    monkeypatch.setattr(sfmod, "_RETRY_CAP_S", 0.001)
+
+
+def _transient_error() -> sf.errors.OperationalError:
+    return sf.errors.OperationalError(msg="PUT failed for exceeding maximum retries", errno=253003)
+
+
+def test_upsert_retries_transient_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fast_retry(monkeypatch)
+    calls: list[str] = []
+
+    def fake_write_pandas(conn, df, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append(kwargs["table_name"])
+        if len(calls) <= 2:
+            raise _transient_error()
+        return (True, 1, len(df), [])
+
+    monkeypatch.setattr(sfmod, "write_pandas", fake_write_pandas)
+    _record(monkeypatch)
+
+    df = pd.DataFrame({"symbol": ["AAPL"], "ts": [pd.Timestamp("2026-01-01")], "close": [150.0]})
+    n = SnowflakeClient(_settings()).upsert_df(df, "equity_bars", merge_keys=["symbol", "ts"])
+    assert n == 1
+    assert len(calls) == 3
+
+
+def test_upsert_exhausts_transient_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fast_retry(monkeypatch)
+    calls: list[str] = []
+
+    def fake_write_pandas(conn, df, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append(kwargs["table_name"])
+        raise _transient_error()
+
+    monkeypatch.setattr(sfmod, "write_pandas", fake_write_pandas)
+    _record(monkeypatch)
+
+    df = pd.DataFrame({"symbol": ["AAPL"], "ts": [pd.Timestamp("2026-01-01")], "close": [150.0]})
+    with pytest.raises(sf.errors.OperationalError):
+        SnowflakeClient(_settings()).upsert_df(df, "equity_bars", merge_keys=["symbol", "ts"])
+    assert len(calls) == sfmod._MAX_WRITE_RETRIES + 1
+
+
+def test_non_transient_error_never_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    def fake_write_pandas(conn, df, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append(kwargs["table_name"])
+        raise ValueError("bad data")
+
+    monkeypatch.setattr(sfmod, "write_pandas", fake_write_pandas)
+    _record(monkeypatch)
+
+    df = pd.DataFrame({"symbol": ["AAPL"], "ts": [pd.Timestamp("2026-01-01")], "close": [150.0]})
+    with pytest.raises(ValueError):
+        SnowflakeClient(_settings()).upsert_df(df, "equity_bars", merge_keys=["symbol", "ts"])
+    assert len(calls) == 1
+
+
+def test_insert_retries_transient_stage_upload(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fast_retry(monkeypatch)
+    calls: list[str] = []
+
+    def fake_write_pandas(conn, df, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append(kwargs["table_name"])
+        if len(calls) == 1:
+            raise _transient_error()
+        return (True, 1, len(df), [])
+
+    monkeypatch.setattr(sfmod, "write_pandas", fake_write_pandas)
+    _record(monkeypatch)
+
+    df = pd.DataFrame({"symbol": ["AAPL"], "close": [150.0]})
+    n = SnowflakeClient(_settings()).insert_df(df, "equity_bars")
+    assert n == 1
+    assert len(calls) == 2
