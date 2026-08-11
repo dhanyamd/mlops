@@ -319,6 +319,21 @@ curl localhost:8000/api/market/validation/BTCUSDT?track=true   # → MLflow
 curl localhost:8000/api/market/gate/BTCUSDT
 ```
 
+The gate needs ≥ `stream_gate_min_windows` (default 100) scored windows before
+it can even pass the warm-up. The live Flink 1h job starts from Kafka's
+`latest-offset` after a heal, so the online store only accrues windows going
+forward — a fresh pipeline would take ~4 days to warm up. Seed the store from
+the Snowflake engine of record (the same Bybit minute bars Flink consumes,
+aggregated to the identical TUMBLE(1H) OHLCV+VWAP windows):
+
+```bash
+make stream-backfill-windows   # or: python -m scripts.backfill_feature_windows [--dry-run]
+```
+
+Idempotent: each symbol's key is atomically rebuilt with the newest
+`stream_redis_feature_maxlen` (200) closed windows, and the live materializer
+keeps appending new windows afterward.
+
 ### Pipeline health + watchdog
 
 - `GET /api/market/health/summary` → per-stage freshness (produce / features /

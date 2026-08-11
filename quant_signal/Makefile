@@ -124,6 +124,9 @@ stream-watchdog: ## Detect a stalled Flink pipeline (features behind raw bars); 
 stream-research: ## Sweep the predictor's config grid offline; persist per-symbol leaderboards
 	$(ENV) $(PYTHON) python -m scripts.run_research
 
+stream-backfill-windows: ## Seed the online store's 1h feature history from Snowflake BRONZE (idempotent)
+	$(ENV) $(PYTHON) python -m scripts.backfill_feature_windows
+
 stream-quality: ## Score every symbol's window history + lineage; persist quality summaries
 	$(ENV) $(PYTHON) python -m scripts.run_quality
 
