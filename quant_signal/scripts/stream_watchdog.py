@@ -23,9 +23,12 @@ Run as a loop:  uv run python -m scripts.stream_watchdog --interval 60 --fix
 from __future__ import annotations
 
 import argparse
+import os
+import shutil
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 from config.logging import configure_logging, get_logger
 from config.settings import get_settings
@@ -33,6 +36,42 @@ from stream.kv import KVStore, RedisKV
 from stream.materializer import feature_key, live_key
 
 logger = get_logger(__name__)
+
+# Last-heal timestamp persisted across process restarts (launchd keeps the
+# daemon alive, and restarting must not reset the cooldown or it would re-heal
+# the just-started jobs immediately).
+HEAL_STATE_FILE = Path("/tmp/stream_watchdog_last_heal")
+
+
+def _docker() -> str:
+    """Resolve the docker CLI for launchd-spawned processes.
+
+    launchd runs jobs with a minimal PATH (no /usr/local/bin), so a subprocess
+    call to bare ``docker`` raises FileNotFoundError — which is exactly how the
+    watchdog silently stopped healing the stalled Flink pipeline for hours while
+    every staleness check looked like a heal attempt. Augment PATH with the
+    common macOS docker locations before resolving.
+    """
+    candidates = [os.path.expanduser("~/.local/bin"), "/usr/local/bin", "/opt/homebrew/bin"]
+    existing = os.environ.get("PATH", "")
+    os.environ["PATH"] = (
+        os.pathsep.join([p for p in candidates if p not in existing]) + os.pathsep + existing
+    )
+    docker_bin = shutil.which("docker")
+    if docker_bin is None:
+        raise RuntimeError("docker not found on PATH — cannot heal the Flink pipeline")
+    return docker_bin
+
+
+def _last_heal_ts() -> float | None:
+    try:
+        return float(HEAL_STATE_FILE.read_text().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _mark_healed() -> None:
+    HEAL_STATE_FILE.write_text(f"{time.time()}\n")
 
 
 def staleness_seconds(
@@ -76,6 +115,7 @@ def heal_flink() -> None:
     offsets is per-job.
     """
     settings = get_settings()
+    docker_bin = _docker()
     jm = settings.stream_flink_jobmanager_container
     tm = settings.stream_flink_taskmanager_container
     rp = settings.stream_redpanda_container
@@ -85,26 +125,31 @@ def heal_flink() -> None:
     ]
 
     # Cancel any running SQL jobs (best-effort; the jobs may already be gone).
+    # The jobmanager image ships only curl/sed/grep (no python3/jq), and this
+    # Flink reports jids as "jid" in the overview, so parse the JSON with
+    # sed/grep rather than a python one-liner (which silently no-oped before).
     _subprocess(
         [
-            "docker",
+            docker_bin,
             "exec",
             jm,
             "bash",
             "-c",
-            "for j in $(curl -s http://localhost:8081/jobs/overview | python3 -c "
-            '\'import json,sys;print(" ".join(j["jid"] for j in json.load(sys.stdin)["jobs"] if j["state"]=="RUNNING"))\' '  # noqa: E501
-            "); do curl -s -X PATCH http://localhost:8081/jobs/$j?mode=cancel; done",
+            "for j in $(curl -s http://localhost:8081/jobs/overview | "
+            "sed 's/}/}\\n/g' | grep '\"state\":\"RUNNING\"' | "
+            'grep -oE \'"[a-z]*id":"[0-9a-f]*"\' | '
+            'sed -E \'s/"[a-z]*id":"([0-9a-f]*)"/\\1/\'); do '
+            'curl -s -X PATCH "http://localhost:8081/jobs/$j?mode=cancel"; done',
         ]
     )
     for group, _ in jobs:
-        _subprocess(["docker", "exec", rp, "rpk", "group", "delete", group])
-    _subprocess(["docker", "restart", jm, tm])
+        _subprocess([docker_bin, "exec", rp, "rpk", "group", "delete", group])
+    _subprocess([docker_bin, "restart", jm, tm])
     time.sleep(20)
     for _, sql_path in jobs:
         _subprocess(
             [
-                "docker",
+                docker_bin,
                 "exec",
                 jm,
                 "bash",
@@ -135,8 +180,19 @@ def run_once(kv: KVStore, *, threshold: float, fix: bool) -> bool:
     for symbol, stale in stale_symbols:
         logger.error("STREAM STALE for %s: features %d s behind raw bars", symbol, int(stale))
     if fix:
-        logger.warning("healing Flink pipeline…")
-        heal_flink()
+        cooldown = settings.stream_watchdog_heal_cooldown_seconds
+        last_heal = _last_heal_ts()
+        if last_heal is not None and time.time() - last_heal < cooldown:
+            logger.warning(
+                "heal skipped (cooldown): last heal %.0fs ago < %ds — waiting for "
+                "the restarted windows to emit before considering another heal",
+                time.time() - last_heal,
+                cooldown,
+            )
+        else:
+            logger.warning("healing Flink pipeline…")
+            heal_flink()
+            _mark_healed()
     return True
 
 

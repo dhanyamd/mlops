@@ -45,6 +45,7 @@ def test_stream_venue_and_watchdog_defaults(monkeypatch: pytest.MonkeyPatch) -> 
 
     assert s.stream_venue == "binance"
     assert s.stream_watchdog_staleness_threshold_seconds == 7200.0
+    assert s.stream_watchdog_heal_cooldown_seconds == 900.0
     assert s.stream_flink_consumer_group == "flink-crypto-features-1h"
     assert s.stream_flink_sql_path == "/opt/flink/jobs/crypto_features_1h.sql"
     assert s.stream_flink_consumer_group_5m == "flink-crypto-features"

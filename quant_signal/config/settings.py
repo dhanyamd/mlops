@@ -159,6 +159,12 @@ class Settings(BaseSettings):
     # (a healthy 1h pipeline sits 0–60min behind the in-progress raw bar, so
     # the threshold must clear a full hour plus margin).
     stream_watchdog_staleness_threshold_seconds: float = 7200.0
+    # Minimum gap between automatic Flink heals. After a heal the jobs restart
+    # from ``latest-offset``, so the first 1h window cannot fire until the next
+    # hour boundary (up to ~10 min with the watermark). Without this cooldown the
+    # watchdog re-heals every interval, killing the just-started jobs before they
+    # emit anything — a destructive feedback loop that keeps the pipeline down.
+    stream_watchdog_heal_cooldown_seconds: float = 900.0
     # Venue (source exchange) for the live stream: the provider built by name
     # from the registry and stamped on every raw bar's ``provider`` field.
     stream_venue: str = "binance"
