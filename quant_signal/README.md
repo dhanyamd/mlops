@@ -5,6 +5,12 @@ a **Kafka → Flink → Redis realtime layer**, research-driven model validation
 and data quality enforced at every stage. Designed like the data platforms of
 quant research houses (Two Sigma / Man AHL patterns).
 
+It ends in a **live market-neutral book placing real orders on a demo venue**,
+and — the part most platforms cannot demonstrate — a **deploy gate that proves
+the live system is running the strategy that was validated**: 0 direction
+mismatches across 4,480 checks, look-ahead leak of 0.00e+00 on every factor,
+and live feeds reconciled to the research caches at 0.000e+00.
+
 **Status:** full build, running locally and deployed to AWS via Terraform.
 
 ---
@@ -14,14 +20,17 @@ quant research houses (Two Sigma / Man AHL patterns).
 1. [Build log](#build-log)
 2. [Architecture](#architecture)
 3. [Key capabilities](#key-capabilities)
-4. [Technology stack](#technology-stack)
-5. [Repository layout](#repository-layout)
-6. [Getting started](#getting-started)
-7. [Local runbook](#local-runbook)
-8. [AWS deployment](#aws-deployment)
-9. [Continuous integration](#continuous-integration)
-10. [Design principles](#design-principles)
-11. [Notes & references](#notes--references)
+4. [Data infrastructure: storage, transport, failure modes](#data-infrastructure-storage-transport-and-failure-modes)
+5. [Two strategies, one execution path](#two-strategies-one-execution-path)
+6. [Research ↔ production parity](#research--production-parity)
+7. [Technology stack](#technology-stack)
+8. [Repository layout](#repository-layout)
+9. [Getting started](#getting-started)
+10. [Local runbook](#local-runbook)
+11. [AWS deployment](#aws-deployment)
+12. [Continuous integration](#continuous-integration)
+13. [Design principles](#design-principles)
+14. [Notes & references](#notes--references)
 
 ---
 
@@ -33,6 +42,8 @@ quant research houses (Two Sigma / Man AHL patterns).
 | **#2** | Data quality / SLA layer | 8 quality dimensions + lineage manifest per window, served at `/api/market/quality` (`stream/data_quality.py`, `make stream-quality`) |
 | **#3** | AWS IaC + CI + docs | MSK → Flink-on-Fargate → ElastiCache → ECS agents + UI behind an ALB; CloudWatch alarms + SNS; remote state; CI with `terraform fmt`/`validate` |
 | **#4** | Data lake (Iceberg) | The Snowflake mart is versioned to an Apache Iceberg table on S3-compatible storage (MinIO locally, real S3 on AWS) with snapshot history / time travel (`flows/lake_export.py`, `make lake-export` / `lake-query`) |
+| **#5** | Live strategy path + feed reconciliation | A market-neutral weekly book (SRP) trading real orders on a demo venue, fed by two new keyless feeds (`stream/intraday_feed.py`, `stream/positioning_feed.py`) that were **reconciled field-by-field against the research caches to 0.000e+00** before being trusted (`stream/srp_live.py`) |
+| **#6** | Research↔production parity gate + trial registry | A deploy gate that fails the **build** rather than the P&L when live and research disagree (`scripts/srp_parity.py`), plus an append-only experiment registry so multiple-testing corrections read a measured trial count instead of a remembered one (`scripts/trial_registry.py`) |
 
 Every credential and threshold comes from the environment — nothing hardcoded.
 
@@ -78,6 +89,43 @@ The API reads from Redis (<500 ms, never touching Kafka or Snowflake); a stream
 watchdog auto-heals a stalled Flink pipeline and a pipeline-health strip keeps
 the dashboard honest about what is actually fresh.
 
+### Who actually produces each topic
+
+Two producers feed the feature bus, and knowing which is which matters — a
+topic that is *fresh* is not necessarily fresh *from the source you assume*.
+Verified by consuming each topic and checking the VWAP signature (Flink computes
+a true volume-weighted price; the feed publishes a typical price):
+
+| Topic | Producer | State |
+|---|---|---|
+| `crypto.bars.raw` | `stream/producer` | live — 1-min venue bars |
+| `crypto.features.5m` | **Flink SQL** | live — volume-weighted VWAP |
+| `crypto.features.1h` | **`stream/feature_feed.py`** | live — 20/20 sampled messages carry the feed's signature, none Flink's |
+
+**The hourly path bypasses Flink**, and that was a deliberate response to a real
+outage. The 1h river stalled while every process still reported healthy: nothing
+crashed, no error was logged, and the dashboard rendered a `window_end`
+**312 days** in the past. A pipeline producing nothing looks identical to one
+that is merely quiet.
+
+`stream/feature_feed.py` is therefore the hourly upstream: it fetches completed
+1h bars from the venue's keyless public endpoint and publishes them to
+`crypto.features.1h` in the **exact Flink schema**, field for field, so every
+downstream consumer runs unchanged. Flink continues to serve the 5-minute
+windows. Two defences were added at the same time:
+
+- a **staleness guard** in the signal path, so a bar whose `window_end` is older
+  than a bounded age can never trigger a rebalance;
+- **per-symbol venue-category discovery** — `BTCUSDT` exists as both spot and
+  linear perp while `RLCUSDT`/`STORJUSDT`/`XMRUSDT` are perp-only, so hardcoding
+  either choice starves half the universe (measured: 1 of 6 test symbols
+  fetching). The category is discovered on first use and remembered.
+
+The generalisable lesson: **liveness has to be asserted against a clock, not
+inferred from the absence of errors** — and "which producer wrote this?" is a
+question worth being able to answer, which is why the table above was verified
+by inspecting message contents rather than by trusting the architecture diagram.
+
 ---
 
 ## Key capabilities
@@ -88,9 +136,13 @@ the dashboard honest about what is actually fresh.
   enforced column contracts (`make bootstrap`, `make dbt-run`).
 - **Realtime.** Redpanda (Kafka API) → Flink SQL event-time windows → Redis
   online store; the same broker protocol runs on AWS MSK.
-- **Online prediction.** River online learner with conformal intervals + Monte
-  Carlo simulation; a **promotion gate** (progressive validation + Deflated
-  Sharpe) decides honestly whether a model may trade.
+- **Online prediction (the first approach).** River online learner with conformal
+  intervals + Monte Carlo simulation; a **promotion gate** (progressive
+  validation + Deflated Sharpe) decides honestly whether a model may trade.
+  It still runs — but it is no longer what trades. See below.
+- **Systematic factor strategy (what trades today).** A market-neutral weekly
+  long/short book over ~112 perpetuals, built from eleven factors and validated
+  out-of-sample before deployment.
 - **Research harness.** Hyperparameters are swept, tracked to MLflow, and
   leaderboarded — not guessed.
 - **Data quality.** 8 dimensions + lineage, scored per symbol/window and served
@@ -103,6 +155,177 @@ the dashboard honest about what is actually fresh.
 - **Signal Terminal.** Next.js dashboard rendering the full MC visualization
   stack (forward fan, equity fan, pass-probability landscape, drawdown/terminal
   distributions).
+
+### Data infrastructure: storage, transport, and failure modes
+
+Two pipelines feed the strategy, and they are engineered to different contracts.
+
+**Offline path — builds history, optimised for completeness.**
+
+```
+data.binance.vision (bulk archive)  +  keyless Binance/Bybit REST
+   │
+   ├─ scripts/backfill/backfill_ohlcv.py ────────→ hourly bars, resampled to weekly
+   ├─ scripts/backfill_intraday_features.py ────→ 1h AND 5m klines reduced to ONE
+   │                                               record per UTC day
+   └─ scripts/backfill/backfill_positioning.py ─→ futures metrics (open interest,
+                                                   long/short ratios), daily
+```
+
+**Online path — extends that history, optimised for freshness.**
+
+```
+Bybit keyless REST → stream/feature_feed.py → Kafka (crypto.features.1h)
+                                                 │
+   stream/asym_signal.py ◄────────────────────────┘   consumes the bus,
+      │                                                maintains a weekly registry
+      └─ stream/srp_live.py ── seeds from the offline caches, appends live via
+                               intraday_feed.py + positioning_feed.py
+                                                 │
+   Redis (prediction:crypto:asym:1h) ◄───────────┘
+      │
+   stream/execution.py + bybit_demo.py → REAL orders (maker-first, market fallback)
+      │
+   Redis (execution:crypto:1h) → FastAPI :8000 → Next.js :3000
+```
+
+**Why each store.** The feature bus is **Kafka** because it is a replayable log —
+a consumer can be restarted and re-read from an offset, which matters when the
+signal daemon crashes mid-window. The signal→execution handoff is **Redis**
+because execution needs the *current* target, not the history; a key-value read
+is the right primitive and keeps the API under 500 ms without touching Kafka or
+the warehouse. **Snowflake and the Iceberg lake are not in the crypto trading
+path at all** — they serve the batch/equities side (Yahoo, EDGAR, FRED, Alpaca).
+
+**The seed-and-extend problem.** Live REST surfaces expose roughly 30 days of
+positioning history; the strategy needs 52 weeks of trailing data per symbol. So
+live history is *seeded* from the offline caches and extended forward. That join
+is only sound if both sources measure the same quantity, which was verified
+rather than assumed — **0.000e+00 across 7 fields over 26 days.** Reaching that
+number required fixing two real defects:
+
+| Defect | Why it was invisible | Fix |
+|---|---|---|
+| Partial-day bars | the current day always has fewer bars than a complete one, so the reduction silently differed between live and research | require a full bar count per interval before emitting a day |
+| REST/archive timestamp offset | REST stamps a window at its **end**; the bulk archive labels by occurrence — a clean one-period shift that looked like plausible data | subtract one period on the REST path |
+
+**Failure modes this pipeline is built against**, each learned from an outage:
+
+- **Silent starvation.** A producer that stops writing looks exactly like a quiet
+  market. Liveness is asserted against a wall clock — a bar older than a bounded
+  age cannot trigger a rebalance, and staleness is surfaced on a health strip
+  rather than inferred from an absence of errors.
+- **Wrong-venue lookups.** `BTCUSDT` exists as both spot and linear perp;
+  `RLCUSDT`, `STORJUSDT` and `XMRUSDT` are perp-only. Hardcoding either category
+  starved the universe (measured: 1 of 6 symbols fetching). Category is now
+  **discovered per symbol** on first use and cached.
+- **State latched on failure.** A transient all-FLAT selection once froze the
+  book for a full week because the failure was latched as if it were a decision.
+  Only a non-FLAT selection is now latched.
+- **Throughput mistaken for breakage.** A 76-symbol book filling alphabetically
+  looks stalled. Poll budgets are configurable rather than fixed (19 min → 5 min
+  for a full cycle), and partial fills are reported as progress, not failure.
+
+**Deployment.** Locally the daemons run under **launchd** (`com.quantsignal.*`),
+each with its own environment and restart policy. On AWS the same processes run
+as **ECS Fargate** services against **MSK** and **ElastiCache**, defined in
+Terraform with remote state.
+
+### Two strategies, one execution path
+
+The platform started by trying to **predict returns** with an online learner, and
+now trades a **systematic factor strategy** instead. Both still run; only one
+places orders, and which one is a single environment variable:
+
+```
+stream/predictor.py    River online learner  → prediction:crypto:1h:*        (102 keys)
+stream/asym_signal.py  SRP factor strategy   → prediction:crypto:asym:1h:*   (105 keys)
+                                                        │
+                            STREAM_STRATEGY=asym ───────┘
+                                                        ▼
+stream/execution.py  ──→  REAL orders  ──→  execution:crypto:1h:*  (shared ledger)
+```
+
+**Why the switch.** The online learner is asked to forecast a single asset's
+return — the hardest version of the problem, and the one Gu, Kelly & Xiu (2020)
+show is weakest. The factor book never forecasts a return at all: it ranks assets
+and holds a dollar-neutral spread, so it only needs the *ordering* to be right.
+Neither model was allowed to trade on a hunch; the learner had to clear the
+promotion gate, and the factor book had to clear out-of-sample validation and the
+parity gate.
+
+**Why the learner still runs.** It writes to its own prefix, so it produces a
+continuous live comparison against the strategy that trades — an A/B arm at zero
+risk. The execution ledger stays on the shared `execution:crypto:1h` key, so the
+dashboard is unchanged regardless of which signal is promoted.
+
+That indirection is the point: **swapping the live strategy is a config change,
+not a rewrite.** Nothing downstream of the prediction key knows or cares which
+model produced it.
+
+---
+
+## Research ↔ production parity
+
+The most expensive failure in a quant platform is not a crash. It is a live
+system that trades **something other than what was validated**, while every
+dashboard reports success. This repository has hit that failure twice, so the
+defence against it is built in rather than bolted on.
+
+**What went wrong, both times.** A streaming reimplementation of the book drifted
+to **0.147 rank correlation** against research with **27% selection overlap** —
+chance is ~20%. It had been trading a different strategy for weeks. Separately, a
+look-ahead bug survived for months because research and live called the *same
+wrong helper*: `df.apply(_rank_z)` uses pandas' default `axis=0`, so each week
+was ranked against that symbol's **entire history, future included**. Deleting
+future rows changed a historical score for **98 of 112 symbols**. Both
+implementations agreed perfectly — on the wrong answer.
+
+**Defence 1 — one strategy, one implementation.** `scripts/srp_strategy.py` is a
+pure function: frames in, target weights out. No I/O, no globals, no environment
+reads. Research and the live daemon both call it; neither reimplements it.
+
+**Defence 2 — a gate that fails the build, not the P&L.** `scripts/srp_parity.py`
+exits non-zero, so it can block a deploy:
+
+```
+universe 112 symbols, 363 weeks
+  1. point-in-time     leak 0.00e+00 on every factor
+  2. determinism       identical inputs -> identical weights
+  3. neutrality        max |net| 9.02e-17 ; gross bounded by 2.0
+  4. no silent empty   308 rebalances built, active on 282
+  5. research == live  0 direction mismatches / 4,480
+=== 0 FAIL ===
+```
+
+Assertion 1 catches look-ahead by recomputing a historical score with future rows
+deleted and requiring an exact match. Assertion 4 exists because a config bug
+once produced an all-FLAT book that **looked like a clean run** — a test suite
+that cannot distinguish "correct" from "did nothing" is not a test suite.
+
+**Defence 3 — feeds reconciled before they are trusted.** The live path seeds
+history from research caches and extends it with live REST. That join is only
+valid if both sources measure the same thing, so it was verified rather than
+assumed — **0.000e+00 across 7 fields over 26 days**. Getting there surfaced two
+real defects:
+
+| Defect | Symptom | Fix |
+|---|---|---|
+| Partial-day bars | live/research divergence on the current day | require a complete bar count per interval before emitting |
+| REST/archive day offset | positioning silently one day stale | REST stamps at interval **end**, the archive labels by occurrence — subtract one period |
+
+**Defence 4 — measured beats remembered.** `scripts/trial_registry.py` is an
+append-only JSONL log — config hash, Sharpe, observation count, git SHA — written
+by the code that runs each backtest. Multiple-testing corrections then read the
+trial count and dispersion **from executed runs** rather than from a number a
+researcher typed. This exists because an audit found four headline figures in
+this repo with no artifact behind them at all; one turned out to be a pair of
+tail-index statistics copied from a document about an unrelated strategy.
+
+Point-in-time discipline is enforced by `scripts/factor_core.py`, which
+separates the two ranking primitives that had been silently conflated:
+`xs_rank` (within one date, cannot leak) and `ts_rank_pit` (trailing window,
+ends at the current bar), with `leak_test` as the guard for any new factor.
 
 ---
 
@@ -137,11 +360,27 @@ quant_signal/
 ├── dbt/                     # dbt project: profiles, contracts, silver/gold models
 ├── stream/                  # realtime: producer, materializer, predictor, simulation,
 │   │                        #   quality, research harness, watchdog, flink jobs
+│   ├── feature_feed.py      #   REAL upstream for crypto.features.1h (replaces the dead river)
+│   ├── intraday_feed.py     #   1h/5m bars -> daily factor inputs (same reducer as research)
+│   ├── positioning_feed.py  #   keyless venue metrics REST (OI, long/short ratios)
+│   ├── srp_live.py          #   live book: data plumbing ONLY, strategy logic never duplicated
 │   └── flink/               # Dockerfile + crypto_features.sql (5m/1h windows)
 ├── api/                     # FastAPI: /api/market/*, /pead, /fundamentals, /ws/market
 ├── ui/                      # Next.js Signal Terminal
 ├── infra/terraform/         # AWS IaC: modules + environments/dev (S3 backend, runbook)
+├── tools/                   # one-off operational utilities (position cleanup, validators)
 ├── scripts/                 # thin CLIs: ping, run_dbt, run_research, run_quality, watchdog…
+│   ├── backfill/            #   data acquisition CLIs (archive pulls, positioning, funding)
+│   ├── probes/              #   exploratory / diagnostic scripts — NOT part of any pipeline
+│   ├── srp_strategy.py      #   THE strategy — one pure function, shared by research + live
+│   ├── factor_core.py       #   point-in-time primitives (xs_rank / ts_rank_pit) + leak_test
+│   ├── srp_backtest.py      #   committed evaluator; every result is re-runnable
+│   ├── srp_parity.py        #   DEPLOY GATE — non-zero exit on research/live divergence
+│   ├── srp_sweep.py         #   executes the search space, logs every cell (incl. failures)
+│   ├── trial_registry.py    #   append-only experiment log: config hash, Sharpe, git SHA
+│   ├── srp_dsr.py           #   multiple-testing correction, inputs READ from the registry
+│   ├── srp_walkforward.py   #   walk-forward + 7-anchor rebalance-timing-luck
+│   └── srp_ablation.py      #   paired / best-of-grid / main-effects decomposition
 ├── tests/                   # hermetic tests — no live DB required
 ├── Dockerfile               # app image (agents + API)
 ├── docker-compose.yml       # redpanda + redis + flink-jobmanager/taskmanager
@@ -344,6 +583,34 @@ keeps appending new windows afterward.
 make stream-watchdog          # or: python -m scripts.stream_watchdog --interval 60 --fix
 ```
 
+### Reproduce the validation
+
+Every claim in this repository is behind a script. Nothing below needs a
+Snowflake account, an API key, or a paid data feed:
+
+```bash
+# 1. The deploy gate. Non-zero exit if research and live disagree.
+uv run python -m scripts.srp_parity
+
+# 2. The backtest itself, net of funding and liquidity-scaled maker costs.
+uv run python -m scripts.srp_backtest
+
+# 3. Out-of-sample: config chosen on trailing data only, scored on unseen blocks,
+#    then repeated on all seven weekday rebalance anchors.
+uv run python -m scripts.srp_walkforward --mode both
+
+# 4. Which construction choice earns what — paired, best-of-grid, main effects.
+uv run python -m scripts.srp_ablation
+
+# 5. Multiple-testing correction, N and dispersion read from the trial registry.
+uv run python -m scripts.trial_registry     # inspect what was actually executed
+uv run python -m scripts.srp_dsr
+```
+
+The full research record — every number labelled `[VERIFIED]`, `[PENDING]`, or
+`[UNVERIFIED]`, including the claims that **failed** audit and why — is in
+[`research/SRP_RESEARCH_LOG.md`](research/SRP_RESEARCH_LOG.md).
+
 ---
 
 ## AWS deployment
@@ -401,6 +668,21 @@ terraform apply
 - **Honesty over polish.** Warm-up states are reported as such; a model that
   fails the promotion gate stays off — that's the intended behavior.
 - **Structured logs.** JSON lines via `structlog`; secrets never logged.
+- **Point-in-time or it does not ship.** Every factor input is leak-tested by
+  recomputing a historical value with future rows deleted and requiring an exact
+  match. A cross-sectional rank and a trailing time-series rank are *different
+  primitives* and are never interchangeable — conflating them is how this project
+  read the future for months without noticing.
+- **Measured, not remembered.** Any statistic describing a *search* (how many
+  configurations were tried, how much they varied) is read from an append-only
+  log written by the code that ran them. A number a researcher recalls is not
+  evidence, and the numbers most likely to be wrong are the flattering ones.
+- **A silent pipeline is a failing pipeline.** Emptiness is asserted against,
+  not assumed benign: liveness is checked against a wall clock, and a book that
+  is flat everywhere fails the gate instead of passing it quietly.
+- **Fail closed on missing data.** A symbol missing any required input is
+  excluded from the cross-section, never imputed. A missed trade costs nothing;
+  a fabricated one costs money.
 
 ---
 

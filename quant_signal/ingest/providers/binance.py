@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import datetime as dt
 import time
+from collections.abc import Callable
 
 import pandas as pd
 import requests
@@ -33,8 +34,9 @@ class BinanceBarProvider(BarProvider):
     name = "binance"
     timeframe = "1Min"
 
-    def __init__(self, timeout: int = 30) -> None:
+    def __init__(self, timeout: int = 30, request_interval_s: float = _REQUEST_INTERVAL_S) -> None:
         self._timeout = timeout
+        self._request_interval_s = request_interval_s
 
     def _get(self, params: dict[str, object]) -> list[list[object]]:
         last_exc: Exception | None = None
@@ -48,21 +50,33 @@ class BinanceBarProvider(BarProvider):
                 time.sleep(1.5 * (attempt + 1))
         raise RuntimeError(f"binance fetch failed after {_MAX_TRIES} tries: {last_exc}")
 
-    def _fetch_symbol(self, symbol: str, days: int, minutes: int | None = None) -> list[tuple]:
-        now_ms = int(time.time() * 1000)
+    def _fetch_symbol(
+        self,
+        symbol: str,
+        days: int,
+        minutes: int | None = None,
+        *,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
+    ) -> list[tuple]:
         # ``minutes`` overrides ``days``: fetch only the trailing window (used by
         # the live-stream poller so each poll is a handful of bars, not a day).
-        start_ms = now_ms - minutes * 60_000 if minutes else now_ms - days * 86_400_000
+        # Explicit ``start_ms``/``end_ms`` (backfill) override both: the window
+        # is clamped to [start_ms, end_ms).`` None`` end defaults to now.
+        if end_ms is None:
+            end_ms = int(time.time() * 1000)
+        if start_ms is None:
+            start_ms = end_ms - minutes * 60_000 if minutes else end_ms - days * 86_400_000
         # Kline: [openTime_ms, open, high, low, close, volume, closeTime, ...]
         rows: list[tuple] = []
         cursor = start_ms
-        while cursor < now_ms:
+        while cursor < end_ms:
             page = self._get(
                 {
                     "symbol": symbol,
                     "interval": "1m",
                     "startTime": cursor,
-                    "endTime": now_ms,
+                    "endTime": end_ms,
                     "limit": _PAGE,
                 }
             )
@@ -86,11 +100,20 @@ class BinanceBarProvider(BarProvider):
             cursor = int(page[-1][0]) + 1
             if len(page) < _PAGE:
                 break
-            time.sleep(_REQUEST_INTERVAL_S)
+            time.sleep(self._request_interval_s)
         return rows
 
-    def fetch_bars(self, symbols: list[str], days: int, minutes: int | None = None) -> pd.DataFrame:
-        if not symbols or (days < 1 and not minutes):
+    def fetch_bars(
+        self,
+        symbols: list[str],
+        days: int,
+        minutes: int | None = None,
+        *,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
+        on_skip: Callable[[str, str], None] | None = None,
+    ) -> pd.DataFrame:
+        if not symbols or (days < 1 and not minutes and start_ms is None):
             return pd.DataFrame(
                 columns=[
                     "symbol",
@@ -107,7 +130,9 @@ class BinanceBarProvider(BarProvider):
             )
         rows: list[tuple] = []
         for symbol in symbols:
-            rows.extend(self._fetch_symbol(symbol.upper(), days, minutes))
+            rows.extend(
+                self._fetch_symbol(symbol.upper(), days, minutes, start_ms=start_ms, end_ms=end_ms)
+            )
             time.sleep(_REQUEST_INTERVAL_S)
         return pd.DataFrame(
             rows,

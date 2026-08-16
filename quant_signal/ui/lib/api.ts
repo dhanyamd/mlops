@@ -53,7 +53,17 @@ export type MacroPoint = {
 export type Prediction = {
   symbol: string;
   window_end_ms?: number | null;
+  /**
+   * Conformal predictors emit a real expected return here. The asym
+   * (FAS+SMB+RCGO₿) book does NOT: its value is a cross-sectional RANK in
+   * [-1,+1], surfaced honestly as `signal_score`/`score_scale`. Check
+   * `score_scale` before rendering this as a percentage — showing a rank of
+   * 1.0 as "+100% expected return" is meaningless.
+   */
   predicted_return: number;
+  signal_score?: number | null;
+  score_scale?: string | null;
+  signal?: string | null;
   interval_low: number;
   interval_high: number;
   direction: "LONG" | "SHORT" | "FLAT";

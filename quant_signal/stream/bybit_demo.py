@@ -29,11 +29,22 @@ than fabricating a fill, so the caller can skip the bar honestly.
 from __future__ import annotations
 
 import logging
+import math
+import os
 import time
 
+from pybit.exceptions import InvalidRequestError
 from pybit.unified_trading import HTTP
 
 logger = logging.getLogger(__name__)
+
+# Bybit's reduce-only rejection when the exchange already has zero position
+# for the symbol -- i.e. our internal book thinks a position is open but the
+# venue disagrees (manual intervention, a prior desync, ADL, etc.). Retrying
+# the same close forever is pointless: the exchange will reject it every
+# time. Surfaced as a distinct sentinel so the caller can self-heal instead
+# of leaving the position stuck "open" in our bookkeeping indefinitely.
+_ERRCODE_POSITION_ALREADY_ZERO = 110017
 
 # Linear perpetuals step the order size by 0.001 (BTCUSDT). Read from venue at
 # runtime via instruments-info; this is only the floor used if that call fails.
@@ -45,14 +56,23 @@ _FALLBACK_MIN_QTY = 0.001
 # asynchronous). Empirically the demo order-history record lags the fill by up
 # to ~4s (measured on api-demo), so poll for ~8s; if it is still not Filled we
 # return None and the engine skips the bar honestly.
-_FILL_POLLS = 16
-_FILL_POLL_INTERVAL_S = 0.5
+_FILL_POLLS = int(os.environ.get("QUANT_FILL_POLLS", "16"))
+_FILL_POLL_INTERVAL_S = float(os.environ.get("QUANT_FILL_POLL_INTERVAL_S", "0.5"))
 
 # Maker fills rest on the book as post-only limits, so "Filled" legitimately
 # takes longer than a market order. Poll for ~15s: long enough for the price to
 # trade at our level in liquid BTC/ETH, short enough to keep the consumer
 # thread inside its Kafka max-poll budget. Unfilled → cancel + market fallback.
-_MAKER_FILL_POLLS = 30
+#
+# THIS BUDGET IS PER SYMBOL AND THE ENGINE FILLS SEQUENTIALLY, so the wall-clock
+# cost is (polls x interval x book size). At 30 polls that is ~15s each: fine for
+# a ~30-name book, but ~19 minutes for the 100-name cross-section, during which
+# most of the book sits unfilled. Lower it when the universe is wide -- the cost
+# is a lower maker hit-rate (more market fallbacks at taker fees), and maker vs
+# taker execution was measured at 2.40 vs 1.87 Sharpe, so this is a real
+# trade-off rather than free speed. Configurable so it can be tuned to the
+# universe actually deployed instead of being fixed for one book size.
+_MAKER_FILL_POLLS = int(os.environ.get("QUANT_MAKER_FILL_POLLS", "30"))
 
 
 def _fill_fee(row: dict) -> float:
@@ -82,24 +102,36 @@ class BybitDemoVenue:
         api_secret: str,
         recv_window_ms: int = 5000,
         maker_first: bool = True,
+        timeout_s: float = 10.0,
+        maker_first_exit: bool | None = None,
     ) -> None:
         # Bounded HTTP client: pybit's default 10s timeout + its rate-limit
         # retry sleep (ErrCode 10006 waits until the limit resets — minutes!)
         # stalled the consumer thread on a slow demo API and crashed the engine
-        # with a Kafka max-poll-exceeded error. So: 3s per request, no retries,
-        # and rate-limit/retry codes disabled (retry_codes={-1} is a non-empty
+        # with a Kafka max-poll-exceeded error. So: bounded timeout (default
+        # 10s — Demo is virtual, no microsecond SLA constraint), no retries on
+        # transport errors (the fill-poll loop retries at its own pace), and
+        # rate-limit/retry codes disabled (retry_codes={-1} is a non-empty
         # sentinel — pybit replaces an empty set with its defaults). Failures
         # surface immediately and the fill-poll loop retries at its own pace.
+        # Rate-limit retries (ErrCode 10006) are now handled in _fill_from_order
+        # with bounded exponential backoff, since the Demo API's rate limit is
+        # generous but occasionally throttles under burst (30 symbols warm-start).
         self._http = HTTP(
             demo=True,
             api_key=api_key,
             api_secret=api_secret,
             recv_window=recv_window_ms,
-            timeout=3,
+            timeout=int(timeout_s),
             max_retries=1,
             retry_codes={-1},
         )
         self._maker_first = maker_first
+        # Exits get their own switch: measured 0/7 maker fills on the exit leg
+        # (every fill paid the 5.5 bps taker rate), so the 15s maker poll is
+        # dead wait serialised across the whole book. None ⇒ inherit the entry
+        # setting, preserving old behaviour for callers that don't pass it.
+        self._maker_first_exit = maker_first if maker_first_exit is None else maker_first_exit
 
     # ── market data helpers ─────────────────────────────────────────────────
 
@@ -138,6 +170,17 @@ class BybitDemoVenue:
             logger.warning("bybit demo: instruments-info failed; using fallback qty step")
             return _FALLBACK_MIN_QTY, _FALLBACK_QTY_STEP
 
+    @staticmethod
+    def _round_to_step(qty: float, step: float) -> float:
+        """Round a quantity to the exchange's qtyStep precision, killing the
+        float artifact (e.g. 132 * 0.1 == 13.200000000000001) that makes Bybit
+        reject the order with 'Qty invalid'. Never rounded to more decimals than
+        the step actually allows."""
+        if step is None or step <= 0.0:
+            return qty
+        decimals = -int(math.floor(math.log10(step))) if step < 1.0 else 0
+        return round(qty, decimals)
+
     def _qty_for_notional(self, symbol: str, notional_usd: float) -> float | None:
         """Contract-sized order quantity for ``notional_usd``, floored to the
         venue's qtyStep. None when the notional can't buy the minimum lot."""
@@ -145,7 +188,7 @@ class BybitDemoVenue:
         if price is None or price <= 0.0:
             return None
         _min_qty, step = self._qty_step(symbol)
-        qty = float(int(notional_usd / price / step) * step)
+        qty = self._round_to_step(math.floor(notional_usd / price / step) * step, step)
         if qty < _min_qty:
             logger.warning(
                 "bybit demo: notional $%.0f < one lot of %s (min %s)",
@@ -253,15 +296,22 @@ class BybitDemoVenue:
         None when nothing filled, so the caller keeps the position and retries
         next window.
         """
-        if self._maker_first:
+        if self._maker_first_exit:
             fill = self._close_maker(symbol, side, qty)
             if fill is not None:
                 return fill
         return self._close_market_impl(symbol, side, qty)
 
     def _close_market_impl(self, symbol: str, side: str, qty: float) -> dict | None:
-        """Market reduce-only order to close an open position."""
+        """Market reduce-only order to close an open position.
+
+        Returns the fill dict, ``None`` on an ordinary/transient failure (the
+        caller retries next window), or ``{"desync": True}`` when the venue
+        says the position is already zero -- retrying that would fail forever.
+        """
         side_bb = "Sell" if side == "LONG" else "Buy"
+        _min_qty, step = self._qty_step(symbol)
+        qty = self._round_to_step(qty, step)
         try:
             result = self._http.place_order(
                 category="linear",
@@ -271,6 +321,18 @@ class BybitDemoVenue:
                 qty=str(qty),
                 reduceOnly=True,
             )
+        except InvalidRequestError as exc:
+            if exc.status_code == _ERRCODE_POSITION_ALREADY_ZERO:
+                logger.warning(
+                    "bybit demo: %s %s already flat on the venue (ErrCode %s) — "
+                    "internal book was stale, clearing without a fabricated fill",
+                    symbol,
+                    side,
+                    exc.status_code,
+                )
+                return {"desync": True}
+            logger.exception("bybit demo: close market order failed for %s %s", symbol, side)
+            return None
         except Exception:
             logger.exception("bybit demo: close market order failed for %s %s", symbol, side)
             return None
@@ -281,7 +343,7 @@ class BybitDemoVenue:
         if not order_id:
             logger.warning("bybit demo: close order returned no orderId; fill unconfirmable")
             return None
-        return self._fill_from_order(symbol, order_id, qty)
+        return self._fill_from_order(symbol, order_id, qty, intent="close")
 
     def _close_maker(self, symbol: str, side: str, qty: float) -> dict | None:
         """Reduce-only post-only limit at the near side; market fallback."""
@@ -292,9 +354,18 @@ class BybitDemoVenue:
         bid, ask = ba
         price = bid if side == "LONG" else ask
         side_bb = "Sell" if side == "LONG" else "Buy"
+        # Round to the exchange's qtyStep -- unlike _close_market_impl, this
+        # path previously submitted the raw tracked qty (e.g. 649.22080519),
+        # which Bybit rejects outright with "Qty invalid" (ErrCode 10001)
+        # whenever it carries more precision than the instrument's lot size,
+        # silently forcing every maker close through the market fallback.
+        _min_qty, step = self._qty_step(symbol)
+        qty = self._round_to_step(qty, step)
         order_id = self._place_limit(symbol, side_bb, qty, price, reduce_only=True)
         if order_id:
-            fill = self._fill_from_order(symbol, order_id, qty, polls=_MAKER_FILL_POLLS, quiet=True)
+            fill = self._fill_from_order(
+                symbol, order_id, qty, polls=_MAKER_FILL_POLLS, quiet=True, intent="close"
+            )
             if fill is not None:
                 return fill
             self._cancel(symbol, order_id)
@@ -338,12 +409,43 @@ class BybitDemoVenue:
             return None
         return (result.get("result") or {}).get("orderId")
 
-    def _cancel(self, symbol: str, order_id: str) -> None:
-        """Best-effort cancel of an unfilled resting order."""
+    def _cancel(self, symbol: str, order_id: str) -> bool:
+        """Best-effort cancel of an unfilled resting order.
+
+        Returns ``True`` if the exchange acknowledged the cancel request
+        (``retCode`` == 0), otherwise ``False``.  A best-effort check of the
+        order‑history after the cancel is performed so the caller can see
+        whether the order is truly cancelled or still resting.
+        """
         try:
-            self._http.cancel_order(category="linear", symbol=symbol, orderId=order_id)
+            result = self._http.cancel_order(category="linear", symbol=symbol, orderId=order_id)
         except Exception:
-            logger.warning("bybit demo: cancel failed for order %s", order_id)
+            logger.warning("bybit demo: cancel failed for order %s (exception)", order_id)
+            return False
+        if result.get("retCode") != 0:
+            logger.warning(
+                "bybit demo: cancel rejected for order %s: %s",
+                order_id,
+                result.get("retMsg"),
+            )
+            return False
+        # Brief verification: re‑query order history; if the order is still
+        # present with status New/Open we consider the cancel insufficient.
+        try:
+            time.sleep(0.3)
+            hist = self._http.get_order_history(category="linear", symbol=symbol, orderId=order_id)
+            if hist.get("retCode") == 0:
+                rows = hist.get("result", {}).get("list", [])
+                if rows and rows[0].get("orderStatus") in ("New", "Partial"):
+                    logger.warning(
+                        "bybit demo: cancel returned OK but order %s still %s",
+                        order_id,
+                        rows[0].get("orderStatus"),
+                    )
+                    return False
+        except Exception:
+            pass  # best‑effort only
+        return True
 
     def _fill_from_order(
         self,
@@ -353,17 +455,39 @@ class BybitDemoVenue:
         *,
         polls: int = _FILL_POLLS,
         quiet: bool = False,
+        intent: str = "open",
     ) -> dict | None:
-        """Fill for a placed order, read back from order history.
+        """Fill for a placed order, read back from order history and positions.
 
         ``place_order`` only echoes the ``orderId``; the executed average price,
         filled qty and fees arrive on the order-history record once the order
         fills (order creation is asynchronous on Bybit v5, so poll briefly).
-        Returns None when the order is not confirmed Filled — the caller skips
-        the bar honestly rather than guessing a price. ``quiet`` suppresses the
-        per-poll warning for resting maker orders (still-New is the expected
-        state there, not an error).
+        Additionally, we reconcile against ``get_positions`` as the ground-truth
+        fill state per Bybit API docs, since order-history status can lag.
+
+        ``intent`` MUST distinguish an entry from an exit, because the
+        position-based ground truth is INVERTED between them:
+
+          intent="open"   position qty > 0  → the entry filled
+          intent="close"  position flat     → the exit filled
+
+        Reading "position still open" as a fill for a reduce-only exit (the
+        previous behaviour) recorded failed closes as completed round trips
+        with fabricated P&L, while the position stayed open on the exchange.
+
+        Accepts ``Filled`` and ``PartiallyFilled``. Returns None when the order
+        is not confirmed filled — the caller skips the bar honestly.
+
+        Bounded retry on rate-limit (ErrCode 10006) only; transient Demo throttling
+        self-heals instead of permanently skipping the bar. Other errors surface
+        immediately and the fill-poll loop retries at its own pace.
         """
+        closing = intent == "close"
+        # Last order-history row seen across polls: the only trustworthy source
+        # of executed price/fees. Never substitute unrealised P&L for fees.
+        last_row: dict | None = None
+        # Exponential-backoff interval for rate-limit retries only
+        backoff = 0.5
         for attempt in range(polls):
             try:
                 history = self._http.get_order_history(
@@ -378,19 +502,42 @@ class BybitDemoVenue:
                 time.sleep(_FILL_POLL_INTERVAL_S)
                 continue
             if history.get("retCode") != 0:
-                logger.warning("bybit demo: order-history rejected: %s", history.get("retMsg"))
+                # Transient rate-limit (ErrCode 10006): backoff and retry;
+                # other errors surface immediately.
+                rmsg = history.get("retMsg", "")
+                if "10006" in rmsg or "rate limit" in rmsg.lower():
+                    logger.warning(
+                        "bybit demo: rate limit (attempt %s/%s); backoff %.1fs",
+                        attempt + 1,
+                        polls,
+                        backoff,
+                    )
+                    time.sleep(backoff)
+                    backoff = min(backoff * 2, 8.0)
+                    continue
+                logger.warning("bybit demo: order-history rejected: %s", rmsg)
                 return None
             rows = history.get("result", {}).get("list", [])
             if not rows:
                 time.sleep(_FILL_POLL_INTERVAL_S)
                 continue
             row = rows[0]
-            if row.get("orderStatus") != "Filled":
+            last_row = row
+            status = row.get("orderStatus", "")
+            # Accept Filled and PartiallyFilled as real fills.
+            if status not in ("Filled", "PartiallyFilled"):
                 if not quiet:
                     logger.warning(
-                        "bybit demo: order not filled yet (status=%s)", row.get("orderStatus")
+                        "bybit demo: order status=%s not filled yet (attempt %s/%s)",
+                        status,
+                        attempt + 1,
+                        polls,
                     )
                 time.sleep(_FILL_POLL_INTERVAL_S)
+                # Reconcile against positions as ground truth -- direction-aware.
+                confirmed = self._position_confirms(symbol, closing)
+                if confirmed is not None:
+                    return self._fill_payload(row, qty, confirmed, closing)
                 continue
             try:
                 fill_price = float(row.get("avgPrice") or 0.0)
@@ -400,9 +547,55 @@ class BybitDemoVenue:
                 return None
             if fill_price <= 0.0:
                 return None
+            # An explicit Filled/PartiallyFilled status from the venue is the
+            # strongest signal available for either direction; take it as-is.
             return {"fill_price": fill_price, "qty": fill_qty, "fees": fees}
+        # After all polls, reconcile against positions as final ground truth.
+        confirmed = self._position_confirms(symbol, closing)
+        if confirmed is not None:
+            payload = self._fill_payload(last_row, qty, confirmed, closing)
+            if payload is not None:
+                return payload
         logger.warning("bybit demo: order %s not confirmed filled after %s polls", order_id, polls)
         return None
+
+    def _position_confirms(self, symbol: str, closing: bool) -> dict | None:
+        """Venue position state, when it confirms the order actually executed.
+
+        Returns the position dict for a confirmed entry, ``{}`` for a confirmed
+        exit (the position is gone, so there is nothing to return), or ``None``
+        when the position state does NOT confirm execution.
+        """
+        pos = self.position(symbol)
+        open_qty = float((pos or {}).get("qty") or 0.0)
+        if closing:
+            # A reduce-only exit is confirmed by the position being FLAT.
+            # Still open ⇒ the close did not go through.
+            return {} if open_qty == 0.0 else None
+        return pos if open_qty > 0.0 else None
+
+    @staticmethod
+    def _fill_payload(
+        row: dict | None, qty: float, confirmed: dict, closing: bool
+    ) -> dict | None:
+        """Fill payload from the order-history row, position-confirmed.
+
+        Fees ALWAYS come from the order-history record -- never from a
+        position's unrealised P&L, which is a completely different quantity
+        and previously corrupted every position-confirmed fill's cost basis.
+        """
+        price = float((row or {}).get("avgPrice") or 0.0)
+        if price <= 0.0 and not closing:
+            price = float(confirmed.get("entry_price") or 0.0)
+        if price <= 0.0:
+            # No trustworthy execution price: report no fill rather than
+            # inventing one. The caller retries, and a genuinely-flat
+            # position self-heals via the ErrCode 110017 desync path.
+            return None
+        filled_qty = float((row or {}).get("cumExecQty") or 0.0)
+        if filled_qty <= 0.0:
+            filled_qty = float(confirmed.get("qty") or qty) if not closing else qty
+        return {"fill_price": price, "qty": filled_qty, "fees": _fill_fee(row or {})}
 
     # ── account / position reconciliation ───────────────────────────────────
 
@@ -419,6 +612,39 @@ class BybitDemoVenue:
         except Exception:  # pragma: no cover - network tolerance
             logger.exception("bybit demo: get_wallet_balance failed")
             return None
+
+    def open_positions(self) -> list[dict]:
+        """Every open linear/USDT position on the account (venue ground truth).
+
+        Used to reconcile the book against the exchange at startup. Without
+        this, wiping the online store (a Redis flush, a fresh deploy) strands
+        real open positions on the venue that our book no longer knows about:
+        they are never managed, never closed, and quietly accumulate
+        duplicate exposure -- exactly what close_orphans.py was written to
+        clean up by hand.
+        """
+        try:
+            result = self._http.get_positions(category="linear", settleCoin="USDT", limit=200)
+        except Exception:  # pragma: no cover - network tolerance
+            logger.exception("bybit demo: get_positions(settleCoin=USDT) failed")
+            return []
+        if not isinstance(result, dict) or result.get("retCode") != 0:
+            logger.warning("bybit demo: get_positions -> %s", result)
+            return []
+        out = []
+        for row in (result.get("result", {}) or {}).get("list", []) or []:
+            size = float(row.get("size") or 0.0)
+            if size <= 0.0:
+                continue
+            out.append(
+                {
+                    "symbol": row.get("symbol"),
+                    "side": "LONG" if row.get("side") == "Buy" else "SHORT",
+                    "qty": abs(size),
+                    "entry_price": float(row.get("avgPrice") or 0.0),
+                }
+            )
+        return out
 
     def position(self, symbol: str) -> dict | None:
         """Open linear position for ``symbol`` (one-way mode) or None."""

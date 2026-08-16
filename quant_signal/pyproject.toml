@@ -28,6 +28,7 @@ dependencies = [
     # materialization). clickhouse-connect is the current official client
     # (clickhouse-driver is legacy). Used by flows/materialize_clickhouse.py.
     "clickhouse-connect>=0.8.0",
+    "ccxt>=4.5.64",
 ]
 
 [project.optional-dependencies]
@@ -58,6 +59,9 @@ dev = [
 ]
 lake = [
     "pyiceberg[pyarrow,s3fs,sql-sqlite]>=0.11.1",
+    # Embedded OLAP for local, serverless verification of the Iceberg lake
+    # (recompute the FAS+SMB Sharpe from gold.features without Snowflake).
+    "duckdb>=1.2.0",
 ]
 
 [tool.setuptools.packages.find]

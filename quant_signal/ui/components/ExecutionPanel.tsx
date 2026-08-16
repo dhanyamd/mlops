@@ -12,6 +12,7 @@ import {
   YAxis,
 } from "recharts";
 import type { Execution, Portfolio, PortfolioRow } from "@/lib/api";
+import { useMarketStream } from "@/lib/useMarketStream";
 
 const money = (v: number | null | undefined, digits = 2) =>
   v == null ? "—" : `${v >= 0 ? "+" : "−"}$${Math.abs(v).toFixed(digits)}`;
@@ -65,9 +66,11 @@ function fmtTime(ms: number | null | undefined) {
 export function ExecutionPanel({
   execution,
   portfolio,
+  symbol,
 }: {
   execution: Execution | null;
   portfolio: Portfolio | null;
+  symbol?: string;
 }) {
   const venueDemo = execution?.venue === "bybit-demo";
   const equityData = useMemo(
@@ -86,6 +89,22 @@ export function ExecutionPanel({
       ? "text-emerald-500"
       : "text-red-500"
     : "";
+
+  // Live tick: the execution engine only marks positions to market once per
+  // 1h bar close (stream/execution.py _advance). Between bars, re-mark the
+  // open position against the live WebSocket tape (~20s cadence) so the panel
+  // visibly moves instead of sitting frozen for up to an hour. Same formula
+  // as the backend's _mark_pnl (pre-fees), computed client-side only for
+  // display — the actual settled P&L still comes from the hourly bar.
+  const { bars: liveBars, connected: liveConnected } = useMarketStream(symbol ?? "BTCUSDT");
+  const livePrice = liveBars.length > 0 ? liveBars[liveBars.length - 1].close : null;
+  const liveUnrealized =
+    pos && livePrice != null
+      ? pos.side === "LONG"
+        ? pos.qty * (livePrice - pos.entry_price)
+        : pos.qty * (pos.entry_price - livePrice)
+      : null;
+  const liveTone = liveUnrealized == null ? "" : liveUnrealized >= 0 ? "text-emerald-500" : "text-red-500";
   const netTone =
     (execution?.net_pnl ?? 0) >= 0 ? "text-emerald-500" : "text-red-500";
   const winTone =
@@ -124,11 +143,11 @@ export function ExecutionPanel({
               entry {pos.entry_price.toLocaleString(undefined, { maximumFractionDigits: 2 })}
             </span>
             <span>
-              mark {pos.mark_price?.toLocaleString(undefined, { maximumFractionDigits: 2 }) ?? "—"}
+              mark (1h bar) {pos.mark_price?.toLocaleString(undefined, { maximumFractionDigits: 2 }) ?? "—"}
             </span>
             <span>qty {pos.qty.toFixed(4)}</span>
             <span className={posTone}>
-              unrealized {money(pos.unrealized_pnl)} ({pct1(pos.unrealized_pnl_pct)})
+              unrealized (1h bar) {money(pos.unrealized_pnl)} ({pct1(pos.unrealized_pnl_pct)})
             </span>
           </div>
         ) : (
@@ -144,6 +163,26 @@ export function ExecutionPanel({
               }bps · taker ${execution?.taker_fee_bps}bps`}
         </span>
       </div>
+
+      {pos ? (
+        <div className="flex flex-wrap items-center gap-4 rounded-xl border border-cyan-200 bg-cyan-50/60 px-4 py-3 dark:border-cyan-900 dark:bg-cyan-950/20">
+          <span
+            className={`h-2 w-2 rounded-full ${liveConnected ? "animate-pulse bg-emerald-500" : "bg-zinc-400"}`}
+          />
+          <span className="font-mono text-[11px] uppercase tracking-widest text-cyan-700 dark:text-cyan-300">
+            live tick
+          </span>
+          <span className="font-mono text-xs text-zinc-600 dark:text-zinc-300">
+            price {livePrice != null ? livePrice.toLocaleString(undefined, { maximumFractionDigits: 2 }) : "—"}
+          </span>
+          <span className={`font-mono text-sm font-semibold tabular-nums ${liveTone}`}>
+            {liveUnrealized == null ? "—" : money(liveUnrealized)}
+          </span>
+          <span className="ml-auto font-mono text-[11px] text-zinc-500 dark:text-zinc-400">
+            {liveConnected ? "re-marked off the live WebSocket tape (~20s) between hourly bar closes" : "connecting to live tape…"}
+          </span>
+        </div>
+      ) : null}
 
       <div style={{ height: 220 }} className="w-full">
         <ResponsiveContainer width="100%" height="100%">

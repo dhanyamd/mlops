@@ -46,9 +46,9 @@ SERVICES: dict[str, tuple[list[str], str]] = {
         ["stream.producer"],
         r"\.venv/bin/python[^ ]* -m stream\.producer\b",
     ),
-    "predictor": (
-        ["stream.predictor"],
-        r"\.venv/bin/python[^ ]* -m stream\.predictor\b",
+    "signal": (
+        ["stream.xs_signal"],
+        r"\.venv/bin/python[^ ]* -m stream\.xs_signal\b",
     ),
     "execution": (
         ["stream.execution"],

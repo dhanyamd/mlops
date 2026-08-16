@@ -435,6 +435,7 @@ class _StubSettings:
         self.demo_api_secret = api_secret
         self.bybit_demo_recv_window_ms = recv_window_ms
         self.stream_execution_maker_first = True
+        self.stream_execution_maker_first_exit = False
 
 
 def test_build_venue_returns_none_without_creds_and_paper_setting() -> None:
@@ -454,7 +455,7 @@ def test_build_venue_returns_venue_when_demo_balance_ok() -> None:
         def __init__(self, *args, **kwargs) -> None:
             self.balance = lambda: 50_000.0
 
-    venue = _build_venue(_StubSettings(), venue_cls=_OkVenue)
+    venue = _build_venue(_StubSettings(venue_setting="bybit-demo"), venue_cls=_OkVenue)
     assert isinstance(venue, _OkVenue)
     assert venue.balance() == 50_000.0
 
@@ -467,7 +468,7 @@ def test_build_venue_falls_back_to_paper_when_balance_is_none(capsys) -> None:
         def __init__(self, *args, **kwargs) -> None:
             self.balance = lambda: None
 
-    venue = _build_venue(_StubSettings(), venue_cls=_RejectedKeyVenue)
+    venue = _build_venue(_StubSettings(venue_setting="bybit-demo"), venue_cls=_RejectedKeyVenue)
     assert venue is None
     assert "falling back to paper fills" in capsys.readouterr().out
 
@@ -477,9 +478,24 @@ def test_build_venue_falls_back_to_paper_when_construction_raises(capsys) -> Non
         def __init__(self, *args, **kwargs) -> None:
             raise ConnectionError("api-demo.bybit.com unreachable")
 
-    venue = _build_venue(_StubSettings(), venue_cls=_ExplodingVenue)
+    venue = _build_venue(_StubSettings(venue_setting="bybit-demo"), venue_cls=_ExplodingVenue)
     assert venue is None
     assert "could not be initialized" in capsys.readouterr().out
+
+
+def test_build_venue_explicit_paper_setting_skips_demo_even_with_creds() -> None:
+    """STREAM_EXECUTION_VENUE=paper must be a real, load-bearing opt-out —
+    not cosmetic — even when valid demo credentials are present."""
+
+    class _ShouldNeverBeConstructed:
+        def __init__(self, *args, **kwargs) -> None:
+            raise AssertionError("paper mode must not construct the demo venue")
+
+    venue = _build_venue(
+        _StubSettings(venue_setting="paper", has_creds=True),
+        venue_cls=_ShouldNeverBeConstructed,
+    )
+    assert venue is None
 
 
 # ── maker-first fills (post-only limit → market fallback) ──────────────────
@@ -528,6 +544,9 @@ def _fast_venue(http: _FakeHTTP, maker_first: bool = True) -> BybitDemoVenue:
     venue = BybitDemoVenue.__new__(BybitDemoVenue)
     venue._http = http  # type: ignore[attr-defined]
     venue._maker_first = maker_first  # type: ignore[attr-defined]
+    # Mirror the constructor: the exit leg inherits the entry setting unless a
+    # test overrides it explicitly.
+    venue._maker_first_exit = maker_first  # type: ignore[attr-defined]
     venue._qty_for_notional = lambda symbol, notional_usd: 0.01  # type: ignore[method-assign]
     monkey = pytest.MonkeyPatch()
     monkey.setattr(bybit_demo, "_FILL_POLL_INTERVAL_S", 0.0)
@@ -698,3 +717,152 @@ def test_hold_until_decay_ignores_weak_reversal() -> None:
     assert stored is not None
     assert stored["position"]["side"] == "LONG"  # held
     assert stored["n_trades"] == 0
+
+
+def test_unfilled_close_is_not_recorded_as_a_trade_while_position_stays_open() -> None:
+    """A reduce-only exit that never fills must NOT be reported as a fill.
+
+    Regression: the position-based ground-truth fallback was written for
+    ENTRIES (position qty > 0 ⇒ filled) but also ran for EXITS, where a
+    still-open position means the close FAILED. That inversion recorded
+    failed closes as completed round trips with fabricated P&L while the
+    position remained open on the exchange. Bybit v5 docs: confirm an exit by
+    verifying via /v5/position/list that the position was closed or reduced.
+    """
+    http = _FakeHTTP(status="New")  # order never reaches Filled
+    venue = _fast_venue(http, maker_first=False)
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(bybit_demo, "_FILL_POLLS", 2)
+    # The venue still reports an OPEN position — i.e. the close did not go through.
+    venue.position = lambda symbol: {  # type: ignore[method-assign]
+        "side": "LONG",
+        "qty": 0.01,
+        "entry_price": 100.0,
+        "unrealized_pnl": 22.60,
+    }
+
+    assert venue.close_market("BTCUSDT", "LONG", 0.01) is None
+
+
+def test_close_confirmed_by_flat_position_reports_fill_with_real_fees() -> None:
+    """The mirror case: position went flat ⇒ the exit really did execute.
+
+    Fees must come from the order-history record, never from a position's
+    unrealised P&L (a different quantity entirely).
+    """
+    http = _FakeHTTP(status="Filled")
+    venue = _fast_venue(http, maker_first=False)
+    venue.position = lambda symbol: None  # type: ignore[method-assign]  # flat ⇒ closed
+
+    fill = venue.close_market("BTCUSDT", "LONG", 0.01)
+
+    assert fill is not None
+    assert fill["fill_price"] == 100.5
+    assert fill["fees"] == 0.02  # from cumFeeDetail, not unrealized_pnl
+
+
+def test_exit_leg_skips_the_maker_poll_when_maker_first_exit_is_off() -> None:
+    """Exits go straight to market; entries keep maker-first.
+
+    Measured on the demo venue: 7/7 reduce-only post-only limits went
+    unfilled and every fill paid 5.5 bps (Bybit's taker rate), so the 15s
+    maker poll bought nothing while serialising dead wait across the book.
+    Entries are unaffected -- there is no evidence the entry leg fails.
+    """
+    http = _FakeHTTP(status="Filled")
+    venue = _fast_venue(http, maker_first=True)
+    venue._maker_first_exit = False  # type: ignore[attr-defined]
+    venue.position = lambda symbol: None  # type: ignore[method-assign]  # flat ⇒ closed
+
+    venue.close_market("BTCUSDT", "LONG", 0.01)
+
+    assert [o["orderType"] for o in http.orders] == ["Market"]  # no resting limit
+    assert http.cancelled == []  # nothing to cancel
+
+    # ...while the ENTRY leg still tries maker first.
+    http2 = _FakeHTTP(status="Filled")
+    venue2 = _fast_venue(http2, maker_first=True)
+    venue2._maker_first_exit = False  # type: ignore[attr-defined]
+    venue2.open_market("BTCUSDT", "LONG", 1000)
+    assert http2.orders[0]["orderType"] == "Limit"
+    assert http2.orders[0]["timeInForce"] == "PostOnly"
+
+
+def test_stale_but_past_forecast_is_tradeable_when_exact_window_misses() -> None:
+    """Predictor/engine offset drift must not starve the book.
+
+    The two daemons consume the same feature topic in separate consumer
+    groups, so their windows drift (a restart of either is enough). Exact
+    window matching then failed on BOTH candidates, the signal read as None,
+    and the entry was skipped -- measured live as 7 of 12 selected symbols
+    never opening a position. A forecast stamped in the PAST, within the
+    staleness bound, is still tradeable.
+    """
+    kv = FakeKV()
+    sim = _simulator(kv, hold_until_decay=True, slippage_bps=0.0, taker_fee_bps=0.0)
+    # Stamped at 3W: the bar being processed ends at 4W and prev_end is 2W, so
+    # it matches NEITHER exact candidate, yet is only one window stale.
+    _seed_prediction(kv, "BTCUSDT", 3 * _WINDOW_MS, "LONG", predicted_return=0.5)
+
+    sim.handle(_window("BTCUSDT", 1, 100.0))  # seeds prev_end = 2W
+    sim.handle(_window("BTCUSDT", 3, 100.0))  # window_end = 4W
+
+    stored = kv.get_json(execution_key("execution:crypto:5m", "BTCUSDT"))
+    assert stored is not None
+    assert stored["position"] is not None, "stale-but-past forecast must still open"
+    assert stored["position"]["side"] == "LONG"
+
+
+def test_future_stamped_forecast_is_never_traded() -> None:
+    """A forecast stamped AFTER this bar is look-ahead and must be rejected."""
+    kv = FakeKV()
+    sim = _simulator(kv, hold_until_decay=True, slippage_bps=0.0, taker_fee_bps=0.0)
+    _seed_prediction(kv, "BTCUSDT", 9 * _WINDOW_MS, "LONG", predicted_return=0.5)
+
+    sim.handle(_window("BTCUSDT", 1, 100.0))
+    sim.handle(_window("BTCUSDT", 2, 100.0))
+
+    stored = kv.get_json(execution_key("execution:crypto:5m", "BTCUSDT"))
+    assert stored is not None
+    assert stored["position"] is None, "future-stamped forecast is look-ahead"
+
+
+def test_forecast_expiry_rolls_an_unchanged_position_instead_of_round_tripping() -> None:
+    """Expiry means re-evaluate, not "must trade".
+
+    Closing and immediately re-opening the SAME side pays a full round trip to
+    end up with identical exposure -- pure cost. The research book charges only
+    |w_new - w_old|, so an unchanged weight is free there; the live book must
+    match that or it bleeds fees every rebalance on every held name.
+    """
+    kv = FakeKV()
+    sim = _simulator(
+        kv, hold_until_decay=True, max_hold_h=1, slippage_bps=0.0, taker_fee_bps=10.0
+    )
+    for i in range(1, 8):
+        _seed_prediction(kv, "BTCUSDT", i * _WINDOW_MS, "LONG", predicted_return=0.5)
+        sim.handle(_window("BTCUSDT", i, 100.0))
+
+    stored = kv.get_json(execution_key("execution:crypto:5m", "BTCUSDT"))
+    assert stored is not None
+    assert stored["position"] is not None, "an agreeing forecast must keep the position"
+    assert stored["n_trades"] == 0, "unchanged signal must not round-trip at expiry"
+    assert stored["total_fees"] == 0.0
+
+
+def test_forecast_expiry_still_closes_when_the_signal_flips() -> None:
+    """The roll must not become a way to hold a position past a real reversal."""
+    kv = FakeKV()
+    sim = _simulator(
+        kv, hold_until_decay=True, max_hold_h=1, slippage_bps=0.0, taker_fee_bps=0.0
+    )
+    _seed_prediction(kv, "BTCUSDT", 1 * _WINDOW_MS, "LONG", predicted_return=0.5)
+    sim.handle(_window("BTCUSDT", 1, 100.0))
+    _seed_prediction(kv, "BTCUSDT", 2 * _WINDOW_MS, "LONG", predicted_return=0.5)
+    sim.handle(_window("BTCUSDT", 2, 100.0))
+    _seed_prediction(kv, "BTCUSDT", 3 * _WINDOW_MS, "SHORT", predicted_return=-0.5)
+    sim.handle(_window("BTCUSDT", 3, 100.0))
+
+    stored = kv.get_json(execution_key("execution:crypto:5m", "BTCUSDT"))
+    assert stored is not None
+    assert stored["n_trades"] == 1, "a flipped signal at expiry must still close"

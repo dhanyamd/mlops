@@ -24,13 +24,15 @@ import { RealityCheck } from "@/components/RealityCheck";
 import { RealizedReturns } from "@/components/RealizedReturns";
 import { Select } from "@/components/Select";
 import { StrategyFan } from "@/components/StrategyFan";
-import { api, type FeatureWindow, type GeometryGrid, type Prediction, type Simulation, type Strategy, type Validation } from "@/lib/api";
+import { api, type FeatureWindow, type GeometryGrid, type Prediction, type Portfolio, type Simulation, type Strategy, type Validation } from "@/lib/api";
 import { useQuery } from "@/lib/useQuery";
 
 const POLL_MS = 15000;
 
 const pct = (v: number) => `${(v * 100).toFixed(2)}%`;
 const pct1 = (v: number) => `${(v * 100).toFixed(1)}%`;
+const money = (v: number | null | undefined, digits = 2) =>
+  v == null ? "—" : `${v >= 0 ? "+" : "−"}$${Math.abs(v).toFixed(digits)}`;
 
 const DIRECTION_STYLE: Record<string, string> = {
   LONG: "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300",
@@ -69,23 +71,46 @@ function SignalGauge({ prediction }: { prediction: Prediction }) {
   const pos = (v: number) => `${((v - min) / span) * 100}%`;
   const tone = prediction.direction === "LONG" ? "text-emerald-500" : prediction.direction === "SHORT" ? "text-red-500" : "text-zinc-400";
 
+  // The asym (FAS+SMB+RCGO₿) book ranks the cross-section: its value is a
+  // rank in [-1,+1], NOT a return. Rendering that as a percentage claimed
+  // things like "+100.00% expected next-window return" for whichever symbol
+  // happened to rank top. Only conformal predictors (which also ship a real
+  // prediction interval) get the return treatment.
+  const isRank =
+    prediction.score_scale != null ||
+    prediction.signal === "asym" ||
+    !Number.isFinite(lo) ||
+    !Number.isFinite(hi);
+  const score = prediction.signal_score ?? ret;
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <DirectionBadge direction={prediction.direction} />
         <span className="font-mono text-xs text-zinc-500">
-          ACI 90% · α<sub>t</sub> {prediction.alpha?.toFixed(3) ?? "—"}
+          {isRank ? "cross-sectional rank" : <>ACI 90% · α<sub>t</sub> {prediction.alpha?.toFixed(3) ?? "—"}</>}
         </span>
       </div>
 
       <div>
         <div className={`font-mono text-3xl font-semibold tabular-nums ${tone}`}>
-          {ret >= 0 ? "+" : ""}
-          {pct(ret)}
+          {isRank ? `${score >= 0 ? "+" : ""}${score.toFixed(3)}` : `${ret >= 0 ? "+" : ""}${pct(ret)}`}
         </div>
-        <div className="text-xs text-zinc-500 dark:text-zinc-400">expected next-window return</div>
+        <div className="text-xs text-zinc-500 dark:text-zinc-400">
+          {isRank
+            ? "signal score — cross-sectional rank in [−1, +1], not a return forecast"
+            : "expected next-window return"}
+        </div>
       </div>
 
+      {isRank ? (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-relaxed text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+          Ranked-quintile book: +1 is the top-ranked symbol this window, −1 the
+          bottom. The engine&apos;s λ·c cost filter compares this score against a
+          20&nbsp;bps fee threshold, so it never binds — matching the ranked
+          backtest rather than gating on forecast returns.
+        </div>
+      ) : (
       <div>
         <div className="mb-1 flex justify-between font-mono text-[11px] text-zinc-500">
           <span>{pct1(lo)}</span>
@@ -109,6 +134,7 @@ function SignalGauge({ prediction }: { prediction: Prediction }) {
           </span>
         </div>
       </div>
+      )}
     </div>
   );
 }
@@ -561,6 +587,48 @@ function FeaturePanel({ features }: { features: FeatureWindow[] }) {
   );
 }
 
+function LiveBookPnL({ portfolio }: { portfolio: Portfolio | null }) {
+  if (!portfolio || !portfolio.enabled) {
+    return (
+      <Card
+        title="Live Bybit Demo book P&L"
+        subtitle="REAL fills on virtual USDT — not live money"
+      >
+        <p className="py-8 text-center text-sm text-zinc-500">Warming up…</p>
+      </Card>
+    );
+  }
+  const realized = portfolio.total_realized_pnl ?? 0;
+  const unrealized = portfolio.total_unrealized_pnl ?? 0;
+  const total = portfolio.total_pnl ?? 0;
+  const tone = total >= 0 ? "text-emerald-500" : "text-red-500";
+  return (
+    <Card
+      title="Live Bybit Demo book P&L"
+      subtitle="REAL market orders on virtual USDT (not live money) · aggregated across all open positions"
+    >
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+        <Stat label="total P&L (live)" value={money(total)} tone={tone} />
+        <Stat label="realized" value={money(realized)} />
+        <Stat label="unrealized" value={money(unrealized)} />
+        <Stat label="closed trades" value={String(portfolio.n_trades ?? 0)} />
+        <Stat
+          label="win rate"
+          value={portfolio.win_rate == null ? "—" : pct1(portfolio.win_rate)}
+        />
+      </div>
+      <p className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-[11px] leading-relaxed text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-200">
+        This is the <span className="font-semibold">actual P&L of the live Bybit Demo book</span> (real
+        market orders, virtual funds). It is <span className="font-semibold">not</span> the
+        &ldquo;signal paper-equity&rdquo; curve further down, which is a simulated equity from the
+        predictor&rsquo;s directions and is <span className="font-semibold">not</span> live fills.
+        Positions are opened on the FAS+SMB signal and held until it decays/flips (slow factor — holds
+        for hours to days), so realized closes arrive on that timescale.
+      </p>
+    </Card>
+  );
+}
+
 export default function SignalPage() {
   const [symbols, setSymbols] = useState<string[]>([]);
   const [symbol, setSymbol] = useState("BTCUSDT");
@@ -707,6 +775,8 @@ export default function SignalPage() {
 
       <PipelineHealth summary={health.data} symbol={symbol} />
 
+      <LiveBookPnL portfolio={portfolio.data ?? null} />
+
       <Card
         title="Live minute tape"
         subtitle="raw venue 1m bars straight off the Kafka stream · re-forms every ~20s, independent of the 5m windows below"
@@ -807,20 +877,28 @@ export default function SignalPage() {
       </Card>
 
       <Card
-        title="Paper execution"
+        title="Live Bybit Demo book"
         subtitle={
           execution.data?.execution
-            ? `${execution.data.execution.symbol} · simulated fills on live signals · adverse-side slippage ${execution.data.execution.slippage_bps}bps · taker ${execution.data.execution.taker_fee_bps}bps · last ${execution.data.execution.fills.length} fills`
-            : "paper book on the predictor's real signals — first position opens at the close of the window after a signal appears"
+            ? `${execution.data.execution.symbol} · REAL Bybit Demo fills on virtual USDT (not live money) · ${execution.data.execution.fills.length} closed fills · first position opened at the window close after a signal appeared`
+            : "live Bybit Demo book on the FAS+SMB signal — first position opens at the close of the window after a signal appears"
         }
       >
         <ExecutionPanel
           execution={execution.data?.execution ?? null}
           portfolio={portfolio.data ?? null}
+          symbol={symbol}
         />
       </Card>
 
-      <Card title="Model curve · no fees · point-in-time replay" subtitle={strat ? `${strat.n_windows} windows · ${strat.n_trades} trades` : "compounded from realized 5m signals"}>
+      <Card
+        title="Signal paper-equity (NOT live fills)"
+        subtitle={
+          strat
+            ? `SIMULATED equity from the predictor's directions — ${strat.n_windows} windows · ${strat.n_trades} trades · separate from the real Bybit Demo book P&L above`
+            : "SIMULATED equity from the predictor's directions — not live fills"
+        }
+      >
         {strat ? <PnLStrip strategy={strat} /> : <p className="py-12 text-center text-sm text-zinc-500">Warming up — equity compounds from realized signals.</p>}
       </Card>
 

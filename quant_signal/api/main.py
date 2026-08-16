@@ -286,7 +286,11 @@ def market_health_summary() -> dict:
         symbols=csv_list(settings.ingest_default_crypto_symbols),
         live_prefix=settings.stream_redis_live_prefix,
         feature_prefix=settings.stream_redis_feature_prefix,
-        prediction_prefix=settings.stream_redis_prediction_prefix,
+        prediction_prefix=(
+            settings.stream_asym_prediction_prefix
+            if settings.stream_strategy == "asym"
+            else settings.stream_redis_prediction_prefix
+        ),
         simulation_prefix=settings.stream_redis_simulation_prefix,
         strategy_prefix=settings.stream_redis_strategy_prefix,
         execution_prefix=settings.stream_redis_execution_prefix,
@@ -371,9 +375,12 @@ def market_predict(symbol: str) -> dict:
     kv = _kv()
     if kv is None:
         return {"symbol": symbol.upper(), "enabled": False, "prediction": None}
-    prediction = kv.get_json(
-        prediction_key(settings.stream_redis_prediction_prefix, symbol.upper())
+    pfx = (
+        settings.stream_asym_prediction_prefix
+        if settings.stream_strategy == "asym"
+        else settings.stream_redis_prediction_prefix
     )
+    prediction = kv.get_json(prediction_key(pfx, symbol.upper()))
     return {"symbol": symbol.upper(), "enabled": True, "prediction": prediction}
 
 

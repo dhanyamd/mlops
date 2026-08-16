@@ -1,0 +1,815 @@
+\documentclass[11pt,letterpaper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{setspace}
+\usepackage{natbib}
+\usepackage[hidelinks]{hyperref}
+\usepackage{array}
+\bibpunct{(}{)}{;}{a}{}{,}
+\onehalfspacing
+\setlength{\parskip}{0.35em}
+
+%% ANONYMOUS=1 builds the double-anonymous version for Management Science.
+%% Leave undefined for the SSRN version, which REQUIRES author + affiliation.
+\newif\ifanon\anonfalse   %% <-- change to \anontrue for the MS submission
+\newcommand{\AUTHORNAME}{\ifanon [omitted for review]\else Dhanya MD\fi}
+\newcommand{\AUTHORAFFIL}{\ifanon\else Independent Researcher\fi}
+\newcommand{\AUTHOREMAIL}{\ifanon\else dhanya13md@gmail.com\fi}
+
+\title{\textbf{Alpha Without a Peer Group:\\[2pt]
+Self-Referential Factor Investing in Perpetual Futures}}
+\author{\AUTHORNAME\\ \small \AUTHORAFFIL\\ \small \texttt{\AUTHOREMAIL}}
+\date{This version: \today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+Cross-sectional factor investing rests on an assumption rarely stated: that
+assets can meaningfully be ranked against one another. Equities supply the anchor
+that makes this reasonable---shared accounting, industry structure, cash flows.
+Cryptocurrency perpetual futures supply none of it. We ask what happens to factor
+construction when the comparability anchor is absent. Transporting ten factors
+from the published equity literature to 112 perpetual contracts over a 363-week
+panel, we find that ranking each contract against its own trailing history
+dominates ranking it against its peers in nine of eleven cases, raising mean
+annualised Sharpe from 1.01 to 1.45; with the carry component removed entirely
+the effect persists at eight of eleven. We decompose the mechanism: standardising
+each asset against its own history before ranking cross-sectionally recovers
+41\% of the gap, identifying scale heterogeneity as one channel and
+distributional robustness as the remainder. We further show that preserving
+factor independence through construction---forming one book per factor and
+combining returns rather than scores---adds 0.665 Sharpe ($t=5.82$) when both
+constructions are tuned over an identical grid of 1,286 configurations. We
+introduce a factor exploiting aggressor-side information that centralised venues
+publish exactly and equity research must infer; it ranks third of eleven by
+leave-one-out contribution. Results survive walk-forward selection across seven
+rebalance anchors, a held-out universe test with a matched-breadth control, costs
+at four times the modelled level, and a deflated Sharpe correction whose trial
+count is read from an executed experiment log.
+
+\medskip
+\noindent\textbf{Keywords:} factor investing, cross-sectional ranking,
+cryptocurrency, perpetual futures, portfolio construction, backtest overfitting
+
+\noindent\textbf{JEL:} G11, G12, G14, C58
+
+\medskip
+\noindent\fbox{\parbox{0.95\textwidth}{\small
+\textbf{[PLACEHOLDER --- COMPLETE BEFORE UPLOAD]} SSRN requires a disclosure
+statement, displayed with the abstract, where AI tools were used in preparing the
+work.}}
+\end{abstract}
+
+\thispagestyle{empty}
+\newpage
+\setcounter{page}{1}
+
+\section{Introduction}
+
+Every cross-sectional factor model begins with a comparison. We say an asset is
+cheap, or small, or heavily traded, and each term carries an implicit completion:
+\emph{relative to its peers}. The comparison is defensible in equities because
+the market supplies scaffolding that makes it meaningful. Firms report under
+common accounting standards, occupy classifiable industries, and are valued
+against cash flows that exist. Ranking them compares like with like.
+
+Cryptocurrency perpetual futures dissolve that scaffolding. There are no
+earnings, no industry classification, and no accounting identity tying price to
+anything. Whether one contract's turnover is high \emph{relative to another's} is
+a question the data cannot really answer, because the quantities were never
+commensurate. Yet the factor literature, in turning to this market, has largely
+imported the cross-sectional apparatus unchanged.
+
+This paper asks what that assumption costs, and what replaces it.
+
+Our design is deliberately conservative. Rather than proposing new signals, we
+transport ten factors established in the published equity literature to 112
+perpetual contracts across a 363-week panel, retaining their original definitions
+and sign conventions. Nothing is estimated. The only quantity we vary is the
+frame of comparison: in one specification each contract is ranked against its
+peers within the week, as the literature does; in the other, against its own
+trailing history---asking not whether an asset is unusual relative to others, but
+whether it is unusual \emph{for itself}.
+
+\textbf{First, the comparison frame matters, and the effect is not an artefact of
+carry.} Self-referential ranking wins in nine of eleven factors, raising mean
+annualised Sharpe from 1.011 to 1.451. Because we find the funding-rate component
+contributes 0.5--1.0 Sharpe to every book---a magnitude we report as a finding in
+its own right---we repeat the comparison with that component removed entirely. It
+survives: eight of eleven factors, with a gap of $+0.265$.
+
+\textbf{Second, we identify a mechanism rather than only an effect.} A controlled
+intermediate specification, standardising each asset against its own trailing
+window before ranking cross-sectionally, recovers 41\% of the gap. Scale
+heterogeneity is therefore one channel but not the dominant one. We attribute the
+residual to distributional robustness: a rank transform is invariant to the shape
+of the distribution it is applied to, whereas standardisation normalises only the
+first two moments and implicitly assumes approximate normality---an assumption
+these distributions violate severely.
+
+\textbf{Third, construction dominates selection.} Standard practice blends factor
+scores into a composite and forms one portfolio from the induced ordering. This
+compresses several near-independent signals into a single ranking and discards
+their independence before any position is taken. Forming one book per factor and
+combining the resulting \emph{returns}, holding every hyperparameter fixed,
+improves performance by $0.665$ Sharpe ($t=5.82$), favourable in 15 of 17 matched
+comparisons. Both constructions were swept over an identical grid of 1,286
+configurations; comparing a tuned method against an untuned baseline is the most
+common way this literature manufactures a result, and we take care not to.
+
+\textbf{Fourth, we exhibit a factor whose construction depends on information
+this market publishes and equity research must infer.} Work on Chinese A-shares
+established that predictive content resides in the \emph{shape} of the per-bar
+trade-size distribution rather than its mean. That measure is necessarily
+direction-blind, since A-share tick data does not reliably identify the
+initiating side. Perpetual futures publish taker-side volume on every bar,
+permitting the distribution to be partitioned by initiating side and its
+asymmetry measured. We do not overstate the novelty: US equity researchers can
+infer direction via the tick rule \citep{leeready1991}, with known error rates.
+The distinction is measured versus estimated. The resulting factor ranks third of
+eleven by leave-one-out contribution.
+
+Throughout we hold ourselves to the significance standard of \citet{harvey2016},
+who argue that the proliferation of published factors implies a hurdle of $t>3.0$
+rather than the conventional $t>2.0$. We report where we clear it and where we do
+not. Table~\ref{tab:evidence} summarises every statistical test applied in this
+paper, the threshold each is judged against, and the outcome; individual tests
+are developed in Sections~5--7.
+
+Finally, this paper reports an audit of its own claims. During preparation we
+searched the research codebase for the executable artifact behind every headline
+figure; four had none, including a pair of statistics that proved to be
+tail-index values transcribed from a document about an unrelated strategy.
+Section~\ref{sec:audit} reports this alongside the infrastructure now preventing
+recurrence. We regard the reliability of a reported backtest as an empirical
+property of the pipeline producing it, and therefore as something to be tested.
+
+\section{Related literature}
+
+\textbf{Cross-sectional factor construction.} The characteristic-sorted portfolio
+is the workhorse of empirical asset pricing \citep{famafrench1993}, and the debate
+over whether characteristics or covariances drive returns \citep{danieltitman1997}
+presumes throughout that assets are commensurate enough to sort. We take that
+presumption as the object of study rather than as background.
+
+\textbf{Time-series versus cross-sectional signals.} \citet{moskowitz2012}
+established that an asset's own past return predicts its future return
+independently of any cross-sectional ordering. Our ranking primitive is the same
+statistical object; the contribution is not the primitive but its systematic
+application across eleven factors spanning price, flow, positioning and
+trade-size distribution, with a decomposition of why it works.
+
+\textbf{Cryptocurrency asset pricing.} Recent work constructs cross-sectional
+factor models for digital assets, including four-factor specifications estimated
+on large panels. That literature builds a \emph{cross-sectional} model, which
+makes Section~\ref{sec:frame} a direct empirical response rather than a parallel
+exercise.
+
+\textbf{Backtest overfitting.} \citet{bailey2014} formalise deflation of an
+observed Sharpe by the expected maximum across trials; \citet{harvey2016} raise
+the significance hurdle; \citet{hoffstein2018} document that rebalance-schedule
+choice alone generates dispersion often exceeding the effect under study. We
+apply all three, and in the first case address the standard weakness that the
+trial count is supplied by the researcher.
+
+\section{Data}
+
+\textbf{Universe.} 112 USDT-margined perpetual futures contracts, screened for
+continuous trading and finite positive prices, spanning 363 weeks. After factor
+warm-up the strategy is evaluable on 308 weekly rebalances and active on 282
+(Table~\ref{tab:data}).
+
+\textbf{Sources.} Price and volume derive from hourly bars in a public bulk
+archive, resampled weekly. Intraday inputs are reduced from 1-hour and 5-minute
+bars to one record per UTC day. Positioning data---open interest, top-trader and
+all-account long/short ratios---comes from a keyless exchange metrics endpoint at
+daily frequency. No proprietary or paid data is used.
+
+\textbf{Two venue properties are load-bearing.} First, aggressor side is
+published: every bar carries taker-buy volume, where equity microstructure
+research must infer direction \citep{leeready1991}. Second, funding is observable
+and material---a price-only backtest of a long/short book here overstates returns
+by approximately 3.9\% annually. We subtract realised funding at every rebalance.
+
+\textbf{A resolution constraint discovered by failure.} Trade-size distribution
+factors cannot be computed hourly: a day divides into roughly twelve bars per
+side, below the twenty-observation minimum the shape estimator requires. Measured
+computability is 0\% at 1-hour and 100\% at 5-minute. The remaining intraday
+factors measured \emph{better} hourly. The pipeline therefore runs at two
+resolutions simultaneously---a constraint the data imposed, not an optimisation.
+
+\section{Methodology}
+
+\subsection{Ranking primitives}
+
+Let $f_{i,t}$ denote a raw factor observation for asset $i$ at time $t$. The
+cross-sectional score ranks within a date,
+\[
+s^{\mathrm{XS}}_{i,t} = \mathrm{rank}\!\left(f_{i,t} \mid \{f_{j,t}\}_{j=1}^{N}\right),
+\]
+meaningful only if the $f_{j,t}$ are commensurate. The self-referential score
+ranks within an asset,
+\[
+s^{\mathrm{TS}}_{i,t} = \mathrm{rank}\!\left(f_{i,t} \mid \{f_{i,\tau}\}_{\tau=t-w}^{t-1}\right),
+\]
+making no cross-asset comparison. Both map to $[-1,+1]$ via
+$((\mathrm{rank}-0.5)/n - 0.5)\cdot 2$, which is centred, antisymmetric and
+NaN-preserving. We use $w=52$ weeks with a 26-week minimum.
+
+The two degrade differently. As the cross-section becomes more heterogeneous,
+$s^{\mathrm{XS}}$ increasingly ranks \emph{asset identity} rather than
+\emph{signal}: a contract whose order flow is systematically larger than
+another's occupies the same tail week after week irrespective of new information.
+$s^{\mathrm{TS}}$ is immune by construction.
+
+\subsection{Portfolio formation}
+
+Each factor independently forms a dollar-neutral quintile book---long the top
+20\%, short the bottom 20\%, weights $\pm 1/n$. Scores are never blended. Book
+\emph{returns} are combined by inverse trailing volatility,
+$w^{(k)}_t \propto 1/\hat\sigma^{(k)}_{t-1}$ normalised to sum to one, with the
+estimate lagged so no contemporaneous information enters. Where the risk model is
+not estimable the book is held flat rather than traded equally weighted.
+
+\subsection{Carry and turnover}
+
+Each score is penalised by the contract's cross-sectional funding rank---the one
+place a cross-sectional comparison is appropriate, since funding is denominated
+identically across contracts. Section~\ref{sec:carry} shows this component is far
+more consequential than the term ``tilt'' suggests.
+
+A uniform partial adjustment caps per-rebalance turnover. At the modelled maker
+fee this \emph{costs} performance monotonically; what it purchases is robustness
+to cost misestimation. The deployed configuration therefore uses a cap that is
+not Sharpe-maximising---a deliberate divergence we state rather than leave to be
+discovered.
+
+\subsection{Return construction}
+\[
+r_t = \underbrace{w_t' \, \mathrm{fwd}_t}_{\text{price}}
+- \underbrace{w_t' \, \mathrm{funding}_{t+1}}_{\text{carry paid}}
+- \underbrace{|w_t - w_{t-1}|' \, c}_{\text{transaction cost}}
+\]
+where $c$ is a liquidity-scaled maker fee from 1 basis point for the most liquid
+quintile to 5 for the least, interpolated on cross-sectional dollar-volume rank.
+Forward returns are clipped at $+100\%$ so a single listing spike cannot
+manufacture a Sharpe.
+
+\subsection{Point-in-time discipline}
+
+Every factor input is leak-tested: a historical score is recomputed with all
+future observations deleted and required to reproduce exactly. This test exists
+because it previously \emph{failed}. A ranking helper applied along the wrong
+array axis ranked each observation against the asset's entire history, future
+included, altering historical scores for 98 of 112 contracts. Research and
+production code agreed perfectly throughout, because both called the same
+incorrect function. All results here postdate the correction and pass at
+$0.00\mathrm{e}{+}00$.
+
+\section{Empirical results}
+
+\subsection{The comparison frame}
+\label{sec:frame}
+
+Table~\ref{tab:frame} reports eleven single-factor books under both ranking
+frames, holding data, universe, costs and construction fixed, both as the
+strategy trades it and with carry removed entirely.
+
+As traded, mean annualised Sharpe rises from 1.011 to 1.451, nine of eleven
+factors improving. With carry removed it rises from 0.383 to 0.648, eight of
+eleven improving. \textbf{The ranking effect is independent of carry}: the
+component amplifies the gap but does not create it. No factor changes sign under
+either specification, so the appropriate claim is degradation of the
+cross-sectional frame, not its failure. One factor reverses the sign of its
+ranking preference when carry is removed; at this noise level individual
+reversals should not be interpreted, and only the aggregate is meaningful.
+
+\subsection{Mechanism}
+
+Table~\ref{tab:mech} introduces an intermediate specification: standardise each
+asset against its own trailing window, then rank cross-sectionally. If scale
+heterogeneity drives the effect this should recover it. It recovers 41\%.
+
+Scale heterogeneity is therefore one channel but not the dominant one. We
+attribute the residual to distributional robustness: standardisation normalises
+only the first two moments, whereas a rank against an asset's own history is
+invariant to the entire distributional shape. Tests separating the fat-tail
+component from higher moments are left to future work.
+
+\subsection{Carry is a factor, not an adjustment}
+\label{sec:carry}
+
+Table~\ref{tab:carry} reports what removing the funding component costs each
+book: between $+0.540$ and $+1.048$ annualised Sharpe. Traded alone on the
+matched sample, carry returns 1.250 ($t=2.91$). Carry is a first-order signal in
+perpetual futures. Every single-factor figure in this paper includes it, and we
+state so rather than presenting those numbers as the ranking effect in isolation.
+
+\subsection{Construction dominates selection}
+
+Table~\ref{tab:constr} reports the construction comparison two ways. The paired
+test holds every hyperparameter fixed and varies only construction across 17
+matched cells: 1.657 against 0.992, a mean difference of $+0.665$ with $t=5.82$,
+favourable in 15 of 17. The best-of-grid comparison sweeps all six variants over
+the same grid; the proposed construction ranks first on both maximum (2.571) and
+mean (1.537), the conventional last (1.971 and 0.995).
+
+\subsection{Factor contributions}
+
+Table~\ref{tab:loo} reports leave-one-out contributions on a matched 282-week
+sample---the full book minus each factor, versus the full book. This is the
+quantity of interest for a portfolio member, as distinct from standalone
+performance.
+
+The trade-size asymmetry factor ranks third of eleven, and its contribution is
+present in \emph{both} halves of the sample ($+0.030$ and $+0.079$), indicating
+structure rather than a single-period artefact. Separately, \textbf{four factors
+carry negative contributions}: the book is marginally better without them. We
+report the eleven-factor specification because it was fixed a priori; removing
+the underperformers post hoc would be a selection decision made with knowledge of
+the outcome, and we decline to make it.
+
+\section{Robustness}
+
+\subsection{Walk-forward with rebalance-anchor variation}
+
+Configuration is selected on a trailing 104-week window and evaluated on the
+following 26 weeks, rolling forward. Because a weekly strategy also carries an
+unmeasured exposure to \emph{which weekday} it rebalances \citep{hoffstein2018},
+the panel is rebuilt from hourly bars on each of seven anchors and the procedure
+repeated (Table~\ref{tab:anchor}).
+
+Mean out-of-sample Sharpe is 2.068, all seven anchors profitable, 182
+out-of-sample weeks per anchor. We report the mean rather than the maximum, and
+state explicitly that Monday---the schedule actually traded---is the most
+favourable of the seven. Six of seven anchors clear the \citet{harvey2016} hurdle
+of $t>3.0$; Friday, at $t=2.95$, does not.
+
+\subsection{Fold geometry}
+
+Table~\ref{tab:geom} varies the train/test split from 78/13 to 156/26. All seven
+geometries produce profitable out-of-sample series with $t$ from 3.70 to 5.55,
+every one clearing $t>3.0$. The geometry used for the headline is mid-range
+rather than maximal.
+
+\subsection{Held-out universe}
+
+Time-series testing does not establish that hyperparameters generalise across
+\emph{assets}. We hold out symbols: configuration is selected on 78 contracts and
+evaluated on 34 that had no influence on the choice, across eight random splits,
+with the cross-section rebuilt within each side so ranks, quintile boundaries and
+the cost model are computed only among symbols present.
+
+A naive comparison is misleading here, and we flag it because we initially made
+it. A 34-contract book is mechanically inferior to a 78-contract one, since
+information ratio scales with the square root of breadth \citep{grinold1989}.
+Table~\ref{tab:holdout} therefore adds a matched-breadth control: the same
+selected configuration evaluated on a random 34 of the \emph{training} contracts.
+
+All eight splits are profitable out of universe. More informative than the ratio
+is the stability of the selection: all eight chose identical funding weight,
+turnover treatment and quintile width, and five of eight the same ranking window;
+fitted noise would not converge this way. We note that only one of eight held-out
+splits reaches $t>3.0$, a consequence of reduced breadth, and that the held-out
+and control distributions overlap substantially. The defensible claim is that
+retention is materially above 50\%, not precisely 83\%.
+
+\subsection{Multiple testing with a measured trial count}
+
+The deflated Sharpe ratio \citep{bailey2014} requires the number of trials and
+their dispersion. Both describe the \emph{search} rather than the strategy and
+cannot be recovered from the winning backtest, so in practice they are supplied
+from recollection---precisely the quantity the correction exists to discipline.
+We instead log every evaluated configuration to an append-only registry, written
+by the code performing the evaluation, and read both inputs from it
+(Table~\ref{tab:dsr}).
+
+We report both readings. The defensible choice is $N=211$, since roughly 1,075 of
+the logged cells constitute the construction ablation executed \emph{after} the
+strategy was specified, to measure the baseline fairly rather than to select among
+candidates. The conservative reading falls below 0.95 and we state it. Its
+instability is itself the argument against it: the value fell from 0.9507 to
+0.9475 purely because an ablation continued running. A statistic that penalises
+conducting additional controlled experiments is not measuring selection bias.
+
+\subsection{Transaction costs}
+
+Table~\ref{tab:cost} scales the entire liquidity-adjusted cost curve. The
+uncapped book is superior only while realised costs remain near the assumption,
+deteriorating sharply beyond roughly four times it; the deployed configuration
+remains viable at eight times.
+
+\subsection{Research--production equivalence}
+
+The relationship between a published backtest and the system trading it is
+normally asserted. We test it. Research and live paths call a single shared
+implementation, and an automated gate asserts point-in-time integrity,
+determinism, dollar-neutrality, non-emptiness and identical position directions,
+exiting non-zero so it can block deployment (Table~\ref{tab:gate}).
+
+\section{Economic significance and capacity}
+
+A Sharpe ratio is not an investment. Table~\ref{tab:cap} estimates deployable
+capital from realised liquidity, the book's measured breadth (76 concurrent
+positions) and measured weekly turnover (0.369 of gross), under a participation
+constraint on the 25th-percentile contract by average daily dollar volume---the
+binding constraint, since the book must trade its illiquid members as well as its
+liquid ones.
+
+At 2\% participation the strategy supports approximately \$67 million; at 5\%,
+approximately \$168 million. These are order-of-magnitude bounds, not precise
+limits: they assume participation scales linearly with capital and ignore that
+impact is convex in size, so the true limit is lower. They also inherit the
+maker-fee assumption, which Section~6.6 shows the deployed configuration survives
+to eight times---bounding, rather than resolving, the concern.
+
+\section{What did not survive}
+\label{sec:audit}
+
+\subsection{An audit of our own claims}
+
+Before submission we searched the research codebase for the executable artifact
+behind every headline figure. Four had none (Table~\ref{tab:audit}). A separate
+claim---that one factor reverses sign between ranking frames---was tested
+directly and failed: zero of eleven reverse.
+
+We report this because the corrected figures appear in this paper and the
+discarded ones do not, and because the episode motivates the infrastructure in
+Sections~6.4 and~6.6.
+
+\subsection{Negative results}
+
+We conjectured that crypto factors are structurally more orthogonal than equity
+factors. Measured pairwise correlation among Alpha101-style books is $+0.2173$ in
+this market against a reported 0.159 in equities: factors here are \emph{more}
+correlated, not less. The orthogonality that makes per-factor construction
+valuable derives from data-source diversity---price, flow, positioning,
+trade-size distribution---not from the asset class.
+
+One candidate factor produced a Spearman information coefficient of $+0.0506$
+($t=6.10$) alongside a Pearson coefficient of $+0.0172$ and a decile table with
+no monotonic gradient. Returns here are severely fat-tailed; a factor can order
+the typical asset correctly while being wrong about the few observations that
+dominate realised profit. We report Pearson alongside Spearman throughout.
+
+\section{Conclusion}
+
+Factor investing imported into cryptocurrency perpetual futures inherits an
+assumption this market does not support: that its constituents are comparable. We
+find the assumption costly but not fatal. Cross-sectional ranking remains
+profitable, while ranking each contract against its own history performs
+materially better in nine of eleven cases---eight of eleven with carry removed---
+for reasons we partly decompose. We further find that how signals are combined
+after ranking matters more than any individual signal, and we exhibit a factor
+whose construction depends on information this market publishes exactly and
+equity research must infer.
+
+We emphasise the structure of the evidence as much as any single result:
+out-of-sample in time and across assets, replicated over seven rebalance schedules
+and seven fold geometries, corrected for multiple testing using a trial count read
+from an executed log, stress-tested to eight times modelled costs, and verified to
+be computed identically by the deployed system. Each test was capable of
+overturning the result.
+
+\textbf{Limitations.} Our evidence covers one venue over roughly seven years.
+Out-of-sample testing is conducted in time and across the cross-section, but not
+across venues. Capacity is estimated under a linear participation assumption that
+understates convex impact. One factor's sign convention was inverted with
+knowledge of the data. The held-out universe result rests on eight splits. Four
+of the eleven factors contribute negatively on leave-one-out.
+
+\newpage
+\section*{Tables}
+
+\begin{table}[h]\centering
+\caption{Summary of statistical evidence. Every test applied in this paper, the
+threshold it is judged against, and the outcome.}\label{tab:evidence}
+\small
+\begin{tabular}{p{0.31\textwidth}p{0.24\textwidth}p{0.18\textwidth}c}
+\toprule
+test & statistic & threshold & outcome \\
+\midrule
+\multicolumn{4}{l}{\textbf{In-sample significance}} \\
+$t$-statistic, full book & $t=5.03$, $n=282$ & $t>3.0$ (Harvey) & pass \\
+Probabilistic Sharpe vs zero & $\mathrm{PSR}=1.0000$ & $>0.95$ & pass \\
+\midrule
+\multicolumn{4}{l}{\textbf{Multiple-testing correction}} \\
+Deflated Sharpe, strategy search & $0.9885$, $N=211$ & $>0.95$ (Bailey) & pass \\
+Deflated Sharpe, all logged cells & $0.9475$, $N=1{,}286$ & $>0.95$ & \textbf{fail} \\
+\midrule
+\multicolumn{4}{l}{\textbf{Out-of-sample in time}} \\
+Walk-forward, anchor-averaged & $SR=2.068$ & $>0$ & pass \\
+Walk-forward, per anchor & $t=2.95$--$5.08$ & $t>3.0$ & 6 of 7 \\
+Walk-Forward Efficiency & $103\%$ & $>50$--$60\%$ & pass \\
+Fold-geometry robustness & $t=3.70$--$5.55$ & $t>3.0$ & 7 of 7 \\
+\midrule
+\multicolumn{4}{l}{\textbf{Out-of-sample across assets}} \\
+Held-out universe, 8 splits & 8 of 8 profitable & $>0$ & pass \\
+Retention at matched breadth & $83\%$ & $>50\%$ & pass \\
+Held-out per-split $t$ & 1 of 8 reach $t>3.0$ & $t>3.0$ & \textbf{1 of 8} \\
+\midrule
+\multicolumn{4}{l}{\textbf{Rebalance-schedule luck (Hoffstein)}} \\
+Timing luck, 7 anchors in-sample & $t=3.67$--$5.03$ & $t>3.0$ & 7 of 7 \\
+Anchors profitable & 7 of 7 & --- & pass \\
+\midrule
+\multicolumn{4}{l}{\textbf{Construction effect}} \\
+Paired difference, 17 cells & $+0.665$, $t=5.82$ & $t>3.0$ & pass \\
+Cells favouring construction & 15 of 17 & $>50\%$ & pass \\
+\midrule
+\multicolumn{4}{l}{\textbf{Individual components}} \\
+Trade-size asymmetry, standalone & $t=3.35$ & $t>3.0$ & pass \\
+Trade-size asymmetry, subperiods & $+0.030$ / $+0.079$ & both $>0$ & pass \\
+Carry, standalone & $t=2.91$ & $t>3.0$ & \textbf{fail} \\
+\midrule
+\multicolumn{4}{l}{\textbf{Cost and capacity}} \\
+Cost robustness, deployed book & viable to $8\times$ & $\ge 1\times$ & pass \\
+Capacity at 2\% participation & \$67m & --- & --- \\
+\midrule
+\multicolumn{4}{l}{\textbf{Implementation integrity}} \\
+Point-in-time leak, all factors & $0.00\mathrm{e}{+}00$ & $=0$ & pass \\
+Dollar-neutrality & $9.02\mathrm{e}{-}17$ & $\approx 0$ & pass \\
+Research $=$ live directions & 0 of 4{,}480 & $=0$ & pass \\
+Determinism & exact & exact & pass \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]\centering
+\caption{Sample and universe.}\label{tab:data}
+\begin{tabular}{ll}
+\toprule
+Universe & 112 USDT-margined perpetual futures \\
+Panel & 363 weeks \\
+Rebalances evaluable / active & 308 / 282 \\
+Rebalance frequency & weekly \\
+Factors & 11 (10 transported, 1 introduced) \\
+Cost model & liquidity-scaled maker fee, 1--5 bp \\
+Funding & subtracted at every rebalance \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]\centering
+\caption{Ranking frame. Eleven single-factor books, annualised Sharpe, net of
+funding and costs. ``Carry removed'' sets the funding weight to zero.}
+\label{tab:frame}
+\begin{tabular}{lcccc}
+\toprule
+specification & cross-sectional & self-referential & gap & self wins \\
+\midrule
+as traded (with carry) & 1.011 & \textbf{1.451} & $+0.440$ & 9 of 11 \\
+carry removed & 0.383 & \textbf{0.648} & $+0.265$ & 8 of 11 \\
+\midrule
+sign reversals & \multicolumn{4}{c}{\textbf{0 of 11} under either specification} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]\centering
+\caption{Mechanism decomposition.}\label{tab:mech}
+\begin{tabular}{lcc}
+\toprule
+specification & mean annualised Sharpe & gap recovered \\
+\midrule
+cross-sectional, raw & 1.011 & --- \\
+cross-sectional, per-asset standardised & 1.192 & 41\% \\
+self-referential & \textbf{1.451} & 100\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]\centering
+\caption{Carry is a factor. Single-factor books with and without the funding
+component.}\label{tab:carry}
+\begin{tabular}{lccc}
+\toprule
+factor & with carry & without carry & carry contributes \\
+\midrule
+TSKD & 1.442 & 0.394 & $+1.048$ \\
+TKU & 1.494 & 0.674 & $+0.820$ \\
+OFI & 1.241 & 0.480 & $+0.762$ \\
+AVOL & 1.222 & 0.663 & $+0.559$ \\
+Quad & 1.896 & 1.356 & $+0.540$ \\
+\midrule
+\multicolumn{4}{l}{\emph{carry traded alone, matched sample:} 1.250 ($t=2.91$)} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]\centering
+\caption{Construction. Both constructions swept over an identical grid of 1,286
+configurations.}\label{tab:constr}
+\begin{tabular}{lcc}
+\toprule
+\multicolumn{3}{l}{\textbf{Panel A: paired comparison (hyperparameters fixed)}} \\
+\midrule
+matched cells & \multicolumn{2}{c}{17} \\
+one book per factor, self-referential & \multicolumn{2}{c}{1.657} \\
+blended scores, cross-sectional, equal weight & \multicolumn{2}{c}{0.992} \\
+mean difference & \multicolumn{2}{c}{$\mathbf{+0.665}$**} \\
+$t$-statistic of difference & \multicolumn{2}{c}{\textbf{5.82}} \\
+cells favouring proposed construction & \multicolumn{2}{c}{15 of 17} \\
+\midrule
+\multicolumn{3}{l}{\textbf{Panel B: best-of-grid, all six variants}} \\
+\midrule
+construction & best & mean \\
+\midrule
+self / books / risk parity & \textbf{2.571} & \textbf{1.537} \\
+self / blend / equal & 2.468 & 1.288 \\
+self / books / equal & 2.296 & 1.510 \\
+cross / books / equal & 2.200 & 1.152 \\
+cross / books / risk parity & 2.113 & 1.129 \\
+cross / blend / equal & 1.971 & 0.995 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]\centering
+\caption{Leave-one-out factor contributions. Matched 282-week sample; full
+eleven-factor book returns 2.161 ($t=5.03$).}\label{tab:loo}
+\begin{tabular}{lcc}
+\toprule
+factor & book without it & contribution \\
+\midrule
+Q & 2.033 & $+0.128$ \\
+TKU & 2.084 & $+0.078$ \\
+\textbf{TSKD} & \textbf{2.115} & $\mathbf{+0.046}$ \\
+WRspread & 2.123 & $+0.038$ \\
+AVOL & 2.135 & $+0.026$ \\
+OFI & 2.144 & $+0.018$ \\
+TopChg & 2.150 & $+0.011$ \\
+CPVv & 2.170 & $-0.008$ \\
+RSJ & 2.179 & $-0.017$ \\
+Quad & 2.180 & $-0.019$ \\
+CPVm & 2.189 & $-0.028$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]\centering
+\caption{Walk-forward out-of-sample Sharpe by rebalance anchor. 182
+out-of-sample weeks per anchor. Harvey et al. (2016) hurdle is $t>3.0$.}
+\label{tab:anchor}
+\begin{tabular}{lccccccc|c}
+\toprule
+anchor & Mon & Sat & Sun & Tue & Wed & Thu & Fri & mean \\
+\midrule
+OOS Sharpe & 2.713 & 2.496 & 2.423 & 1.855 & 1.753 & 1.656 & 1.579 & \textbf{2.068} \\
+$t$ & 5.08 & 4.67 & 4.53 & 3.47 & 3.28 & 3.10 & 2.95 & \\
+clears $t>3$ & yes & yes & yes & yes & yes & yes & \textbf{no} & 6 of 7 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]\centering
+\caption{Fold geometry. Monday anchor; only the train/test split varies.}
+\label{tab:geom}
+\begin{tabular}{cccccc}
+\toprule
+train & test & folds & $n_{\mathrm{oos}}$ & OOS Sharpe & $t$ \\
+\midrule
+78 & 13 & 16 & 208 & 2.257 & 4.51 \\
+78 & 26 & 8 & 208 & 1.850 & 3.70 \\
+104 & 13 & 14 & 182 & 2.968 & 5.55 \\
+\textbf{104} & \textbf{26} & \textbf{7} & \textbf{182} & \textbf{2.713} & \textbf{5.08} \\
+104 & 52 & 3 & 156 & 2.859 & 4.95 \\
+130 & 26 & 6 & 156 & 3.007 & 5.21 \\
+156 & 26 & 5 & 130 & 2.985 & 4.72 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]\centering
+\caption{Held-out universe, eight random splits. The matched-breadth control
+evaluates the same selected configuration on a random 34 of the \emph{training}
+contracts, isolating overfitting from the mechanical breadth effect.}
+\label{tab:holdout}
+\begin{tabular}{lccc}
+\toprule
+ & train (78) & held-out (34) & control: seen (34) \\
+\midrule
+mean annualised Sharpe & 2.204 & 1.127 & 1.366 \\
+median & 2.169 & 1.194 & 1.407 \\
+standard deviation & 0.212 & 0.286 & 0.281 \\
+splits profitable & --- & \textbf{8 of 8} & --- \\
+\midrule
+held-out / train & \multicolumn{3}{l}{51\% \quad \emph{conflates two effects; not interpretable}} \\
+control / train & \multicolumn{3}{l}{62\% \quad \emph{breadth, mechanical}} \\
+\textbf{held-out / control} & \multicolumn{3}{l}{\textbf{83\%} \quad \textbf{overfitting, at matched breadth}} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]\centering
+\caption{Deflated Sharpe ratio. Trial count and dispersion read from an executed
+experiment registry rather than supplied by the researcher.}\label{tab:dsr}
+\begin{tabular}{lcccc}
+\toprule
+trial set & $N$ & sd(SR) & $SR^{*}$ & DSR \\
+\midrule
+strategy-search configurations & 211 & 0.0768 & 0.2139 & \textbf{0.9885} \\
+all logged configurations & 1{,}286 & 0.0766 & 0.2547 & 0.9475 \\
+\midrule
+\multicolumn{5}{l}{\emph{selected:} $T=269$, weekly SR $0.3565$, skew $+0.145$, kurtosis $4.391$} \\
+\multicolumn{5}{l}{\emph{unconditional:} $\mathrm{PSR}(SR^{*}{=}0) = 1.0000$} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]\centering
+\caption{Transaction-cost robustness. The entire liquidity-scaled cost curve is
+multiplied by the stated factor.}\label{tab:cost}
+\begin{tabular}{lcccccc}
+\toprule
+cost multiple & 1$\times$ & 2$\times$ & 4$\times$ & 8$\times$ & 16$\times$ & 32$\times$ \\
+\midrule
+uncapped & 2.364 & 2.247 & 2.014 & 1.547 & 0.618 & $-1.222$ \\
+deployed (capped) & 2.161 & 2.117 & \textbf{2.028} & \textbf{1.851} & 1.496 & 0.789 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]\centering
+\caption{Research--production equivalence gate. Exits non-zero on any failure.}
+\label{tab:gate}
+\begin{tabular}{lll}
+\toprule
+assertion & measured & status \\
+\midrule
+point-in-time leak, all factors & $0.00\mathrm{e}{+}00$ & pass \\
+determinism & exact & pass \\
+dollar-neutrality (max $|$net$|$) & $9.02\mathrm{e}{-}17$ & pass \\
+gross exposure bound & $1.462 \le 2.0$ & pass \\
+non-emptiness & 308 built, 282 active & pass \\
+\textbf{research $=$ live directions} & \textbf{0 / 4{,}480} & \textbf{pass} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]\centering
+\caption{Capacity. Binding constraint is the 25th-percentile contract by average
+daily dollar volume (\$3.26m); breadth 76 positions, weekly turnover 0.369.}
+\label{tab:cap}
+\begin{tabular}{lc}
+\toprule
+participation rate & implied capacity \\
+\midrule
+1\% & \$33.6m \\
+2\% & \textbf{\$67.2m} \\
+5\% & \$167.9m \\
+10\% & \$335.8m \\
+\midrule
+\multicolumn{2}{l}{\emph{median contract ADV:} \$6.37m; \emph{10th percentile:} \$1.93m} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]\centering
+\caption{Claims that did not survive audit. All are excluded from this paper.}
+\label{tab:audit}
+\begin{tabular}{p{0.40\textwidth}p{0.52\textwidth}}
+\toprule
+claim as previously recorded & what the audit found \\
+\midrule
+walk-forward Sharpe ``2.68--2.95'' & tail-index statistics from a document concerning an unrelated strategy; not Sharpe ratios \\
+timing-luck dispersion ``$\pm0.24$'' & no script, output or artifact \\
+deflated Sharpe ``0.9966 / 0.9816'' & no artifact \\
+conventional baseline ``1.03'' & no artifact; approximately the conventional construction's \emph{mean} (0.992) compared against the proposed construction's \emph{maximum} \\
+one factor reverses sign between frames & tested directly; \textbf{zero of eleven} reverse \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\newpage
+\section*{Pre-submission checklist}
+\begin{itemize}\itemsep2pt
+\item Cite and differentiate the Management Science crypto factor-pricing
+literature; Section~\ref{sec:frame} is a direct empirical response.
+\item Insert the AI-use disclosure with the abstract (SSRN requirement).
+\item Data and code availability statement (Management Science requirement).
+\item Anonymise for Management Science: remove name, affiliation,
+acknowledgements; strip PDF metadata.
+\item Appendix: nineteen rejected constructions, enumerated.
+\item Appendix: 100-word plain-language abstract for the practitioner version.
+\end{itemize}
+
+\newpage
+\begin{thebibliography}{99}
+\bibitem[Asness et al.(2013)]{asness2013} Asness CS, Moskowitz TJ, Pedersen LH (2013) Value and momentum everywhere. \emph{Journal of Finance} 68(3):929--985.
+\bibitem[Bailey and L\'opez de Prado(2014)]{bailey2014} Bailey DH, L\'opez de Prado M (2014) The deflated Sharpe ratio. \emph{Journal of Portfolio Management} 40(5):94--107.
+\bibitem[Daniel and Titman(1997)]{danieltitman1997} Daniel K, Titman S (1997) Evidence on the characteristics of cross sectional variation in stock returns. \emph{Journal of Finance} 52(1):1--33.
+\bibitem[Fama and French(1993)]{famafrench1993} Fama EF, French KR (1993) Common risk factors in the returns on stocks and bonds. \emph{Journal of Financial Economics} 33(1):3--56.
+\bibitem[Grinold(1989)]{grinold1989} Grinold RC (1989) The fundamental law of active management. \emph{Journal of Portfolio Management} 15(3):30--37.
+\bibitem[Gu et al.(2020)]{gu2020} Gu S, Kelly B, Xiu D (2020) Empirical asset pricing via machine learning. \emph{Review of Financial Studies} 33(5):2223--2273.
+\bibitem[Harvey et al.(2016)]{harvey2016} Harvey CR, Liu Y, Zhu H (2016) \ldots and the cross-section of expected returns. \emph{Review of Financial Studies} 29(1):5--68.
+\bibitem[Hoffstein et al.(2018)]{hoffstein2018} Hoffstein C, Sibears J, Faber N (2018) Rebalance timing luck. \emph{Journal of Index Investing}.
+\bibitem[Kyle(1985)]{kyle1985} Kyle AS (1985) Continuous auctions and insider trading. \emph{Econometrica} 53(6):1315--1335.
+\bibitem[Lee and Ready(1991)]{leeready1991} Lee CMC, Ready MJ (1991) Inferring trade direction from intraday data. \emph{Journal of Finance} 46(2):733--746.
+\bibitem[Ledoit and Wolf(2004)]{ledoit2004} Ledoit O, Wolf M (2004) A well-conditioned estimator for large-dimensional covariance matrices. \emph{Journal of Multivariate Analysis} 88(2):365--411.
+\bibitem[Moskowitz et al.(2012)]{moskowitz2012} Moskowitz TJ, Ooi YH, Pedersen LH (2012) Time series momentum. \emph{Journal of Financial Economics} 104(2):228--250.
+\end{thebibliography}
+
+\end{document}

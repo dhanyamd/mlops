@@ -84,10 +84,16 @@ class Settings(BaseSettings):
     ingest_default_provider: str = "yahoo"
     ingest_default_days: int = 365
     ingest_default_symbols: str = "AAPL,MSFT,NVDA"
-    # Crypto universe: the two majors are the *signals* (they move first), the
-    # follower coins are the *targets* (they react a few minutes later — the
-    # lead-lag edge documented by Jia et al. 2023 and Guo et al. 2024).
-    ingest_default_crypto_symbols: str = "BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT"
+    # Crypto universe: the cross-sectional book the live xs_rel14 signal ranks
+    # across (top-by-volume perpetuals, all listed ≥3y so the 336h lookback is
+    # fully covered). The Flink 1h job is symbol-generic, so widening this list
+    # just adds more names to the raw→features→signal→execution flow.
+    ingest_default_crypto_symbols: str = (
+        "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT,TRXUSDT,LINKUSDT,NEARUSDT,"
+        "ADAUSDT,SUIUSDT,UNIUSDT,AVAXUSDT,CRVUSDT,PEPEUSDT,LTCUSDT,ICPUSDT,AAVEUSDT,"
+        "XLMUSDT,HBARUSDT,DOTUSDT,FILUSDT,ARBUSDT,LDOUSDT,BCHUSDT,OPUSDT,ATOMUSDT,"
+        "ETCUSDT,RUNEUSDT,GRTUSDT,ZECUSDT"
+    )
     ingest_default_macro_series: str = "VIXCLS,CPIAUCSL,DGS10,DGS2,FEDFUNDS,UNRATE"
     ingest_default_tickers: str = "AAPL,MSFT"
     # Fundamental metrics extracted from SEC EDGAR XBRL company facts.
@@ -479,7 +485,7 @@ class Settings(BaseSettings):
     # (XGBoost long-only, 10 619 trades) into +65.4% ARC (251 trades) in the
     # paper. Set False to keep the legacy one-window roll for the 5m benchmark.
     stream_execution_cost_filter_lambda: float = 2.0
-    stream_execution_hold_until_decay: bool = True
+    stream_execution_hold_until_decay: bool = False
     # Prefer maker fills on the demo venue: a post-only limit at the near-side
     # quote (bid for LONG entries / LONG-exit sells, ask for SHORT) rests on
     # the book and pays Bybit's 0.02% maker fee instead of 0.055% taker — an
@@ -488,6 +494,38 @@ class Settings(BaseSettings):
     # market order, so signals still participate. Maker pricing also fills at
     # the better side of the spread, not the adverse side.
     stream_execution_maker_first: bool = True
+    # Maker-first on the EXIT leg specifically. Measured on the demo venue:
+    # 7/7 reduce-only post-only limits went unfilled and fell back to market,
+    # and every resulting fill paid 5.5 bps -- exactly Bybit's taker rate
+    # (0.055%), versus 2 bps for a maker fill. So the 15s maker poll budget
+    # (_MAKER_FILL_POLLS) bought a fee saving that was never actually
+    # realised, while serialising ~15s of dead wait into a consumer loop that
+    # closes positions one symbol at a time. Dropping it takes a close from
+    # ~24s to ~9s, which is what keeps a 30-symbol book inside
+    # max.poll.interval.ms instead of blowing past it and getting the consumer
+    # kicked from the group. Entries keep maker-first: no evidence yet that
+    # the entry leg fails to fill, and entries are not latency-critical the
+    # way a whole book's exits are.
+    stream_execution_maker_first_exit: bool = False
+    # Max hours a position may stay open before it is closed regardless of
+    # signal persistence. 0 => derive from STREAM_XS_REBALANCE_H, i.e. a
+    # position expires with the forecast horizon that opened it. Measured
+    # consequence of having no cap: hold-until-decay banding kept names for
+    # 7.7 weeks on average, versus the 1-week reformation the Sharpe 1.93
+    # research book is built on -- and Liu/Fang/Wang 2024 measures crypto
+    # momentum decaying inside two weeks, so those extra weeks trade a signal
+    # that no longer predicts anything.
+    stream_execution_max_hold_h: int = 0
+    # How many feature windows old a stored forecast may be and still be
+    # tradeable when the exact-window match misses. The signal daemon and the
+    # execution engine consume the same topic in separate consumer groups, so
+    # their windows drift (a restart of either is enough) and exact matching
+    # then found nothing -- measured live as 7 of 12 selected symbols never
+    # opening a position, leaving the book at a fraction of intended size.
+    # A forecast stamped in the FUTURE is always rejected (look-ahead); this
+    # only tolerates lag. Keep small: the forecast is for the next window, so
+    # trading one many windows old means trading a decayed signal.
+    stream_execution_signal_max_stale_windows: int = 2
     # Fill-ledger cap kept per symbol (older fills are trimmed for the UI).
     stream_execution_ledger_maxlen: int = 50
     # Max closed trades per symbol before new entries halt (book keeps marking
@@ -516,6 +554,112 @@ class Settings(BaseSettings):
     api_secret_bybit: str | None = Field(default=None, repr=False)
     # Server-time tolerance for signed requests (recv_window, Bybit v5).
     bybit_demo_recv_window_ms: int = 5000
+
+    # ── Live strategy selector: river (legacy) / xs_rel14 (validated) / lcf ──
+    # The single switch for which signal feeds PaperExecutionSimulator. One
+    # launchd service (com.quantsignal.signal) dispatches on this:
+    #   - "river"    runs the legacy River online regressor (stream.predictor)
+    #   - "xs_rel14" runs the validated cross-sectional 14-day momentum signal
+    #                (XsSignal) — the only probe that passed the live verdict gate
+    #                (+137.9 bps net-maker median, Sharpe 1.67, 1.336x vs BH/3y)
+    #   - "lcf"      runs the Leverage-Crowding Factor funding-carry book
+    #                (LcfSignal, stream.lcf_signal) — validated in
+    #                scripts/research_fund.py: Sharpe 1.14 vs momentum 0.64,
+    #                maxDD -41%. Crypto-native (funding rate OHLCV can't see).
+    # Exactly ONE signal ever runs, so it is the sole writer to
+    # prediction:crypto:1h:* — no two services can fight over the key.
+    stream_strategy: str = "xs_rel14"
+    # Cross-sectional universe for xs_rel14. The signal ranks 14-day relative
+    # momentum ACROSS this universe and longs the top quintile / shorts the
+    # bottom quintile on a weekly UTC rebalance (Keel MOM14 / Li-Zhu residual
+    # momentum family). Must be a superset of ingest_default_crypto_symbols so
+    # every ranked name has live 1h features on the bus.
+    stream_xs_universe: str = (
+        "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT,TRXUSDT,LINKUSDT,NEARUSDT,"
+        "ADAUSDT,SUIUSDT,UNIUSDT,AVAXUSDT,CRVUSDT,PEPEUSDT,LTCUSDT,ICPUSDT,AAVEUSDT,"
+        "XLMUSDT,HBARUSDT,DOTUSDT,FILUSDT,ARBUSDT,LDOUSDT,BCHUSDT,OPUSDT,ATOMUSDT,"
+        "ETCUSDT,RUNEUSDT,GRTUSDT,ZECUSDT"
+    )
+    stream_xs_lookback_h: int = 336
+    stream_xs_quintile: float = 0.2
+    stream_xs_min_symbols: int = 8
+    stream_xs_volume_frac: float = 0.5
+    stream_xs_volume_median_bars: int = 28
+    stream_xs_rebalance_h: int = 168
+    stream_xs_vol_scale: bool = True
+    stream_xs_crash: float | None = None
+    stream_xs_regime: bool = True
+    stream_xs_market_symbol: str = "BTCUSDT"
+    stream_xs_max_history: int = 1500
+    # Best-effort warm-start: seed each symbol's close history from the venue's
+    # 1h klines so the 336h lookback is satisfied on the first bar (no 14-day
+    # dead wait). Falls back to live accumulation if a symbol can't be fetched.
+    stream_xs_warm_start: bool = True
+
+    # ── Live LCF signal (Leverage-Crowding Factor, the validated crypto carry) ─
+    # Sibling of xs_rel14: consumes the same 1h feature topic for weekly
+    # rebalance timing but ranks the universe by the trailing perpetual FUNDING
+    # RATE pulled live from Binance (crypto-native input OHLCV can't see).
+    # Validated in scripts/research_fund.py (2020-09..2026-08, costed, walk-
+    # forward, 30 coins): MOM baseline Sharpe 0.64 vs LCF-pro + vol-scale 1.14
+    # (maxDD -41% vs -78%). Long the highest-funding (crowded-long) coins,
+    # short the lowest/negative-funding (under-owned) ones, fragility cap at
+    # extreme annualized funding (BIS: extreme carry predicts crashes). Defaults
+    # below match the walk-forward-selected grid; no hardcoded magic numbers.
+    stream_lcf_fund_lookback_days: int = 28
+    stream_lcf_quintile: float = 0.20
+    stream_lcf_min_symbols: int = 8
+    stream_lcf_cap_ann: float | None = 1.0
+    stream_lcf_direction: str = "pro"
+
+    # ── Live SCX signal (Skew-Convex, Regime-Gated Cross-Sectional Momentum) ───
+    # The highest-value bettable factor (scripts/research_scx.py, WF-validated
+    # 2017-2026, Sharpe 1.13 vs momentum 0.76 / funding-LEVEL -1.79). Recommended
+    # replacement for xs_rel14 on the Bybit demo venue. Mechanism: BTC UP-UP regime
+    # gate (flat in bears) + always-on winner (long) book + CONDITIONAL short that
+    # drops the short book when trailing short-book realized vol is in its stressed
+    # quantile (skew-aware net-exposure overlay, not static vol-scaling). Walk-
+    # forward-selected stress_q=0.60. Live regime uses the research 90/200-DAY BTC
+    # MA gate on a daily resample of the 1h stream; warm-start seeds BTC to 200+
+    # days so the gate is live on the first bar. No hardcoded magic numbers.
+    stream_scx_lookback_h: int = 336
+    stream_scx_quintile: float = 0.20
+    stream_scx_min_symbols: int = 8
+    stream_scx_rebalance_h: int = 168
+    stream_scx_regime: bool = True
+    stream_scx_shorts: bool = True
+    stream_scx_cond_short: bool = True
+    stream_scx_short_vol_l: int = 12
+    stream_scx_stress_q: float = 0.60
+    stream_scx_regime_fast_days: int = 90
+    stream_scx_regime_slow_days: int = 200
+    stream_scx_market_symbol: str = "BTCUSDT"
+    stream_scx_max_history: int = 5300
+    stream_scx_warm_start: bool = True
+
+    # ── Live ASYM signal (OUR novel FAS: Funding-Accrual Squeeze) ────────────────
+    # Consumes the SAME 1h feature topic (close/volume) for the price path + BTC
+    # regime gate, and fetches FUNDING keyless from Binance fapi/v1/fundingRate
+    # (no API key). FAS = residualize 12-week funding ACCRUAL on the price path,
+    # then fade vs recent price direction (ours; funding is the derivatives analog
+    # of Bianchi et al. 2026 order-flow orthogonalization). Combo FAS_LEVEL +
+    # FAS_SLOPE (trend of the residualized funding, corr 0.45 with level) validated
+    # in scripts/research_fas_plus.py: Sharpe +1.64, CI upper 2.28. Writes to its
+    # OWN prediction prefix (prediction:crypto:asym:1h) so it can A/B vs SCX
+    # (prediction:crypto:1h) without the two daemons fighting over the same key.
+    # Run with STREAM_STRATEGY=asym. No hardcoded magic numbers (windows WF from
+    # research_fas_plus.py).
+    stream_asym_prediction_prefix: str = "prediction:crypto:asym:1h"
+    stream_asym_quintile: float = 0.20
+    stream_asym_min_symbols: int = 8
+    stream_asym_rebalance_h: int = 168
+    stream_asym_regime: bool = True
+    stream_asym_regime_slow_days: int = 364
+    stream_asym_market_symbol: str = "BTCUSDT"
+    stream_asym_accrual_weeks: int = 12
+    stream_asym_horizons: list[int] = [4, 8, 12, 26]
+    stream_asym_smb_weeks: int = 12
+    stream_asym_warm_start: bool = True
 
     # ── Batch warehouse sink (streaming online store → ClickHouse BRONZE) ─────
     # The materialize_clickhouse flow copies the live Redis artifacts (features,

@@ -36,16 +36,38 @@ matching the rest of the streaming layer.
 
 from __future__ import annotations
 
+import json
+import math
+import os
+import statistics
 import threading
 from collections import deque
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Protocol
 
 from config.logging import configure_logging, get_logger
-from config.settings import get_settings
+from config.settings import PROJECT_ROOT, csv_list, get_settings
 from stream.bus import KafkaBus, MessageBus
 from stream.kv import KVStore, RedisKV
 from stream.predictor import prediction_key
+
+# Durable, append-only record of every closed fill, independent of Redis.
+# Redis (execution:crypto:1h:<SYMBOL>) is the fast path the dashboard reads,
+# but it is one `FLUSHDB` away from losing the entire live track record with
+# no recovery. This file is the source of truth for "did the strategy
+# actually work over days/weeks" -- append-only, never truncated, never
+# touched by a cache flush or a daemon restart.
+_DURABLE_LEDGER_PATH = PROJECT_ROOT / "lake" / "live_ledger" / "fills.jsonl"
+
+
+def _append_durable_fill(symbol: str, fill: dict) -> None:
+    try:
+        _DURABLE_LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _DURABLE_LEDGER_PATH.open("a") as f:
+            f.write(json.dumps({"symbol": symbol, **fill}) + "\n")
+    except OSError:
+        get_logger(__name__).exception("durable fill log write failed for %s", symbol)
 
 logger = get_logger(__name__)
 
@@ -129,6 +151,43 @@ class PaperExecutionSimulator:
         venue: ExecutionVenue | None = None,
         cost_filter_lambda: float = 2.0,
         hold_until_decay: bool = True,
+        # A position must not outlive the forecast that opened it. The signal
+        # is re-formed every ``rebalance_h`` hours, so a position still open
+        # after that is riding a stale forecast. ``hold_until_decay`` only
+        # exits on a *sign reversal past the flip band*, which in practice
+        # held names for 7.7 weeks on average (measured: 336h/504h/672h/1176h
+        # holds) -- far beyond the horizon the edge was validated on.
+        #
+        # Liu/Fang/Wang 2024 (管理评论 36(6), docs/liu_fang_wang_2024_*.txt)
+        # measures this decay directly in crypto: "仅存在两周的动量效应"
+        # (momentum lasts only two weeks) and "处置效应对收益率的影响不超过
+        # 一个月" (disposition effect <= one month). Holding ~7.7 weeks trades
+        # a signal whose predictive power has already decayed to nothing.
+        #
+        # 0 => derive from the signal's own rebalance horizon (the correct
+        # default); a positive value caps the hold explicitly in hours.
+        max_hold_h: int = 0,
+        # Windows of predictor/engine drift tolerated before a forecast is
+        # treated as unusable. See _freshest.
+        signal_max_stale_windows: int = 2,
+        # Append closed fills to the durable live ledger. OFF for replays and
+        # simulations so historical fills never enter the live track record.
+        durable_log: bool = True,
+        trail_atr_mult: float = 2.5,
+        trail_atr_bars: int = 56,
+        trail_act_mult: float = 1.5,
+        trail_min: float = 0.03,
+        trail_max: float = 0.25,
+        # Volatility-scaling (Barroso & Santa-Clara 2015; "Crypto momentum has
+        # (not) its moments" 2025): scale gross exposure by target_vol/realized_vol
+        # so the book shrinks when volatility spikes (crash protection) and expands
+        # when calm. Plain crypto momentum is NEGATIVE; vol-scaled is +1.86-2.40%/wk.
+        vol_scale: bool = True,
+        vol_proxy: str = "BTCUSDT",
+        vol_target: float = 0.12,
+        vol_floor: float = 0.25,
+        vol_cap: float = 2.0,
+        vol_lookback: int = 336,
     ) -> None:
         self._kv = kv
         self._execution_prefix = execution_prefix
@@ -139,6 +198,11 @@ class PaperExecutionSimulator:
         self._ledger_maxlen = ledger_maxlen
         self._max_trades = max_trades
         self._window_ms = window_ms
+        self._max_hold_ms = max_hold_h * 3_600_000 if max_hold_h > 0 else 0
+        # How stale a stored forecast may be and still be tradeable when the
+        # exact-window match misses (see _freshest), in whole windows.
+        self._signal_max_stale_ms = signal_max_stale_windows * window_ms
+        self._durable_log = durable_log
         self._venue = venue
         # Cost-aware filter (Bysik & Ślepaczuk 2026, eq. 5): trade only when
         # |r̂| > λ·c·|pos*−pos_prev|. λ=2 with c = round-trip taker fee (10 bps)
@@ -149,6 +213,49 @@ class PaperExecutionSimulator:
         self._hold_until_decay = hold_until_decay
         self._entry_threshold = cost_filter_lambda * self._taker_fee
         self._flip_threshold = 2.0 * self._entry_threshold
+        # Trailing-stop exit (Ekström–Lindberg "Optimal Closing of a Momentum
+        # Trade", 2013 + Leung "Optimal trading with a trailing stop", 2017):
+        # the optimal liquidation under an unobservable momentum-decay change
+        # point is a stop on the running extremum since entry. Research
+        # (StratBase, Blofin, Leung) shows ATR-based stops (2-3x ATR) vastly
+        # beat fixed-% in crypto's 60-70% chop time: they widen in vol expansions
+        # instead of chopping on noise. We use a 4H-equivalent ATR (mean |4h
+        # close-to-close return| over trail_atr_bars) scaled by trail_atr_mult,
+        # activated only once the trade is in profit by >= trail_act_mult x ATR.
+        # Long closes when close <= peak·(1-α); short when close >= trough·(1+α).
+        self._trail_atr_mult = trail_atr_mult
+        self._trail_atr_bars = trail_atr_bars
+        self._trail_act_mult = trail_act_mult
+        self._trail_min = trail_min
+        self._trail_max = trail_max
+        # Env overrides for A/B tuning the stop. Research (StratBase, Blofin,
+        # Leung "Optimal trading with a trailing stop"): ATR-based stops
+        # (2-3x ATR) vastly beat fixed-% in crypto's 60-70% chop time; activate
+        # only after the trade is in profit by >=1.5x ATR. QUANT_TRAIL_OFF=1
+        # disables the stop (pure hold-to-rebalance close, Jegadeesh-Titman).
+        # NOTE: trail_max = 0.0 does NOT disable the stop -- the exit test is
+        # ``drawdown >= alpha``, and a drawdown is >= 0 by construction, so an
+        # alpha of 0 fires on EVERY bar. That turned the "off" switch into the
+        # tightest possible stop (measured: 2800 trades, every one held a
+        # single 1h bar). Disabling must be an explicit flag.
+        self._trail_enabled = os.environ.get("QUANT_TRAIL_OFF") != "1"
+        if not self._trail_enabled:
+            self._trail_max = 0.0
+        else:
+            self._trail_atr_mult = float(
+                os.environ.get("QUANT_TRAIL_ATR_MULT", self._trail_atr_mult)
+            )
+            self._trail_atr_bars = int(os.environ.get("QUANT_TRAIL_ATR_BARS", self._trail_atr_bars))
+            self._trail_act_mult = float(os.environ.get("QUANT_TRAIL_ACT", self._trail_act_mult))
+            self._trail_min = float(os.environ.get("QUANT_TRAIL_MIN", self._trail_min))
+            self._trail_max = float(os.environ.get("QUANT_TRAIL_MAX", self._trail_max))
+
+        self._vol_scale_on = vol_scale and os.environ.get("QUANT_VOL_OFF") != "1"
+        self._vol_proxy = vol_proxy
+        self._vol_target = float(os.environ.get("QUANT_VOL_TARGET", vol_target))
+        self._vol_floor = float(os.environ.get("QUANT_VOL_FLOOR", vol_floor))
+        self._vol_cap = float(os.environ.get("QUANT_VOL_CAP", vol_cap))
+        self._vol_lookback = int(os.environ.get("QUANT_VOL_LOOKBACK", vol_lookback))
 
         # Per-symbol state.
         self._last_window_end: dict[str, int | None] = {}
@@ -163,6 +270,13 @@ class PaperExecutionSimulator:
         self._n_wins: dict[str, int] = {}
         self._signals_skipped: dict[str, int] = {}
         self._orders_rejected: dict[str, int] = {}
+        self._closes: dict[str, deque] = {}
+        # Funding-rate series per symbol (end_ms, rate) for accruing the funding
+        # CASHFLOW that IS the edge of crypto funding-carry strategies. Our paper
+        # venue fills at the close (price P&L only), so without this the carry edge
+        # is invisible in backtest — the live Bybit Demo book does pay it. Keel /
+        # BIS show funding carry at Sharpe 1.7-2.1; we must model the drip to test it.
+        self._funding_series: dict[str, list[tuple[int, float]]] = {}
 
     # ── signal resolution ───────────────────────────────────────────────────
 
@@ -194,9 +308,102 @@ class PaperExecutionSimulator:
             return close * (1.0 + self._slippage)
         return close * (1.0 - self._slippage)
 
+    # ── ATR-based trailing-stop exit (Ekström–Lindberg / Leung + crypto research) ──
+
+    def _trail_atr(self, symbol: str) -> float | None:
+        """4H-equivalent ATR: mean |4h close-to-close return| over ``trail_atr_bars``.
+
+        Bars arrive hourly, so a 4h step (step=4) resamples to the 4H timeframe the
+        crypto literature tunes trailing stops on (StratBase/Blofin: 4H trails 4-6%
+        BTC, 6-10% alts = ~2-3x ATR). Returns fractional ATR or None if insufficient history.
+        """
+        buf = self._closes.get(symbol)
+        step = 4
+        need = step * 4 + 1
+        if buf is None or len(buf) < need:
+            return None
+        trs = [
+            abs(buf[i] - buf[i - step]) / buf[i - step]
+            for i in range(step, len(buf), step)
+            if buf[i - step] > 0
+        ]
+        if len(trs) < 4:
+            return None
+        return statistics.fmean(trs)
+
+    def _trail_alpha(self, symbol: str) -> float:
+        """ATR-scaled drawdown band α (clamped to [trail_min, trail_max])."""
+        atr = self._trail_atr(symbol)
+        if atr is None:
+            return self._trail_max
+        return min(self._trail_max, max(self._trail_min, self._trail_atr_mult * atr))
+
+    @staticmethod
+    def _trail_drawdown(position: dict, close: float) -> float | None:
+        """Drawdown of ``close`` from the running extremum since entry."""
+        if position["side"] == "LONG":
+            peak = position.get("peak") or close
+            return (peak - close) / peak if peak > 0 else None
+        trough = position.get("trough") or close
+        return (close - trough) / trough if trough > 0 else None
+
+    def _trail_stop_hit(self, symbol: str, position: dict, close: float) -> bool:
+        """True when price has retraced >= α from the running extremum AND the trade
+        has first moved into profit by >= trail_act_mult x ATR (activation: don't
+        chop a position that hasn't earned its stop yet — StratBase/Leung)."""
+        if not self._trail_enabled:
+            return False
+        atr = self._trail_atr(symbol)
+        if atr is None:
+            return False
+        # The position dict stores "entry_price" -- there is no "entry" key, so
+        # this lookup silently returned None on every call and skipped the
+        # activation guard below entirely. The stop then fired from the very
+        # first bar on any retracement, including on positions that never got
+        # into profit, which is the opposite of the Leung/StratBase design it
+        # cites (activate only once the trade is ahead by act_mult x ATR).
+        entry = position.get("entry_price")
+        if entry and entry > 0:
+            move = (
+                (close - entry) / entry if position["side"] == "LONG" else (entry - close) / entry
+            )
+            if move < self._trail_act_mult * atr:
+                return False
+        dd = self._trail_drawdown(position, close)
+        if dd is None:
+            return False
+        alpha = min(self._trail_max, max(self._trail_min, self._trail_atr_mult * atr))
+        return dd >= alpha
+
+    def _vol_scale(self) -> float:
+        """Barroso-Santa-Clara exposure scaler: target_vol / realized_vol.
+
+        Realized vol is the proxy symbol's (BTC) rolling 1h log-return stdev,
+        annualized. When vol is high the factor is in crash regime, so we shrink
+        gross exposure; when calm we expand. Clamped to [floor, cap]. Scale-
+        invariant for Sharpe, so the target choice only sets average exposure.
+        """
+        if not self._vol_scale_on:
+            return 1.0
+        buf = self._closes.get(self._vol_proxy)
+        if buf is None or len(buf) < self._vol_lookback + 1:
+            return 1.0
+        rets = [
+            math.log(buf[i] / buf[i - 1])
+            for i in range(len(buf) - self._vol_lookback, len(buf))
+            if buf[i - 1] > 0
+        ]
+        if len(rets) < 10:
+            return 1.0
+        ann_vol = statistics.pstdev(rets) * math.sqrt(24 * 365)
+        if ann_vol <= 1e-6:
+            return 1.0
+        return min(self._vol_cap, max(self._vol_floor, self._vol_target / ann_vol))
+
     def _open(self, symbol: str, side: str, close: float, window_end: int) -> None:
+        eff = self._notional * self._vol_scale()
         if self._venue is not None:
-            fill = self._venue.open_market(symbol, side, self._notional)
+            fill = self._venue.open_market(symbol, side, eff)
             if fill is None:
                 # The venue rejected / did not fill the order this bar. Honest
                 # behavior: skip the entry and count it — never fake a fill.
@@ -211,23 +418,42 @@ class PaperExecutionSimulator:
                 "qty": _round(fill["qty"], 8),
                 "entry_fees": _round(fill["fees"], 4),
                 "entry_window_end_ms": window_end,
+                "peak": _round(fill["fill_price"]),
+                "trough": _round(fill["fill_price"]),
             }
             return
         entry_price = self._fill_price(side, close)
-        qty = self._notional / entry_price
-        entry_fee = self._notional * self._taker_fee
+        qty = eff / entry_price
+        entry_fee = eff * self._taker_fee
         self._position[symbol] = {
             "side": side,
             "entry_price": _round(entry_price),
             "qty": _round(qty, 8),
             "entry_fees": _round(entry_fee, 4),
             "entry_window_end_ms": window_end,
+            "peak": _round(entry_price),
+            "trough": _round(entry_price),
         }
 
     def _close(self, symbol: str, position: dict, close: float, window_end: int) -> None:
         side = position["side"]
         if self._venue is not None:
             fill = self._venue.close_market(symbol, side, position["qty"])
+            if fill is not None and fill.get("desync"):
+                # The venue says this position is already flat -- our book was
+                # stale (manual intervention, ADL, a prior desync). Retrying
+                # would fail the same way forever, so clear it now rather than
+                # leave it "open" indefinitely with unrealized P&L that can
+                # never realize. No fill happened, so no P&L is recorded --
+                # never fabricate a trade that didn't occur.
+                logger.warning(
+                    "execution: clearing desynced position %s %s @ %.6f (venue reports flat)",
+                    symbol,
+                    side,
+                    position["entry_price"],
+                )
+                self._position[symbol] = None
+                return
             if fill is None:
                 # The close order did not fill this bar: keep the position open
                 # so the next window retries the close. Count it for honesty.
@@ -251,7 +477,21 @@ class PaperExecutionSimulator:
         )
         net = gross - fees
         pnl_pct = net / self._notional
-        bars_held = max(1, round((window_end - position["entry_window_end_ms"]) / self._window_ms))
+        # ADOPTED ORPHANS carry entry_window_end_ms == 0 (a position found on the
+        # venue that this engine did not open, so its entry time is unknown).
+        # Differencing against 0 makes the arithmetic degenerate to
+        # window_end / window_ms -- the age of the Unix epoch, ~496,000 hourly
+        # bars, which was being written into the fill record and rendered in the
+        # dashboard as a 56-year holding period.
+        #
+        # The holding period is genuinely UNKNOWN for these, so report 0 rather
+        # than fabricating a number. 0 keeps the field an int for the UI and for
+        # scripts/live_track_record.py, which already excludes orphans via the
+        # explicit ``adopted_orphan`` flag emitted below.
+        entry_w = position.get("entry_window_end_ms") or 0
+        bars_held = (
+            max(1, round((window_end - entry_w) / self._window_ms)) if entry_w else 0
+        )
 
         self._position[symbol] = None
         self._realized_pnl[symbol] = self._realized_pnl.get(symbol, 0.0) + net
@@ -269,23 +509,35 @@ class PaperExecutionSimulator:
         if len(equity) > _EQUITY_MAXLEN:
             del equity[:-_EQUITY_MAXLEN]
 
+        fill_record = {
+            "window_end_ms": window_end,
+            "side": side,
+            "entry_price": position["entry_price"],
+            "exit_price": _round(exit_price),
+            "qty": position["qty"],
+            "fees": _round(fees, 4),
+            "gross_pnl": _round(gross, 4),
+            "net_pnl": _round(net, 4),
+            "net_pnl_pct": _round(pnl_pct, 6),
+            "bars_held": bars_held,
+            # Adopted orphans carry entry_window_end_ms == 0: this engine never
+            # chose the entry, it inherited an already-open venue position.
+            # Their P&L reflects whatever the price did while the book was
+            # broken, NOT a strategy decision, so the track record must not
+            # score them as strategy trades.
+            "adopted_orphan": position.get("entry_window_end_ms", 0) == 0,
+        }
         fills = self._ledger.setdefault(symbol, deque())
-        fills.appendleft(
-            {
-                "window_end_ms": window_end,
-                "side": side,
-                "entry_price": position["entry_price"],
-                "exit_price": _round(exit_price),
-                "qty": position["qty"],
-                "fees": _round(fees, 4),
-                "gross_pnl": _round(gross, 4),
-                "net_pnl": _round(net, 4),
-                "net_pnl_pct": _round(pnl_pct, 6),
-                "bars_held": bars_held,
-            }
-        )
+        fills.appendleft(fill_record)
         while len(fills) > self._ledger_maxlen:
             fills.pop()
+        # Guard on the real Redis backing so hermetic tests (FakeKV) never
+        # touch the production durable log -- and on _durable_log, so a
+        # historical REPLAY driving the live Redis cannot append years-old
+        # fills to the genuine live track record (it did: 159 replay fills
+        # landed in fills.jsonl alongside 21 real ones).
+        if self._durable_log and isinstance(self._kv, RedisKV):
+            _append_durable_fill(symbol, fill_record)
 
     def _freshest(
         self, symbol: str, window_end: int | None, prev_end: int | None
@@ -298,6 +550,21 @@ class PaperExecutionSimulator:
         bar's forecast (``prev_end``) only if the online store has not caught
         up, so a predictor→engine write race never starves the book. Returns
         ``(direction, predicted_return)`` or ``(None, None)``.
+
+        Matching used to require the stored tag to EQUAL ``window_end`` or
+        ``prev_end`` exactly. The signal daemon and this engine consume the
+        same feature topic in SEPARATE consumer groups at independent offsets,
+        and the signal daemon rewrites every symbol's prediction stamped with
+        whatever window it is on. Any drift beyond one window -- which a
+        restart of either process causes -- left neither candidate matching,
+        the signal read as None, and the entry was skipped. Measured live:
+        7 of 12 selected symbols never opened a position at all
+        (signals_skipped 3-4, n_trades 0), leaving the book deployed at a
+        fraction of its intended size.
+
+        So: accept the freshest forecast stamped AT OR BEFORE this bar, within
+        ``_signal_max_stale_ms``. Never after -- a forecast stamped in the
+        future is look-ahead and is still rejected.
         """
         for candidate in (window_end, prev_end):
             prediction = self._prediction_for(symbol, candidate)
@@ -309,6 +576,21 @@ class PaperExecutionSimulator:
                 direction if isinstance(direction, str) else None,
                 float(yhat) if isinstance(yhat, (int, float)) else None,
             )
+
+        # Exact match failed: fall back to the stored forecast if it is in the
+        # past relative to this bar and not staler than the bound.
+        if window_end is not None:
+            prediction = self._kv.get_json(prediction_key(self._prediction_prefix, symbol))
+            tag = (prediction or {}).get("window_end_ms")
+            if prediction and isinstance(tag, (int, float)):
+                age = window_end - int(tag)
+                if 0 <= age <= self._signal_max_stale_ms:
+                    direction = prediction.get("direction")
+                    yhat = prediction.get("predicted_return")
+                    return (
+                        direction if isinstance(direction, str) else None,
+                        float(yhat) if isinstance(yhat, (int, float)) else None,
+                    )
         return None, None
 
     def _advance(self, symbol: str, close: float, window_end: int, prev_end: int | None) -> None:
@@ -323,16 +605,58 @@ class PaperExecutionSimulator:
             signal, yhat = self._freshest(symbol, window_end, prev_end)
             position = self._position.get(symbol)
 
+            # Forecast expiry: close a position that has outlived the horizon
+            # its signal was formed on, BEFORE any hold/banding logic can keep
+            # it alive. Banding is designed to hold a position through weak
+            # signals, which is right within the forecast horizon and wrong
+            # past it -- past it, the book is holding on a forecast that no
+            # longer exists rather than on conviction.
+            if position is not None and self._max_hold_ms > 0:
+                held_ms = window_end - position.get("entry_window_end_ms", window_end)
+                if held_ms >= self._max_hold_ms:
+                    if signal in ("LONG", "SHORT") and signal == position["side"]:
+                        # ROLL, don't round-trip. The forecast expiring means
+                        # "re-evaluate", not "must trade". When the refreshed
+                        # forecast still agrees with the position, closing and
+                        # immediately re-opening the SAME position pays a full
+                        # round trip to end up exactly where we started -- pure
+                        # cost, zero change in exposure. The research book this
+                        # is validated against charges only |w_new - w_old|, so
+                        # an unchanged weight costs it nothing. Gârleanu &
+                        # Pedersen (2013): under transaction costs the optimum
+                        # is to trade toward the target, never to churn through
+                        # it. Reset the clock and hold.
+                        position["entry_window_end_ms"] = window_end
+                    else:
+                        self._close(symbol, position, close, window_end)
+                        position = self._position.get(symbol)
+
+            # Running close history for the vol-scaled trailing stop, and the
+            # running-extremum exit (Ekström–Lindberg / Leung). The trailing
+            # stop is price-based, so it is checked before any signal logic.
+            # Buffer must cover BOTH the ATR stop (short) and vol-scaling
+            # (long) lookbacks, else vol_scale silently returns 1.0.
+            buf_max = max(self._trail_atr_bars, self._vol_lookback + 2)
+            self._closes.setdefault(symbol, deque(maxlen=buf_max)).append(close)
             if position is not None:
-                flip_side = None
-                if signal == "SHORT" and position["side"] == "LONG":
-                    flip_side = "SHORT"
-                elif signal == "LONG" and position["side"] == "SHORT":
-                    flip_side = "LONG"
-                if flip_side is not None and yhat is not None and abs(yhat) > self._flip_threshold:
+                if position["side"] == "LONG":
+                    position["peak"] = max(position.get("peak", close), close)
+                else:
+                    position["trough"] = min(position.get("trough", close), close)
+                if self._trail_stop_hit(symbol, position, close):
                     self._close(symbol, position, close, window_end)
-                    if self._n_trades.get(symbol, 0) < self._max_trades:
-                        self._open(symbol, flip_side, close, window_end)
+                elif signal in ("LONG", "SHORT") and signal != position["side"]:
+                    # Opposite-side signal: flip only past the 2·λ·c band; a
+                    # weaker opposite signal stays in the no-trade region.
+                    if yhat is not None and abs(yhat) > self._flip_threshold:
+                        self._close(symbol, position, close, window_end)
+                        if self._n_trades.get(symbol, 0) < self._max_trades:
+                            self._open(symbol, signal, close, window_end)
+                elif signal not in ("LONG", "SHORT"):
+                    # Symbol left the selected long/short set (FLAT / no
+                    # forecast) → exit the position so the book rotates and
+                    # realizes P&L at each rebalance instead of holding forever.
+                    self._close(symbol, position, close, window_end)
             elif (
                 signal in ("LONG", "SHORT")
                 and prev_end is not None
@@ -397,6 +721,9 @@ class PaperExecutionSimulator:
                 "qty": position["qty"],
                 "entry_fees": position["entry_fees"],
                 "entry_window_end_ms": position["entry_window_end_ms"],
+                "peak": position.get("peak"),
+                "trough": position.get("trough"),
+                "trail_alpha": round(self._trail_alpha(symbol), 4),
                 "mark_price": position.get("mark_price"),
                 "unrealized_pnl": position.get("unrealized_pnl"),
                 "unrealized_pnl_pct": position.get("unrealized_pnl_pct"),
@@ -536,6 +863,15 @@ def _build_venue(settings, venue_cls=None) -> ExecutionVenue | None:
     fills). Never fabricates fills: a demo account that exists but rejects the
     keys (ErrCode 10003 = key/domain mismatch) logs loudly and falls back.
     """
+    if settings.stream_execution_venue == "paper":
+        # Explicit opt-out: previously STREAM_EXECUTION_VENUE was purely
+        # cosmetic here -- if demo keys were present in the environment the
+        # Bybit venue was built regardless, so "paper" mode could not
+        # actually be selected. Real venue reconciliation surfaced fills the
+        # book recorded as closed that were still open on the exchange
+        # (fill-confirmation race, not yet root-caused); paper mode must be a
+        # genuine, deterministic escape hatch from that class of bug.
+        return None
     if not settings.has_bybit_demo_credentials:
         if settings.stream_execution_venue == "bybit-demo":
             logger.warning(
@@ -559,6 +895,7 @@ def _build_venue(settings, venue_cls=None) -> ExecutionVenue | None:
             settings.demo_api_secret or "",
             recv_window_ms=settings.bybit_demo_recv_window_ms,
             maker_first=settings.stream_execution_maker_first,
+            maker_first_exit=settings.stream_execution_maker_first_exit,
         )
         equity = venue.balance()
     except Exception:
@@ -587,10 +924,19 @@ def main() -> None:
     bus = KafkaBus(settings.stream_kafka_bootstrap_servers)
     kv = RedisKV(settings.stream_redis_url)
     venue = _build_venue(settings)
+    # Trade the prediction prefix of the LIVE strategy. When STREAM_STRATEGY=asym
+    # the signal writes to prediction:crypto:asym:1h; execution must read that
+    # prefix to fill the FAS book. The execution ledger stays on the shared
+    # execution:crypto:1h key so the dashboard view is unchanged.
+    prediction_prefix = (
+        settings.stream_asym_prediction_prefix
+        if settings.stream_strategy == "asym"
+        else settings.stream_redis_prediction_prefix
+    )
     simulator = PaperExecutionSimulator(
         kv,
         execution_prefix=settings.stream_redis_execution_prefix,
-        prediction_prefix=settings.stream_redis_prediction_prefix,
+        prediction_prefix=prediction_prefix,
         notional_usd=settings.stream_execution_notional_usd,
         slippage_bps=settings.stream_execution_slippage_bps,
         taker_fee_bps=settings.stream_execution_taker_fee_bps,
@@ -600,12 +946,117 @@ def main() -> None:
         venue=venue,
         cost_filter_lambda=settings.stream_execution_cost_filter_lambda,
         hold_until_decay=settings.stream_execution_hold_until_decay,
+        # 0 => expire with the signal's own rebalance horizon.
+        max_hold_h=(
+            settings.stream_execution_max_hold_h or settings.stream_xs_rebalance_h
+        ),
+        signal_max_stale_windows=settings.stream_execution_signal_max_stale_windows,
     )
+
+    # Reconcile in-memory positions with the ledger so positions opened by a
+    # prior run (e.g. the one-shot live_book_runner) are managed live instead
+    # of orphaned. Without this a restarted engine has no memory of open Bybit
+    # Demo positions and would open duplicates on the next signal.
+    universe = csv_list(settings.stream_xs_universe)
+    for sym in universe:
+        ledger_pos = kv.get_json(execution_key(settings.stream_redis_execution_prefix, sym))
+        # Restore the last-seen window so the entry gate (window_end >= prev_end
+        # + window_ms) can fire on the very next window instead of waiting ~2
+        # windows for in-memory state to rebuild after a restart. Without this a
+        # restart silently knocks every FLAT symbol out of the book for 1-2
+        # windows (it can never re-open until prev_end is seeded), leaving half
+        # the intended positions dark after every deploy/restart.
+        if ledger_pos and isinstance(ledger_pos.get("window_end_ms"), int):
+            simulator._last_window_end[sym] = ledger_pos["window_end_ms"]
+        pos = ledger_pos.get("position") if ledger_pos else None
+        if pos and pos.get("side") in ("LONG", "SHORT"):
+            simulator._position[sym] = {
+                "side": pos["side"],
+                "entry_price": pos["entry_price"],
+                "qty": pos["qty"],
+                "entry_fees": pos.get("entry_fees", 0.0),
+                "entry_window_end_ms": pos.get("entry_window_end_ms", 0),
+            }
+            logger.info(
+                "execution reconciled open position %s %s @ %.6f",
+                sym,
+                pos["side"],
+                pos["entry_price"],
+            )
+
+        # Restore cumulative track-record stats too. Without this a restart
+        # (crash, deploy, reboot -- not just an open position) silently zeroes
+        # n_trades/realized_pnl/fills even though nothing about the book
+        # actually changed; the only thing previously reconciled was the open
+        # position, so every restart looked like a fresh book with no history.
+        if ledger_pos:
+            n_trades = ledger_pos.get("n_trades")
+            if isinstance(n_trades, int) and n_trades > 0:
+                simulator._n_trades[sym] = n_trades
+                simulator._n_wins[sym] = ledger_pos.get("n_wins", 0) or 0
+                simulator._realized_pnl[sym] = float(ledger_pos.get("realized_pnl") or 0.0)
+                simulator._gross_pnl[sym] = float(ledger_pos.get("gross_pnl") or 0.0)
+                simulator._gross_volume[sym] = float(ledger_pos.get("gross_volume") or 0.0)
+                simulator._total_fees[sym] = float(ledger_pos.get("total_fees") or 0.0)
+                equity = ledger_pos.get("equity")
+                if isinstance(equity, list) and equity:
+                    simulator._equity[sym] = [float(e) for e in equity]
+                fills = ledger_pos.get("fills")
+                if isinstance(fills, list) and fills:
+                    simulator._ledger[sym] = deque(fills, maxlen=None)
+                simulator._signals_skipped[sym] = ledger_pos.get("signals_skipped", 0) or 0
+                simulator._orders_rejected[sym] = ledger_pos.get("orders_rejected", 0) or 0
+                logger.info(
+                    "execution reconciled track record %s: n_trades=%d realized_pnl=%.2f",
+                    sym,
+                    n_trades,
+                    simulator._realized_pnl[sym],
+                )
+
+    # Reconcile the OTHER direction: venue → book. The loop above only walks
+    # what the online store already knows about, so any position the store
+    # lost (Redis flush, fresh deploy, a one-shot live_book_runner run) stays
+    # open on the exchange, unmanaged and invisible, accumulating duplicate
+    # exposure -- the mess close_orphans.py exists to sweep up by hand.
+    # Adopting them puts them back under the state machine so they are marked
+    # to market and closed normally, and their exit lands in the ledger.
+    if venue is not None and hasattr(venue, "open_positions"):
+        for vpos in venue.open_positions():
+            sym = str(vpos.get("symbol") or "").upper()
+            if not sym or simulator._position.get(sym) is not None:
+                continue  # already tracked -- the store's view wins
+            entry_price = float(vpos.get("entry_price") or 0.0)
+            if entry_price <= 0.0:
+                logger.warning("execution: cannot adopt %s (no venue entry price)", sym)
+                continue
+            simulator._position[sym] = {
+                "side": vpos["side"],
+                "entry_price": entry_price,
+                "qty": float(vpos["qty"]),
+                # Entry fees were paid on a fill this process never saw; 0.0
+                # understates cost slightly but never invents a number, and
+                # the exit leg's real fee is still charged on close.
+                "entry_fees": 0.0,
+                # Unknown entry window ⇒ 0, so the one-window exit rule fires
+                # on the next bar rather than holding an orphan indefinitely.
+                "entry_window_end_ms": 0,
+            }
+            logger.warning(
+                "execution adopted ORPHAN venue position %s %s qty=%s @ %.6f "
+                "(open on the exchange but absent from the book) — will be managed and closed",
+                sym,
+                vpos["side"],
+                vpos["qty"],
+                entry_price,
+            )
+
     logger.info(
-        "execution consuming %s → %s (venue=%s, notional=$%.0f, slip=%sbps, taker=%sbps, "
-        "lambda=%s, hold_until_decay=%s)",
+        "execution consuming %s → %s (strategy=%s, prediction_prefix=%s, venue=%s, "
+        "notional=$%.0f, slip=%sbps, taker=%sbps, lambda=%s, hold_until_decay=%s)",
         settings.stream_kafka_topic_features,
         settings.stream_redis_execution_prefix,
+        settings.stream_strategy,
+        prediction_prefix,
         "bybit-demo" if venue is not None else "paper",
         settings.stream_execution_notional_usd,
         settings.stream_execution_slippage_bps,

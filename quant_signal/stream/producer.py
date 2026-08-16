@@ -14,6 +14,7 @@ Run with ``make stream-producer``; the Kafka bus is KafkaBus unless a
 from __future__ import annotations
 
 import threading
+import time
 
 import pandas as pd
 
@@ -22,8 +23,14 @@ from config.settings import csv_list, get_settings
 from ingest.store import write_crypto_bars
 from stream.bars import df_to_bars
 from stream.bus import KafkaBus, MessageBus
+from stream.kv import KVStore, RedisKV
 
 logger = get_logger(__name__)
+
+# Producer-health keys in the Redis online store (read by the watchdog + dashboard).
+_META_LAST_POLL = "meta:producer:crypto.bars.raw:last_poll_ts"
+_META_LAST_BAR = "meta:producer:crypto.bars.raw:last_bar_max_ts"
+_META_SKIP_PREFIX = "meta:producer:skipped:"
 
 
 class BinanceProducer:
@@ -44,6 +51,8 @@ class BinanceProducer:
         poll_timeout_seconds: float | None = None,
         history_minutes: int = 180,
         persist=None,
+        kv: KVStore | None = None,
+        dlq_topic: str | None = None,
     ) -> None:
         self._symbols = [s.upper() for s in symbols]
         self._bus = bus
@@ -57,6 +66,8 @@ class BinanceProducer:
         self._history_minutes = history_minutes
         self._provider = provider
         self._persist = persist or write_crypto_bars
+        self._kv = kv
+        self._dlq_topic = dlq_topic or f"{topic}.dlq"
         self._stop = threading.Event()
 
     def run_forever(self, stop: threading.Event | None = None) -> None:
@@ -105,21 +116,77 @@ class BinanceProducer:
         # ``fetch_bars(symbols, days, minutes=None)``: pass minutes as a keyword
         # so a positional ``minutes`` doesn't silently bind to ``days`` (which
         # would fetch *days* of paged history and stall the first poll).
-        df = self._provider(self._symbols, days=0, minutes=minutes)
+        # ``on_skip`` lets the venue report a dead/stale symbol (e.g. frozen
+        # klines) without wedging the entire poll cycle.
+        df = self._provider(self._symbols, days=0, minutes=minutes, on_skip=self._on_skip)
         if df is None or df.empty:
             return 0
         bars = df_to_bars(df)
+        if not bars:
+            return 0
         for bar in bars:
             self._bus.publish(self._topic, bar["symbol"], bar)
         self._bus.flush()
-        self._persist_best_effort(df)
+        self._persist_async(df)
+        self._record_health(bars)
         return len(bars)
+
+    def _persist_async(self, df: pd.DataFrame) -> None:
+        try:
+            t = threading.Thread(target=self._persist_best_effort, args=(df,), daemon=True)
+            t.start()
+        except Exception:
+            logger.debug("persist thread spawn failed")
 
     def _persist_best_effort(self, df: pd.DataFrame) -> None:
         try:
             self._persist(df)
         except Exception:
             logger.debug("snowflake persist skipped (offline/best-effort)")
+
+    def _record_health(self, bars: list[dict]) -> None:
+        """Publish producer liveness to Redis so the watchdog/dashboard can see
+        the feed is alive even when the strategy book is FLAT (bear regime)."""
+        if self._kv is None:
+            return
+        now_ms = int(time.time() * 1000)
+        max_ts = max((int(b.get("ts", 0)) for b in bars), default=0)
+        self._kv.set_json(_META_LAST_POLL, {"ts": now_ms, "symbols": len(bars)})
+        if max_ts:
+            self._kv.set_json(
+                _META_LAST_BAR,
+                {"ts": max_ts, "age_s": (now_ms - max_ts) // 1000},
+            )
+
+    def _on_skip(self, symbol: str, reason: str) -> None:
+        """Record a skipped symbol (dead/stale venue data) to the DLQ + Redis.
+
+        Keeps a poison/dead symbol out of the stream but fully observable: the
+        record lands on the dead-letter topic and a bounded Redis counter so the
+        watchdog can alert on a sustained skip — the exact gap that hid the
+        earlier producer wedge (a frozen ZECUSDT 1m feed that wedged every poll).
+        """
+        sym = symbol.upper()
+        if self._bus is not None:
+            self._bus.publish(
+                self._dlq_topic,
+                sym,
+                {"symbol": sym, "reason": reason, "ts": int(time.time() * 1000)},
+            )
+            self._bus.flush()
+        if self._kv is not None:
+            key = _META_SKIP_PREFIX + sym
+            prev = self._kv.get_json(key) or {}
+            self._kv.set_json(
+                key,
+                {
+                    "symbol": sym,
+                    "reason": reason,
+                    "last_ts": int(time.time() * 1000),
+                    "count": int(prev.get("count", 0)) + 1,
+                },
+            )
+        logger.warning("skipped symbol %s: %s", sym, reason)
 
 
 def main() -> None:
@@ -134,6 +201,7 @@ def main() -> None:
     venue = settings.stream_venue
     provider = build_bar_provider(venue, settings)
     bus = KafkaBus(settings.stream_kafka_bootstrap_servers)
+    kv = RedisKV(settings.stream_redis_url) if settings.stream_redis_url else None
     producer = BinanceProducer(
         symbols,
         bus=bus,
@@ -142,6 +210,8 @@ def main() -> None:
         poll_seconds=settings.stream_poll_seconds,
         poll_timeout_seconds=settings.stream_poll_timeout_seconds,
         history_minutes=settings.stream_history_minutes,
+        kv=kv,
+        dlq_topic=f"{settings.stream_kafka_topic_raw}.dlq",
     )
     logger.info(
         "producer publishing %s (%s) → %s (poll %ss)",

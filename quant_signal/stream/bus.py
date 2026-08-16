@@ -26,9 +26,12 @@ logger = logging.getLogger(__name__)
 # abandon+recreate a consumer that still stalls.
 _CONSUMER_SOCKET_TIMEOUT_MS = 60_000
 _CONSUMER_POLL_DEADLINE_SECONDS = 30.0
-# Safely above the 5-minute feature cadence: no message for this long means the
-# connection is wedged, not merely idle between windows.
-_CONSUMER_MAX_IDLE_SECONDS = 900.0
+# Above the feature publish cadence (1h for crypto.features.1h): an idle spell
+# shorter than this is NORMAL (one bar per hour), not a wedged connection. Set to
+# 2h so the hourly book is not force-recreated (resetting to `latest` and missing
+# the single hourly publish) between bars — only a genuine poll-deadline wedge
+# triggers recreation now.
+_CONSUMER_MAX_IDLE_SECONDS = 7200.0
 
 
 def _serialize(value: Mapping) -> bytes:
@@ -38,7 +41,11 @@ def _serialize(value: Mapping) -> bytes:
 def _deserialize(payload: bytes | None) -> dict:
     if not payload:
         return {}
-    return json.loads(payload.decode("utf-8"))
+    try:
+        return json.loads(payload.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        logger.warning("dropping malformed message payload")
+        return {}
 
 
 class MessageBus(Protocol):
