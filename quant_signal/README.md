@@ -1,4 +1,4 @@
-# quant_signal
+# quant signal
 
 Production-grade quant signal platform — **Snowflake-backed batch pipelines**,
 a **Kafka → Flink → Redis realtime layer**, research-driven model validation,
