@@ -1,12 +1,11 @@
 # quant signal
 
-Production-grade quant signal platform — **Snowflake-backed batch pipelines**,
+Production-grade quant signal platform - **Snowflake-backed batch pipelines**,
 a **Kafka → Flink → Redis realtime layer**, research-driven model validation,
-and data quality enforced at every stage. Designed like the data platforms of
-quant research houses (Two Sigma / Man AHL patterns).
+and data quality enforced at every stage.
 
 It ends in a **live market-neutral book placing real orders on a demo venue**,
-and — the part most platforms cannot demonstrate — a **deploy gate that proves
+and the part most platforms cannot demonstrate — a **deploy gate that proves
 the live system is running the strategy that was validated**: 0 direction
 mismatches across 4,480 checks, look-ahead leak of 0.00e+00 on every factor,
 and live feeds reconciled to the research caches at 0.000e+00.
