@@ -21,6 +21,18 @@ os.environ.setdefault("PREFECT_LOGGING_TO_API_WHEN_MISSING_FLOW", "ignore")
 # toggle for send_telemetry_heartbeat.)
 os.environ.setdefault("PREFECT_SERVER_ANALYTICS_ENABLED", "false")
 
+# Settings requires snowflake_account/user with no defaults, and four test
+# modules call get_settings() at import time -- so without credentials the
+# suite dies at COLLECTION, not in a test. That made the suite pass locally
+# (a developer .env is present) and fail in CI (none is), which is exactly
+# backwards: tests must not depend on a machine's leftover credentials.
+#
+# setdefault, so a real .env or a CI secret still wins. Nothing here connects
+# to Snowflake; these only satisfy construction.
+os.environ.setdefault("SNOWFLAKE_ACCOUNT", "test_account")
+os.environ.setdefault("SNOWFLAKE_USER", "test_user")
+os.environ.setdefault("SNOWFLAKE_PASSWORD", "test_password")
+
 import pytest
 from prefect.testing.utilities import prefect_test_harness
 
