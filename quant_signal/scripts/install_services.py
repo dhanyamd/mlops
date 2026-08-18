@@ -70,6 +70,14 @@ SERVICES: dict[str, tuple[list[str], str]] = {
         ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"],
         r"\.venv/bin/(python[^ ]* )?uvicorn api\.main:app\b",
     ),
+    # SRP is a WEEKLY book, but the daemon ticks hourly. The execution engine
+    # acts only on a weekly bar it has not seen, so between rebalances a tick
+    # just re-marks open positions -- it buys live P&L and a rebalance that
+    # fires within an hour of the week turning, without adding turnover.
+    "srp": (
+        ["stream.srp_daemon", "--interval", "3600"],
+        r"\.venv/bin/python[^ ]* -m stream\.srp_daemon\b",
+    ),
 }
 
 LOG_PATH = {name: Path(f"/tmp/stream_{name}.log") for name in SERVICES}
