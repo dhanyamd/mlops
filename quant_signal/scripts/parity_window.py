@@ -23,7 +23,7 @@ import math
 
 import pandas as pd
 
-from scripts.research_fas_clean import _rank_z, _liquidity_mask, fas_scores, load, smb_scores
+from scripts.research_fas_clean import _liquidity_mask, _rank_z, fas_scores, load, smb_scores
 from scripts.research_fas_invent import rcgo_scores
 
 

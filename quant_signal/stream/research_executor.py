@@ -17,7 +17,7 @@ State is mirrored to the same `execution:crypto:1h:SYM` KV schema the dashboard
 from __future__ import annotations
 
 import math
-import pandas as pd
+
 from config.logging import configure_logging, get_logger  # noqa: F401
 from stream.kv import KVStore
 from stream.research_signal import target_key

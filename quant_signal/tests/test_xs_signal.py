@@ -8,8 +8,6 @@ when the regime gate lacks history.
 
 from __future__ import annotations
 
-import math
-
 from stream.kv import FakeKV
 from stream.xs_signal import XsSignal, prediction_key
 

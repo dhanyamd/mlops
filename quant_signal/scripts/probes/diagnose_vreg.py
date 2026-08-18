@@ -19,8 +19,8 @@ import numpy as np
 
 from config.settings import get_settings
 from scripts.backfill_feature_windows import fetch_bars
-from scripts.intraday_30m_probe import _aggregate
-from scripts.trend_momentum_probe import _vreg_events
+from scripts.probes.intraday_30m_probe import _aggregate
+from scripts.probes.trend_momentum_probe import _vreg_events
 
 REGIMES = [("low", 0.0, 0.3), ("mid", 0.3, 0.7), ("high", 0.7, 1.01)]
 _LABEL = {

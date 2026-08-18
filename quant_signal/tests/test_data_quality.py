@@ -10,7 +10,7 @@ cadence, never a literal).
 
 from __future__ import annotations
 
-from config.settings import Settings
+from config.settings import Settings, csv_list
 from stream.data_quality import (
     QualityPolicy,
     _aggregate,
@@ -276,7 +276,9 @@ def test_quality_summary_over_fakekv() -> None:
     assert summary["healthy"] is True
     assert summary["overall_score"] == 1.0
     assert summary["consistency"]["score"] == 1.0
-    # All 4 default symbols reported, 2 with materialized history.
-    assert len(summary["symbols"]) == 4
+    # Every configured symbol is reported, whether or not it has history; only
+    # the two seeded above have materialised windows. Counted from settings
+    # rather than hard-coded, so expanding the live universe does not break this.
+    assert len(summary["symbols"]) == len(csv_list(settings.ingest_default_crypto_symbols))
     assert len(summary["lineage"]) == 7
     assert summary["policy"]["window_ms"] == HOUR_MS

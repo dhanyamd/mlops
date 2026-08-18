@@ -75,6 +75,28 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
 
+# Exploratory research scripts are held to a looser standard than the production
+# path and the paper's replication set, both of which are fully clean. These are
+# one-off probes: long formula lines, throwaway intermediates and compact
+# statements are the point, and reformatting them would obscure what was tried.
+# Correctness rules (F821 undefined name, F811 redefinition) still apply.
+[tool.ruff.lint.per-file-ignores]
+"scripts/probes/*.py" = ["E501", "E701", "E702", "E741", "F841"]
+"scripts/audit_cache.py" = ["E501", "F841"]
+"scripts/backfill_*.py" = ["E501"]
+"scripts/harness_verify.py" = ["E501"]
+"scripts/lake_sharpe_verify.py" = ["E501"]
+"scripts/pull_*.py" = ["E501"]
+"scripts/replay_*.py" = ["E501", "E402", "F841"]
+"scripts/research_*.py" = ["E501", "E701", "E702", "E741", "F841"]
+"scripts/alpha101.py" = ["E501", "E701", "E702", "E741", "F841"]
+"scripts/factor_ic.py" = ["E501", "E701", "E702", "E741", "F841"]
+"scripts/null_test.py" = ["E501", "E701", "E702", "E741", "F841"]
+"scripts/perm_test_research.py" = ["E501", "E701", "E702", "E741", "F841"]
+"scripts/walk_forward.py" = ["E501", "E701", "E702", "E741", "F841"]
+"scripts/backfill/*.py" = ["E501", "E701", "E702", "E741", "F841"]
+"research/code/**/*.py" = ["E501", "E701", "E702", "E741", "F841", "E402", "F601"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

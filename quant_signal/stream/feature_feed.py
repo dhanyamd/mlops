@@ -111,7 +111,7 @@ def _fetch_1h_bar(provider, symbol: str, window_end_ms: int) -> dict | None:
     row = sorted(bars, key=lambda r: int(r[0]))[-1]
     try:
         start = int(row[0])
-        o, h, l, c, v = (
+        o, h, lo, c, v = (
             float(row[1]),
             float(row[2]),
             float(row[3]),
@@ -125,14 +125,15 @@ def _fetch_1h_bar(provider, symbol: str, window_end_ms: int) -> dict | None:
     # The bar we asked for ends at window_end_ms; Bybit returns the bar whose
     # startTime <= end, so its window_end = start + 1h.
     we = start + _HOUR_MS
-    vwap = (o + h + l + c) / 4.0  # volume-weighted not available per single bar; use typical
+    # Volume-weighted price is not available for a single bar; use the typical price.
+    vwap = (o + h + lo + c) / 4.0
     return {
         "symbol": symbol.upper(),
         "window_start_ms": start,
         "window_end_ms": we,
         "open": o,
         "high": h,
-        "low": l,
+        "low": lo,
         "close": c,
         "volume": v,
         "vwap": vwap,

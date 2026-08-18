@@ -112,6 +112,12 @@ stream-predictor: ## Train the online model + emit conformal predictions to Redi
 stream-simulator: ## Run the Monte Carlo forward simulator to Redis
 	$(ENV) $(PYTHON) python -m stream.simulation
 
+stream-srp: ## Score the SRP weekly book and publish target weights to Redis
+	$(ENV) $(PYTHON) python -m stream.srp_publisher
+
+stream-srp-execute: ## Trade the SRP weekly book (paper fills; --venue bybit-demo for the demo venue)
+	$(ENV) $(PYTHON) python -m stream.srp_execution
+
 stream-execution: ## Run the paper-execution engine (fills, slippage, fees, ledger) to Redis
 	$(ENV) $(PYTHON) python -m stream.execution
 

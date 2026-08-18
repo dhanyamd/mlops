@@ -1,4 +1,4 @@
- """SOC — Speculative-Overcrowding factor (NOVEL synthesis from two Chinese literatures).
+"""SOC — Speculative-Overcrowding factor (NOVEL synthesis from two Chinese literatures).
 
 RESEARCH BASIS (read this session, Chinese/underrated quant papers):
   1) TURNOVER / ABNORMAL-TURNOVER (ATR) — Zhang, Bing & Chen & Yeh (2021,
@@ -27,9 +27,7 @@ from __future__ import annotations
 import glob
 import os
 
-import numpy as np
 import pandas as pd
-
 from research_broad import (
     avg_rank_corr,
     backtest,

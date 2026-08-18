@@ -51,7 +51,7 @@ def test_stream_venue_and_watchdog_defaults(monkeypatch: pytest.MonkeyPatch) -> 
     assert s.stream_flink_consumer_group_5m == "flink-crypto-features"
     assert s.stream_flink_sql_path_5m == "/opt/flink/jobs/crypto_features.sql"
     assert s.stream_execution_cost_filter_lambda == 2.0
-    assert s.stream_execution_hold_until_decay is True
+    assert s.stream_execution_hold_until_decay is False
 
 
 def test_lake_defaults_applied(monkeypatch: pytest.MonkeyPatch) -> None:

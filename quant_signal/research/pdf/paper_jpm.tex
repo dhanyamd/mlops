@@ -1,0 +1,800 @@
+% The Journal of Portfolio Management submission.
+% Built to the PMR Article Submission Guidelines (March 2023):
+%   - target 4,000 words of main text, excluding abstract, exhibits, references
+%   - abstract 160 words, non-technical, no references
+%   - three-item key takeaways, each under 40 words
+%   - tabular material is called an Exhibit, never a Table
+%   - Chicago Manual of Style author-date references
+%   - Times New Roman 12pt, 1in margins, single spaced, 12pt before paragraphs
+%   - page 1 front matter, page 2 abstract block, main text opens page 3
+\documentclass[12pt]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{times}                    % Times New Roman
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{dcolumn}   % decimal-point alignment, per PMR exhibit standards
+\newcolumntype{d}[1]{D{.}{.}{#1}}
+\usepackage{amsmath}
+\usepackage[hidelinks]{hyperref}
+
+\setlength{\parindent}{0.5in}         % first line indented one tab stop
+\setlength{\parskip}{12pt plus 2pt}   % 12 points of space before paragraphs
+\linespread{1.0}                      % single spaced
+
+\renewcommand{\footnotesize}{\fontsize{10}{12}\selectfont}
+
+% Headings, per PMR: top level bold uppercase, second level indented and bold.
+% Defined manually rather than via titlesec, which this distribution lacks.
+\makeatletter
+% Top level: bold, uppercase, on its own line.
+\renewcommand{\section}[1]{\par\vspace{16pt}%
+  \noindent{\bfseries\MakeUppercase{#1}}\par\nobreak\vspace{4pt}%
+  \@afterindenttrue\@afterheading}
+% Second level: indented and bold, on its own line.
+\renewcommand{\subsection}[1]{\par\vspace{10pt}%
+  \noindent\hspace*{0.5in}{\bfseries #1}\par\nobreak\vspace{2pt}%
+  \@afterindenttrue\@afterheading}
+\makeatother
+% Third level: bold run-in heading; the paragraph continues on the same line.
+\newcommand{\runin}[1]{\par\vspace{2pt}\noindent\hspace*{0.5in}{\bfseries #1}\ \ignorespaces}
+
+% Exhibits are not floats: PMR numbers them in order of appearance and the text
+% must refer to each one, so fixing them in place keeps text and exhibit adjacent.
+% Wrapped in a minipage so the title can never be orphaned from its table.
+\newenvironment{exhibit}[2]{%
+  \par\vspace{14pt}\noindent\begin{minipage}{\textwidth}\centering\small
+  \textbf{Exhibit #1: #2}\par\vspace{6pt}}%
+  {\end{minipage}\par\vspace{12pt}}
+\newcommand{\exnote}[1]{\par\vspace{4pt}%
+  \begin{minipage}{0.88\textwidth}\fontsize{9}{11}\selectfont #1\end{minipage}}
+
+\pagestyle{plain}                     % page numbers at bottom centre
+
+\begin{document}
+
+% ============================ PAGE 1 ============================
+\thispagestyle{empty}
+\vspace*{1in}
+\begin{center}
+{\large\bfseries Market-Neutral Alpha in Crypto Perpetual Futures:\\
+Ranking Each Asset Against Itself}
+
+\vspace{24pt}
+August 2026
+
+\vspace{36pt}
+\textbf{Dhanya MD}\\
+Independent Researcher\\
+% JPM's submission form requires a mailing address and telephone on page 1,
+% although their published style guide mentions neither.
+Jayanagar, Hassan\\
+Karnataka 543201, India\\
++91 93534 96617\\
+\href{mailto:dhanya13md@gmail.com}{dhanya13md@gmail.com}
+
+\vspace{24pt}
+\begin{minipage}{0.8\textwidth}\centering
+Dhanya MD is an independent quantitative researcher.\\
+Corresponding author.
+\end{minipage}
+\end{center}
+
+\newpage
+
+% ============================ PAGE 2 ============================
+\thispagestyle{empty}
+\begin{center}
+{\large\bfseries Market-Neutral Alpha in Crypto Perpetual Futures:\\
+Ranking Each Asset Against Itself}
+
+\vspace{12pt}
+August 2026
+\end{center}
+
+\vspace{12pt}
+\noindent\textbf{ABSTRACT}
+
+\noindent Factor investing in equities works by comparing companies to one
+another. Shared accounting rules, industry membership and cash flow make those
+comparisons meaningful. Cryptocurrency perpetual futures share none of that, yet
+practitioners rank them against each other anyway. We test what happens when you
+stop. Applying ten factors drawn from published equity research to 112 crypto
+contracts over seven years, we find that scoring each contract against its own
+trailing history, rather than against its peers, raises average annual Sharpe
+from 1.01 to 1.45. The improvement holds for nine of the eleven factors tested
+and survives removing the funding component entirely. Building one portfolio per
+factor and blending returns, rather than blending scores into a single ranking,
+adds a further 0.67 Sharpe. The combined strategy returned 27\% annually with a
+7.6\% maximum drawdown and gained 9\% during 2022, when the market fell 82\%.
+
+\vspace{18pt}
+\noindent\textbf{KEY TAKEAWAYS}
+
+\begin{itemize}\setlength{\itemsep}{6pt}\setlength{\parskip}{0pt}
+\item Crypto contracts have no shared fundamentals, so ranking them against each
+other compares numbers that do not mean the same thing. Ranking each against its
+own history fixes this and adds 0.44 Sharpe.
+
+\item Funding is not a cost adjustment in perpetual futures. It is a return
+driver worth 40\% to 266\% of each factor's performance, and a price-only
+backtest understates results.
+
+\item Holding one book per factor and blending the returns beats blending signals
+into a single score by 0.67 Sharpe, with both approaches tuned over the same
+1,286-configuration grid.
+\end{itemize}
+
+\vspace{18pt}
+\noindent\textbf{Keywords:} market neutral, cryptocurrency, perpetual futures,
+factor investing, cross-sectional ranking, portfolio construction
+
+\noindent\textbf{JEL:} G11, G12, G14, C58
+
+\newpage
+
+% ============================ PAGE 3 ============================
+\indent Every cross-sectional strategy rests on an assumption that is rarely stated out
+loud: that the assets being ranked are comparable. When a portfolio manager sorts
+equities on book-to-price and buys the cheapest quintile, the sort is meaningful
+because a price-to-book ratio of 0.8 means roughly the same thing at one
+industrial company as at another. Shared accounting standards, industry
+classification and observable cash flow supply that common ground.
+
+Cryptocurrency perpetual futures supply none of it. There is no accounting
+identity linking one token to another, no sector taxonomy with economic content,
+no cash flow to normalise by. A market-capitalisation figure depends on a token
+release schedule set by a founding team. Trading volume spans four orders of
+magnitude across contracts on the same exchange. Yet the strategies practitioners
+run in this market are almost uniformly cross-sectional: rank every contract on a
+signal, buy the top, sell the bottom.
+
+The cross-sectional approach has deep roots in equities, from Fama and French
+(1993) through Asness, Moskowitz and Pedersen (2013), and it travels well across
+equity markets precisely because the comparability assumption holds there. Recent
+work extends factor pricing to digital assets (Cong et al. 2026), but does so by
+manufacturing a comparability anchor rather than questioning whether one exists.
+
+This article asks what that assumption costs, and what happens if you abandon it.
+The alternative is straightforward. Instead of asking whether a contract's
+momentum is high relative to other contracts, ask whether it is high relative to
+its own history. Each asset becomes its own benchmark. The comparison no longer
+requires the assets to be alike, only that each has a past. The idea has a
+precedent in time-series momentum (Moskowitz, Ooi and Pedersen 2012), which
+judges each instrument against its own trailing return rather than against peers;
+we apply the same logic to the ranking step of a cross-sectional book.
+
+We test this on 112 US-dollar-margined perpetual futures over 363 weeks, using
+ten factors taken from published equity research plus one built specifically for
+this market. The change in ranking frame is worth 0.44 in annual Sharpe ratio,
+holding in nine of eleven cases. A second construction choice, holding a separate
+portfolio for each factor rather than blending signals into one score, is worth a
+further 0.67. Together they turn a set of individually unremarkable signals into a
+strategy that returned 27\% annually with a maximum drawdown under 8\%.
+
+The remainder of this article describes the market's peculiarities, the strategy,
+what each design decision contributes, and the evidence that the result is not an
+artefact of testing too many ideas against too little data.
+
+\section{Why This Market Is Different}
+
+Three features of perpetual futures matter for portfolio construction.
+
+\runin{No anchor for comparison.}The absence of shared fundamentals is not merely inconvenient. It means the same
+raw factor value carries different information at different contracts. A
+volatility reading of 30\% annualised is unremarkable for a small-cap token and
+extraordinary for the largest contract on the exchange. A cross-sectional sort
+treats those two readings as identical evidence. They are not.
+
+\runin{Funding is a return, not a fee.}Perpetual futures have no expiry. They track spot through a funding payment
+exchanged between long and short holders, typically every eight hours. Most
+practitioners treat this as a carrying cost to be netted out. That is a mistake
+here. Over our sample the funding component contributes between 40\% and 266\% of
+each factor's total return, and a book constructed as ours is receives funding in
+98\% of weeks. A backtest run on price alone understates this strategy rather than
+flattering it.
+
+\runin{Aggressor-side information is published.}Centralised crypto venues publish which side of each trade was the aggressor,
+information that equity researchers must infer with classification algorithms
+(Lee and Ready 1991). This makes it possible to measure something equities cannot
+observe directly: whether buy-initiated trades arrive in a different size
+distribution than sell-initiated ones. We introduce a factor built from
+the difference in skewness between the two. We are not aware of prior work that
+uses the skewness of the trade-size distribution, measured separately by
+initiating side and differenced over time, as a cross-sectional return predictor.
+Zhou (2008) partitions the size distribution by side in an order-driven equity
+market but measures tail exponents, finding them statistically indistinguishable
+across sides; a separate literature prices the skewness of \emph{returns}. Neither
+measures the skewness of trade \emph{sizes}, nor how the asymmetry between sides
+evolves.
+
+The construction is simple enough to state in one line. Within each five-minute
+bar, classify the bar as buy-dominated or sell-dominated by aggressor volume,
+take the log of the average trade size in each, compute the skewness of each
+series over the week, and difference the two:
+%
+\begin{equation*}
+\text{TSKD}_t \;=\; \Delta\Big[\,\mathrm{skew}\big(\log \text{size}^{B}\big)
+ \;-\; \mathrm{skew}\big(\log \text{size}^{S}\big)\Big]
+\end{equation*}
+%
+The differencing matters: the level of the asymmetry is a persistent property of a
+contract, while the \emph{change} in it is what carries information. The measure
+requires five-minute resolution and cannot be recovered from daily bars, which is
+why it is absent from the equity literature that relies on inferred trade
+direction.
+
+The intuition is that informed and uninformed order flow have different size
+signatures. A participant with a view accumulates in a pattern that differs from
+retail flow reacting to a price move, and the difference shows up in the tail of
+the size distribution rather than in its average. Averages are what order-imbalance
+measures capture, and they discard exactly the information that distinguishes the
+two. Measuring the skewness gap between buy-dominated and sell-dominated intervals
+retains it.
+
+\section{The Factors}
+
+Eleven factors are used. Ten are transported from published equity research and the
+formulaic-alpha literature (Kakushadze 2016)
+rather than invented here, which is deliberate: the article's claim concerns how
+factors are ranked and combined, not whether we can find new ones. Using
+established signals means any improvement is attributable to construction rather
+than to signal discovery.
+
+They fall into four families. \emph{Volatility and jump measures} capture the
+character of recent price movement, distinguishing realised upside from downside
+variation (Barndorff-Nielsen, Kinnebrock and Shephard 2010) and separating
+continuous moves from jumps (Patton and Sheppard 2015). \emph{Liquidity and
+impact measures} relate price movement to the volume required to produce it,
+including a spread proxy and a quadratic-impact term. \emph{Order-flow measures}
+use the aggressor-side data described above, including signed imbalance (Chordia, Roll and
+Subrahmanyam 2002) and the
+trade-size asymmetry factor; the premise that order size carries information
+traces to Kyle (1985). \emph{Positioning measures} use exchange-published
+statistics on open interest and the long-short ratios of top traders relative to
+the broader account base.
+
+Individually, none of these is remarkable. Traded alone in the conventional
+cross-sectional frame, the eleven average an annualised Sharpe of 1.01, which
+after costs is not a business. The argument of this article is that most of the
+value in this market sits in decisions taken after the signals are chosen.
+
+Exhibit 1 lists them with the data each requires.
+
+\begin{exhibit}{1}{The Eleven Factors and Their Data Requirements}
+\begin{tabular}{llc}
+\toprule
+Family & Factor & Data required \\
+\midrule
+Volatility and jumps & Realised semivariance ratio & daily bars \\
+ & Signed jump variation & daily bars \\
+ & Adjusted volatility & daily bars \\
+Liquidity and impact & Spread proxy & daily bars \\
+ & Quadratic impact & daily bars \\
+ & Volume-scaled impact, mean & daily bars \\
+ & Volume-scaled impact, variance & daily bars \\
+Order flow & Order-flow imbalance & daily bars \\
+ & Trade-size skewness gap & \textbf{5-minute} \\
+Positioning & Open-interest change & exchange metrics \\
+ & Top-trader vs.\ all-account ratio & exchange metrics \\
+\bottomrule
+\end{tabular}
+\exnote{Ten of the eleven are transported from published equity research. Only
+the trade-size skewness gap requires intraday resolution; a practitioner working
+from daily bars can implement the other ten. Exchange metrics are published
+free and require no credentials.}
+\end{exhibit}
+
+A practitioner without five-minute history can implement ten of the eleven and
+lose relatively little. The trade-size factor contributes positively but is not
+load-bearing.
+
+\section{The Strategy}
+
+The construction has four steps.
+
+\runin{Score each contract against its own past.}For each of eleven factors, a contract's raw factor value in a given week is
+converted to a percentile against that contract's own trailing 52-week
+distribution of the same factor. The score is centred so that zero is the
+contract's own median. Nothing in the calculation refers to any other contract.
+Critically, the trailing window uses only weeks strictly before the scoring week,
+so a score can be computed in real time with no knowledge of the future.
+
+To see the difference this makes, consider two contracts in a single week of our
+sample. One shows a raw factor value of $-27.86$, the lowest in the
+cross-section. The other shows $-11.74$, far higher. Cross-sectional ranking would
+buy the second and sell the first. Measured against their own histories, the
+first is only mildly unusual and scores near the middle, while the second is
+extreme for that contract and scores near the top. The self-referential frame
+reverses the conclusion, and it is the frame that proves correct.
+
+\runin{Build one portfolio per factor.}Each factor independently sorts the tradeable universe and holds the top 20\% long
+and the bottom 20\% short, equally weighted, dollar neutral. With 112 contracts
+that is 22 positions a side at roughly 4.5\% each. The quintile fraction is a
+parameter, not a constant: it is selected on historical data alongside everything
+else, and on a smaller universe the position count shrinks with it.
+
+\runin{Combine returns, not scores.}The eleven single-factor portfolios are combined by weighting each in inverse
+proportion to its own realised volatility, so a steadier factor contributes more.
+Combining weakly correlated books rather than collapsing them into one is what
+Grinold's (1989) fundamental law would predict: information ratio scales with the
+square root of the number of independent bets, and blending scores destroys that
+breadth.
+This is the step most implementations skip. The common approach averages the
+eleven scores into one composite and sorts on that. Averaging scores destroys the
+information that distinguishes factors from one another; a contract that one
+factor loves and another hates ends up indistinguishable from a contract both are
+indifferent to.
+
+The difference is easiest to see in the final weights. In a representative week of
+our sample, one contract is shorted by six of the eleven factors and held by none,
+and ends with a portfolio weight of $-2.3\%$. Another is shorted by four and held
+by one, ending at $-1.5\%$. A third, shorted by two and held by one, ends at
+$-0.7\%$. The position sizes carry information about how much the factors agree.
+A blended score would have compressed all three into a single ranking and sized
+them by their position in that ranking, discarding the distinction between broad
+agreement and marginal disagreement.
+
+The volatility weighting matters for a second reason. The eleven factors have
+materially different return volatilities, and equal-weighting their books would let
+the noisiest one dominate the combined portfolio's risk regardless of its
+contribution. Weighting by inverse volatility equalises risk contribution instead
+of capital, which is standard practice in multi-strategy allocation and is
+unusually valuable here because the dispersion in factor volatility is wide.
+
+\runin{Tilt toward carry and cap turnover.}Positions are tilted toward receiving funding rather than paying it, and weekly
+turnover is capped. Average turnover runs at 37\% of gross exposure per week.
+
+\runin{Universe and rebalancing.}The tradeable universe is screened on trailing dollar volume, which removes
+contracts too thin to trade at size without moving the price. The screen is
+applied on trailing data only, so a contract that becomes liquid enters the
+universe when it does so and not retrospectively. This detail matters more than it
+sounds: applying a liquidity screen using full-sample data is one of the most
+common ways a crypto backtest quietly acquires hindsight, because the contracts
+that survive to be liquid at the end of the sample are exactly the ones that did
+well.
+
+Rebalancing is weekly. That frequency is a compromise: the factors decay over
+several weeks, so daily rebalancing adds cost without adding information, while
+monthly rebalancing gives up too much of the signal. Weekly also happens to be
+long enough that execution can be worked patiently rather than taken at market,
+which is what makes the cost assumptions in this article realistic.
+
+\section{What Each Choice Contributes}
+
+Exhibit 2 isolates the ranking frame. Every other element is held fixed and only
+the comparison basis changes.
+
+\begin{exhibit}{2}{The Ranking Frame}
+\begin{tabular}{l d{1.3} d{1.3} c}
+\toprule
+\multicolumn{1}{l}{} & \multicolumn{1}{c}{Cross-sectional}
+ & \multicolumn{1}{c}{Self-referential} & Factors improved \\
+\midrule
+Mean Sharpe, with funding    & 1.011 & 1.451 & 9 of 11 \\
+Mean Sharpe, funding removed & 0.383 & 0.648 & 8 of 11 \\
+\bottomrule
+\end{tabular}
+
+\exnote{Mean annualised Sharpe ratio across eleven single-factor portfolios, 112
+contracts, 363 weeks. The second row removes the funding component entirely,
+showing the effect is not a carry artefact.}
+\end{exhibit}
+
+The improvement is not explained by funding: with the funding component removed
+entirely, the ranking frame still adds 0.27 and still holds in eight of eleven
+cases. Nor is it a statistical curiosity. Standardising each contract against its
+own history before ranking cross-sectionally, an intermediate step that removes
+scale differences but keeps the peer comparison, recovers 41\% of the gap. That
+identifies scale heterogeneity as one mechanism and leaves the remainder to the
+frame itself.
+
+It is worth being precise about what that 41\% means, because it points at what is
+actually going wrong in the conventional approach. When a cross-sectional sort
+ranks contracts on a raw factor value, it is implicitly assuming the factor has the
+same distribution everywhere. It does not. A liquidity measure computed on the
+largest contract and on a token trading a thousandth of its volume produce numbers
+on entirely different scales, so the sort ends up ordering contracts by size rather
+than by the characteristic it intended to capture. Standardising each contract
+first removes that contamination, and recovering 41\% of the gap tells you scale
+was roughly half the problem.
+
+The other half is harder to remove, and it is the part that motivates abandoning
+the peer comparison altogether. Even after standardisation, a cross-sectional sort
+still asks which contract is most extreme relative to the others this week. In a
+market where the constituents genuinely differ, that question has no stable answer,
+because the composition of the cross-section changes as contracts list, delist and
+move in and out of the liquidity screen. Asking instead whether each contract is
+extreme relative to its own past sidesteps the composition problem entirely.
+
+Exhibit 3 isolates the construction choice, comparing one-book-per-factor against
+the conventional blended-score pipeline. Both were tuned over an identical grid of
+1,286 configurations, so neither is handicapped.
+
+\begin{exhibit}{3}{Portfolio Construction}
+\begin{tabular}{l d{1.3} d{1.3}}
+\toprule
+\multicolumn{1}{l}{} & \multicolumn{1}{c}{Best} & \multicolumn{1}{c}{Average} \\
+\multicolumn{1}{l}{} & \multicolumn{1}{c}{configuration}
+ & \multicolumn{1}{c}{configuration} \\
+\midrule
+One book per factor, self-referential & 2.571 & 1.537 \\
+Blended scores, cross-sectional       & 1.971 & 0.995 \\
+\midrule
+Mean difference, paired ($t=5.82$)    & \multicolumn{1}{c}{0.665} &
+ \multicolumn{1}{c}{---} \\
+Matched cells favouring one book      & \multicolumn{1}{c}{15 of 17} &
+ \multicolumn{1}{c}{---} \\
+\bottomrule
+\end{tabular}
+
+\exnote{Annualised Sharpe ratio. The paired comparison holds every parameter fixed and
+varies only construction, so the difference is attributable to construction alone.}
+\end{exhibit}
+
+The ordering holds on both the best configuration and the average one, which
+matters: a result that appears only at the optimum is usually a result about the
+optimiser.
+
+Carry deserves separate mention. Traded on its own the funding component returns
+an annualised Sharpe of 1.25 ($t=2.91$), respectable but short of the $t>3.0$ bar
+and so not by itself compelling. Its value
+is as a component. Removing it costs the least-affected factor about 40\% of its
+performance and the most-affected more than two-thirds. Practitioners who net
+funding out of their backtests as a cost are discarding a return source.
+
+\section{Performance}
+
+Exhibit 4 summarises the combined strategy.
+
+\begin{exhibit}{4}{Strategy Performance, 282 Weekly Rebalances}
+\begin{tabular}{lr}
+\toprule
+Cumulative return & $+327.6\%$ \\
+Annualised return & $+27.8\%$ \\
+Annualised volatility & 12.8\% \\
+Sharpe ratio & \textbf{2.16} \\
+$t$-statistic & \textbf{5.03} \\
+Maximum drawdown & \textbf{$-7.6\%$} \\
+Recovery from maximum drawdown & 16 weeks \\
+Worst week & $-6.2\%$ \\
+Positive weeks & 65.5\% \\
+Return to maximum drawdown & 3.7 \\
+Skewness & $+1.14$ \\
+Weekly turnover & 37\% \\
+\bottomrule
+\end{tabular}
+\end{exhibit}
+
+The $t$-statistic of 5.03 is worth pausing on. Harvey, Liu and Zhu (2016) argue
+that the flood of published anomalies means a newly claimed factor should clear
+$t>3.0$ rather than the conventional 2.0. This result clears that raised bar by
+two-thirds, on 282 independent weekly observations.
+
+Two features deserve attention beyond the headline. The maximum drawdown of 7.6\%
+recovered within sixteen weeks, giving a return-to-drawdown ratio of 3.7. And
+returns are positively skewed at $+1.14$. Most systematic strategies that produce
+high Sharpe ratios do so by selling tails and exhibit negative skew; this one does
+the opposite, which matters for anyone sizing the position.
+
+The strategy's usefulness rests on a claim of market neutrality. A regression of
+weekly returns on market, size and momentum factors built from the same universe
+is reported in Exhibit 5. The market loading is $-0.001$ with a $t$-statistic of
+$-0.12$: the book is market-neutral \emph{empirically}, not merely by
+construction. Size and momentum load negatively but explain little, and the
+regression $R^2$ is 0.074. The intercept is an annualised alpha of 27.05\% with a
+$t$-statistic of 4.42 after Newey--West (1987) correction, accounting for 97\% of
+the strategy's mean return. Three factors that explain much of what happens in
+this market explain almost none of this.
+
+\begin{exhibit}{5}{Is It Alpha? Regression on Market, Size and Momentum}
+\begin{tabular}{l d{1.5} d{2.2} d{2.2}}
+\toprule
+\multicolumn{1}{l}{} & \multicolumn{1}{c}{Coefficient}
+ & \multicolumn{1}{c}{$t$ (OLS)} & \multicolumn{1}{c}{$t$ (NW)} \\
+\midrule
+Alpha    &  0.00520 &  5.03 &  4.42 \\
+Market   & -0.00128 & -0.13 & -0.12 \\
+Size     & -0.09260 & -3.83 & -2.69 \\
+Momentum & -0.06819 & -3.39 & -2.23 \\
+\midrule
+\multicolumn{1}{l}{Annualised alpha} & \multicolumn{3}{r}{\textbf{+27.05\%}} \\
+\multicolumn{1}{l}{$R^{2}$}          & \multicolumn{3}{r}{0.074} \\
+\multicolumn{1}{l}{Alpha share of mean return} & \multicolumn{3}{r}{\textbf{97\%}} \\
+\multicolumn{1}{l}{Observations}     & \multicolumn{3}{r}{281 weeks} \\
+\bottomrule
+\end{tabular}
+\exnote{Weekly strategy returns regressed on an equal-weighted market factor, a
+size book and a twelve-week momentum book, all built point-in-time from the same
+universe. Newey--West standard errors correct for autocorrelation; first-order
+autocorrelation is $+0.063$, so the correction is modest.}
+\end{exhibit}
+
+An average beta of zero over seven years does not by itself establish that the
+book is neutral when it matters. Exhibit 6 tests it in the period most likely to
+break it.
+
+\begin{exhibit}{6}{The 2022 Decline, 61 Weeks}
+\begin{tabular}{l d{3.1} d{3.1}}
+\toprule
+\multicolumn{1}{l}{} & \multicolumn{1}{c}{Market}
+ & \multicolumn{1}{c}{Strategy} \\
+\midrule
+Cumulative return (\%)  & -82.5 & 9.4 \\
+Maximum drawdown (\%)   & -84.0 & -7.6 \\
+Correlation over window & \multicolumn{2}{c}{0.045} \\
+\bottomrule
+\end{tabular}
+
+\exnote{Market is the equal-weighted return of the tradeable universe, November 2021 to
+December 2022.}
+\end{exhibit}
+
+\section{Is It Real?}
+
+Any strategy reported after searching a parameter space needs to answer why the
+result is not the best of many tries. We ran four tests, and report the ones that
+failed alongside the ones that passed.
+
+\runin{Selection out of sample.}Configuration is chosen on a trailing two-year window and evaluated on the
+following six months, rolling forward. Every parameter is reselected in each
+window, including the quintile fraction; holding any parameter at its
+full-sample best would let the test inherit knowledge of the evaluation period.
+Because a weekly strategy also carries hidden exposure to which weekday it
+rebalances (Hoffstein, Sibears and Faber 2019), we rebuilt the entire dataset on
+each of seven rebalance weekdays and repeated the exercise. We are not aware of
+these two procedures being applied together before. Separately each leaves a gap:
+a walk-forward result still inherits an arbitrary rebalance weekday, and a
+timing-luck study still inherits a fixed configuration. Running them jointly
+closes both at once.
+
+Average out-of-sample Sharpe across the seven schedules is 1.87, and all seven are
+profitable. Five of the seven clear a $t$-statistic of 3.0, the threshold Harvey,
+Liu and Zhu (2016) propose for claimed anomalies. Two do not, and we report them
+as failures rather than reporting the best weekday and stopping. The dispersion in
+Exhibit 7 is instructive on its own: a study quoting a single schedule could have
+reported anything between 1.07 and 2.58 based on a choice with no economic
+content.
+
+\begin{exhibit}{7}{Out-of-Sample Result by Rebalance Weekday}
+\begin{tabular}{lccccccc}
+\toprule
+Rebalance day & Sun & Mon & Wed & Sat & Tue & Fri & Thu \\
+\midrule
+Out-of-sample Sharpe & 2.58 & 2.54 & 1.89 & 1.84 & 1.70 & 1.46 & 1.07 \\
+$t$-statistic & 4.82 & 4.75 & 3.53 & 3.44 & 3.17 & 2.73 & 2.01 \\
+Clears $t>3.0$ & yes & yes & yes & yes & yes & \textbf{no} & \textbf{no} \\
+\bottomrule
+\end{tabular}
+\exnote{182 out-of-sample weeks per schedule. Average across the seven is 1.87.
+The entire dataset is rebuilt from hourly bars on each weekday, so the seven are
+genuinely independent schedules rather than shifted views of one. Monday, the
+schedule we trade, is second of seven rather than first.}
+\end{exhibit}
+
+\runin{Generalisation across assets.}Time-series testing does not show that parameters transfer to contracts they were
+not fitted on. We selected configurations on 78 contracts and evaluated on the 34
+held out. All eight splits were profitable, retaining 83\% of in-sample
+performance once the comparison controls for the fact that a smaller universe
+holds fewer positions.
+
+\runin{Correcting for the search itself.}Every configuration evaluated during development was logged to an append-only
+record, so the number of trials is counted rather than recalled. Applying the
+deflated Sharpe ratio (Bailey and L\'opez de Prado 2014) against the full logged
+count of 1,286 trials, the probability that the result reflects skill rather than
+selection is 0.95, short of the 0.99 threshold we set in advance. Against the
+narrower count of 211 configurations in the final search it is 0.99. We report
+both, including the one that fails.
+
+\runin{Costs.}Transaction costs are modelled per contract on trailing dollar volume, at 5 to 25
+basis points round trip. The strategy remains profitable at eight times the
+modelled level. That is the failure mode most likely to be understated in a
+backtest, so it deserves a wide margin.
+
+Exhibit 8 collects the results.
+
+\begin{exhibit}{8}{Robustness Summary}
+\begin{tabular}{lcc}
+\toprule
+Test & Result & Threshold \\
+\midrule
+Walk-forward, seven rebalance weekdays & Sharpe 1.87 & $>0$ \\
+\quad individual weekdays clearing $t>3.0$ & 5 of 7 & --- \\
+Held-out contracts, eight splits & 83\% retained & $>50\%$ \\
+Deflated Sharpe, 211 trials & 0.99 & 0.99 \\
+Deflated Sharpe, 1,286 trials & 0.95 & 0.99 \\
+Transaction costs & profitable at $8\times$ & $1\times$ \\
+Market loading (Exhibit 5) & $-0.001$ ($t=-0.12$) & $\approx 0$ \\
+\bottomrule
+\end{tabular}
+\exnote{Thresholds are stated in advance rather than chosen after the fact. Two
+of the seven rebalance weekdays fall short of $t>3.0$, and the deflated Sharpe
+computed against the full logged trial count falls short of 0.99; both are shown
+here rather than omitted.}
+\end{exhibit}
+
+\section{Does the Live Book Run the Backtest?}
+
+A backtest describes a system that does not exist. The system that eventually
+trades is a separate piece of software, usually written later, often by someone
+else, and the assumption that the two compute the same positions is almost never
+tested. We are not aware of a published strategy paper that verifies it.
+
+We do, with an automated gate that runs before any deployment. Research and the
+live path call the same scoring module, and the gate asserts that they produce
+identical weights, contract by contract, at every rebalance in the sample. It
+also re-tests every factor for look-ahead by recomputing a historical score with
+all subsequent data deleted and requiring an exact match, checks that the book is
+dollar neutral, and fails if a configuration produces no positions at all. It
+exits non-zero on any violation, so a broken build cannot ship.
+
+The gate matters because it has caught real failures. An earlier version of this
+work shipped a live book that had drifted to a rank correlation of 0.15 against
+research, with position overlap barely above chance. A later look-ahead bug in a
+shared ranking helper survived undetected precisely because research and
+production agreed perfectly: both called the same incorrect function. That second
+failure is the instructive one. Agreement between two systems is not evidence of
+correctness if both inherit the same mistake, which is why the gate checks
+point-in-time integrity independently rather than only comparing the two paths to
+each other.
+
+For a practitioner the implication is direct. The claim that a live system
+implements a published backtest is an empirical proposition, not a safe
+assumption, and it is cheap to test.
+
+\section{What This Does Not Show}
+
+Three limitations are worth stating plainly, because a reader deciding whether to
+act on this should know where the evidence thins out.
+
+The sample covers seven years of a single asset class in what has been, on net, a
+period of extraordinary growth and volatility. Seven years is a reasonable sample
+in weekly observations but a short one in market regimes. The 2022 decline is the
+only severe drawdown in it, and while the strategy came through that episode well,
+one episode is one observation.
+
+Capacity is genuinely limited. At roughly \$67 million the strategy is a viable
+book for an individual or a small fund and irrelevant to a large one. Readers at
+institutions should treat the ranking-frame result as the transferable finding and
+the specific strategy as a demonstration of it.
+
+Finally, the result is about construction, not forecasting. We have not shown that
+these eleven factors predict returns better than others, or that the effect
+persists as more capital pursues it. What we have shown is that given a set of
+signals, two decisions taken after signal selection are worth more than the
+signals themselves. That is a claim about method, and it should be tested in other
+markets that lack a natural peer group before it is treated as general.
+
+\section{Costs, Capacity and Implementation}
+
+The strategy trades 112 contracts weekly with 37\% turnover, which is modest for a
+systematic book. All inputs are free and public: prices, volumes and funding rates
+come from an exchange bulk archive, positioning statistics from a public endpoint
+requiring no credentials. No paid data is used anywhere in the construction.
+
+Capacity is the binding practical constraint. Assuming participation at 2\% of
+each contract's trailing dollar volume, the strategy supports roughly \$67
+million. That is a meaningful number for an individual manager or a small fund and
+an irrelevant one for a large institution. It also implies the effect is unlikely
+to be arbitraged away quickly, since the capital required to do so exceeds what
+the market will absorb.
+
+One factor requires five-minute data to construct. Practitioners working from
+daily bars can implement ten of the eleven; the remaining factor contributes
+positively but is not load-bearing.
+
+\section{Conclusion}
+
+Cross-sectional ranking is so standard that its precondition goes unexamined.
+That precondition, that the assets being compared are genuinely comparable, is
+supplied in equities by accounting and industry structure. Crypto perpetual
+futures do not supply it, and ranking them against each other imposes a
+comparison the market does not support.
+
+Ranking each contract against its own history removes the requirement. It is not a
+refinement of cross-sectional investing but a different premise, and in this
+market it is worth 0.44 in Sharpe across eleven independent factors. Holding
+factors in separate portfolios rather than blending their signals is worth a
+further 0.67. Neither choice requires new data, a proprietary signal or a
+forecasting model. Both are decisions about construction, made before any factor
+is chosen.
+
+For a practitioner the practical implication is narrower and more useful than the
+strategy itself. If you already run a cross-sectional book in this market, the
+ranking frame is a change you can test in an afternoon against your existing
+signals: replace the cross-sectional percentile with a trailing self-percentile and
+rerun. It requires no new data and no new signal research, and in our sample it
+was worth more than any individual factor we tested. The construction change,
+holding separate books rather than blending scores, is a larger refactor but is
+similarly independent of which signals you use.
+
+The broader implication is that in markets without a natural peer group, the
+comparison basis is a design decision rather than a convention to inherit. Equity
+practice supplies the cross-sectional default, and it supplies it for a good
+reason, because equities have the shared structure that makes peer comparison
+meaningful. Carrying that default into a market that lacks the structure imports
+the machinery without the justification. The same question arises anywhere the
+constituents are genuinely heterogeneous: commodities across storability regimes,
+credit across capital structures, private assets with no common valuation basis.
+The comparison basis deserves the same scrutiny practitioners already give to
+signal selection, and in markets like this one it matters more.
+
+\section{Declaration of Submission}
+
+The author has read the publication agreement and is aware of the conditions of
+submission. The author declares that no institution requires that this paper be
+posted on any public-facing website, including SSRN, ResearchGate or SciHub.
+
+\section{Declaration of Interest}
+
+The author declares no competing financial or personal interests. This research
+received no funding. The author has no affiliation with, consulting relationship
+with, or financial interest in any cryptocurrency exchange, trading venue or data
+provider referenced in this study.
+
+\section{References}
+
+\noindent\hangindent=0.5in Asness, Clifford S., Tobias J. Moskowitz, and
+Lasse Heje Pedersen. 2013. ``Value and Momentum Everywhere.'' \emph{The Journal of
+Finance} 68 (3): 929--985.
+
+\noindent\hangindent=0.5in Bailey, David H., and Marcos L\'opez de Prado. 2014.
+``The Deflated Sharpe Ratio: Correcting for Selection Bias, Backtest Overfitting,
+and Non-Normality.'' \emph{The Journal of Portfolio Management} 40 (5): 94--107.
+
+\noindent\hangindent=0.5in Barndorff-Nielsen, Ole E., Silja Kinnebrock, and Neil
+Shephard. 2010. ``Measuring Downside Risk: Realised Semivariance.'' In
+\emph{Volatility and Time Series Econometrics}, 117--136. Oxford: Oxford
+University Press.
+
+\noindent\hangindent=0.5in Chordia, Tarun, Richard Roll, and Avanidhar
+Subrahmanyam. 2002. ``Order Imbalance, Liquidity, and Market Returns.''
+\emph{Journal of Financial Economics} 65 (1): 111--130.
+
+\noindent\hangindent=0.5in Cong, Lin William, G. Andrew Karolyi, Ke Tang, and
+Weiyi Zhao. 2026. ``Crypto Value, Factor Pricing, and Market Segmentation.''
+\emph{Management Science}, forthcoming.
+
+\noindent\hangindent=0.5in Fama, Eugene F., and Kenneth R. French. 1993. ``Common
+Risk Factors in the Returns on Stocks and Bonds.'' \emph{Journal of Financial
+Economics} 33 (1): 3--56.
+
+\noindent\hangindent=0.5in Grinold, Richard C. 1989. ``The Fundamental Law of
+Active Management.'' \emph{The Journal of Portfolio Management} 15 (3): 30--37.
+
+\noindent\hangindent=0.5in Harvey, Campbell R., Yan Liu, and Heqing Zhu. 2016.
+``$\ldots$ and the Cross-Section of Expected Returns.'' \emph{The Review of
+Financial Studies} 29 (1): 5--68.
+
+\noindent\hangindent=0.5in Hoffstein, Corey, Justin Sibears, and Nathan Faber.
+2019. ``Rebalance Timing Luck: The Difference Between Hired and Fired.''
+\emph{The Journal of Index Investing} 10 (1): 27--36.
+
+\noindent\hangindent=0.5in Kakushadze, Zura. 2016. ``101 Formulaic Alphas.''
+\emph{Wilmott} 2016 (84): 72--81.
+
+\noindent\hangindent=0.5in Kyle, Albert S. 1985. ``Continuous Auctions and Insider
+Trading.'' \emph{Econometrica} 53 (6): 1315--1335.
+
+\noindent\hangindent=0.5in Lee, Charles M. C., and Mark J. Ready. 1991.
+``Inferring Trade Direction from Intraday Data.'' \emph{The Journal of Finance}
+46 (2): 733--746.
+
+\noindent\hangindent=0.5in Moskowitz, Tobias J., Yao Hua Ooi, and Lasse Heje
+Pedersen. 2012. ``Time Series Momentum.'' \emph{Journal of Financial Economics}
+104 (2): 228--250.
+
+\noindent\hangindent=0.5in Newey, Whitney K., and Kenneth D. West. 1987. ``A
+Simple, Positive Semi-Definite, Heteroskedasticity and Autocorrelation Consistent
+Covariance Matrix.'' \emph{Econometrica} 55 (3): 703--708.
+
+\noindent\hangindent=0.5in Zhou, Wei-Xing. 2008. ``Universal Price Impact
+Functions of Individual Trades in an Order-Driven Market.'' \emph{Quantitative
+Finance}. Working paper.
+
+\noindent\hangindent=0.5in Patton, Andrew J., and Kevin Sheppard. 2015. ``Good
+Volatility, Bad Volatility: Signed Jumps and the Persistence of Volatility.''
+\emph{The Review of Economics and Statistics} 97 (3): 683--697.
+
+\end{document}

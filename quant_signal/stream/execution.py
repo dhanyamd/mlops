@@ -43,7 +43,6 @@ import statistics
 import threading
 from collections import deque
 from collections.abc import Mapping
-from pathlib import Path
 from typing import Protocol
 
 from config.logging import configure_logging, get_logger
@@ -662,8 +661,14 @@ class PaperExecutionSimulator:
                 and prev_end is not None
                 and window_end >= prev_end + self._window_ms
                 and self._n_trades.get(symbol, 0) < self._max_trades
-                and yhat is not None
-                and abs(yhat) > self._entry_threshold
+                # lambda = 0 disables the cost filter outright, which is how a
+                # weight-driven strategy (SRP) opts out: it has target weights,
+                # not a forecast, so there is no |r-hat| to threshold. Requiring
+                # a number here would silently refuse every such signal.
+                and (
+                    self._entry_threshold <= 0.0
+                    or (yhat is not None and abs(yhat) > self._entry_threshold)
+                )
             ):
                 # Entry gate: the fresh forecast must clear the λ·c band in
                 # magnitude (turnover 1), independent of the predictor's own

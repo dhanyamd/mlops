@@ -10,8 +10,6 @@ quantile (and keeps shorts when the short side is calm).
 
 from __future__ import annotations
 
-import math
-
 from stream.kv import FakeKV
 from stream.scx_signal import ScxSignal, prediction_key
 

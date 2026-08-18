@@ -32,11 +32,11 @@ Run: uv run python scripts/research_luw.py
 
 from __future__ import annotations
 
+import random
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import random
 
 CONFIG = {
     "formation_days": 14,

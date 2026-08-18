@@ -1,4 +1,4 @@
-This is pdfTeX, Version 3.141592653-2.6-1.40.27 (TeX Live 2025) (preloaded format=pdflatex 2026.1.21)  17 AUG 2026 02:19
+This is pdfTeX, Version 3.141592653-2.6-1.40.27 (TeX Live 2025) (preloaded format=pdflatex 2026.1.21)  18 AUG 2026 01:03
 entering extended mode
  restricted \write18 enabled.
  %&-line parsing enabled.
@@ -305,32 +305,110 @@ Package: array 2024/10/17 v2.6g Tabular extension package (FMi)
 \backup@length=\skip58
 \ar@cellbox=\box55
 )
+(/usr/local/texlive/2025basic/texmf-dist/tex/latex/microtype/microtype.sty
+Package: microtype 2025/02/11 v3.2a Micro-typographical refinements (RS)
+\MT@toks=\toks25
+\MT@tempbox=\box56
+\MT@count=\count302
+LaTeX Info: Redefining \noprotrusionifhmode on input line 1087.
+LaTeX Info: Redefining \leftprotrusion on input line 1088.
+\MT@prot@toks=\toks26
+LaTeX Info: Redefining \rightprotrusion on input line 1107.
+LaTeX Info: Redefining \textls on input line 1449.
+\MT@outer@kern=\dimen178
+LaTeX Info: Redefining \microtypecontext on input line 2053.
+LaTeX Info: Redefining \textmicrotypecontext on input line 2070.
+\MT@listname@count=\count303
+
+(/usr/local/texlive/2025basic/texmf-dist/tex/latex/microtype/microtype-pdftex.d
+ef
+File: microtype-pdftex.def 2025/02/11 v3.2a Definitions specific to pdftex (RS)
+
+LaTeX Info: Redefining \lsstyle on input line 944.
+LaTeX Info: Redefining \lslig on input line 944.
+\MT@outer@space=\skip59
+)
+Package microtype Info: Loading configuration file microtype.cfg.
+ (/usr/local/texlive/2025basic/texmf-dist/tex/latex/microtype/microtype.cfg
+File: microtype.cfg 2025/02/11 v3.2a microtype main configuration file (RS)
+)
+LaTeX Info: Redefining \microtypesetup on input line 3065.
+) (/usr/local/texlive/2025basic/texmf-dist/tex/latex/tools/longtable.sty
+Package: longtable 2024-10-27 v4.22 Multi-page Table package (DPC)
+\LTleft=\skip60
+\LTright=\skip61
+\LTpre=\skip62
+\LTpost=\skip63
+\LTchunksize=\count304
+\LTcapwidth=\dimen179
+\LT@head=\box57
+\LT@firsthead=\box58
+\LT@foot=\box59
+\LT@lastfoot=\box60
+\LT@gbox=\box61
+\LT@cols=\count305
+\LT@rows=\count306
+\c@LT@tables=\count307
+\c@LT@chunks=\count308
+\LT@p@ftn=\toks27
+)
+(/usr/local/texlive/2025basic/texmf-dist/tex/latex/caption/caption.sty
+Package: caption 2023/08/05 v3.6o Customizing captions (AR)
+
+(/usr/local/texlive/2025basic/texmf-dist/tex/latex/caption/caption3.sty
+Package: caption3 2023/07/31 v2.4d caption3 kernel (AR)
+\caption@tempdima=\dimen180
+\captionmargin=\dimen181
+\caption@leftmargin=\dimen182
+\caption@rightmargin=\dimen183
+\caption@width=\dimen184
+\caption@indent=\dimen185
+\caption@parindent=\dimen186
+\caption@hangindent=\dimen187
+Package caption Info: Standard document class detected.
+)
+\c@caption@flags=\count309
+\c@continuedfloat=\count310
+Package caption Info: hyperref package is loaded.
+Package caption Info: longtable package is loaded.
+
+(/usr/local/texlive/2025basic/texmf-dist/tex/latex/caption/ltcaption.sty
+Package: ltcaption 2021/01/08 v1.4c longtable captions (AR)
+))
+(/usr/local/texlive/2025basic/texmf-dist/tex/latex/float/float.sty
+Package: float 2001/11/08 v1.3d Float enhancements (AL)
+\c@float@type=\count311
+\float@exts=\toks28
+\float@box=\box62
+\@float@everytoks=\toks29
+\@floatcapt=\box63
+)
 (/usr/local/texlive/2025basic/texmf-dist/tex/latex/l3backend/l3backend-pdftex.d
 ef
 File: l3backend-pdftex.def 2024-05-08 L3 backend support: PDF output (pdfTeX)
-\l__color_backend_stack_int=\count302
-\l__pdf_internal_box=\box56
+\l__color_backend_stack_int=\count312
+\l__pdf_internal_box=\box64
 ) (./paper.aux)
 \openout1 = `paper.aux'.
 
-LaTeX Font Info:    Checking defaults for OML/cmm/m/it on input line 25.
-LaTeX Font Info:    ... okay on input line 25.
-LaTeX Font Info:    Checking defaults for OMS/cmsy/m/n on input line 25.
-LaTeX Font Info:    ... okay on input line 25.
-LaTeX Font Info:    Checking defaults for OT1/cmr/m/n on input line 25.
-LaTeX Font Info:    ... okay on input line 25.
-LaTeX Font Info:    Checking defaults for T1/cmr/m/n on input line 25.
-LaTeX Font Info:    ... okay on input line 25.
-LaTeX Font Info:    Checking defaults for TS1/cmr/m/n on input line 25.
-LaTeX Font Info:    ... okay on input line 25.
-LaTeX Font Info:    Checking defaults for OMX/cmex/m/n on input line 25.
-LaTeX Font Info:    ... okay on input line 25.
-LaTeX Font Info:    Checking defaults for U/cmr/m/n on input line 25.
-LaTeX Font Info:    ... okay on input line 25.
-LaTeX Font Info:    Checking defaults for PD1/pdf/m/n on input line 25.
-LaTeX Font Info:    ... okay on input line 25.
-LaTeX Font Info:    Checking defaults for PU/pdf/m/n on input line 25.
-LaTeX Font Info:    ... okay on input line 25.
+LaTeX Font Info:    Checking defaults for OML/cmm/m/it on input line 44.
+LaTeX Font Info:    ... okay on input line 44.
+LaTeX Font Info:    Checking defaults for OMS/cmsy/m/n on input line 44.
+LaTeX Font Info:    ... okay on input line 44.
+LaTeX Font Info:    Checking defaults for OT1/cmr/m/n on input line 44.
+LaTeX Font Info:    ... okay on input line 44.
+LaTeX Font Info:    Checking defaults for T1/cmr/m/n on input line 44.
+LaTeX Font Info:    ... okay on input line 44.
+LaTeX Font Info:    Checking defaults for TS1/cmr/m/n on input line 44.
+LaTeX Font Info:    ... okay on input line 44.
+LaTeX Font Info:    Checking defaults for OMX/cmex/m/n on input line 44.
+LaTeX Font Info:    ... okay on input line 44.
+LaTeX Font Info:    Checking defaults for U/cmr/m/n on input line 44.
+LaTeX Font Info:    ... okay on input line 44.
+LaTeX Font Info:    Checking defaults for PD1/pdf/m/n on input line 44.
+LaTeX Font Info:    ... okay on input line 44.
+LaTeX Font Info:    Checking defaults for PU/pdf/m/n on input line 44.
+LaTeX Font Info:    ... okay on input line 44.
 
 *geometry* driver: auto-detecting
 *geometry* detected driver: pdftex
@@ -366,27 +444,55 @@ LaTeX Font Info:    ... okay on input line 25.
 * \@reversemarginfalse
 * (1in=72.27pt=25.4mm, 1cm=28.453pt)
 
-Package hyperref Info: Link coloring OFF on input line 25.
+Package hyperref Info: Link coloring OFF on input line 44.
 (./paper.out) (./paper.out)
 \@outlinefile=\write3
 \openout3 = `paper.out'.
 
-LaTeX Font Info:    Trying to load font information for U+msa on input line 27.
+LaTeX Info: Redefining \microtypecontext on input line 44.
+Package microtype Info: Applying patch `item' on input line 44.
+Package microtype Info: Applying patch `toc' on input line 44.
+Package microtype Info: Applying patch `eqnum' on input line 44.
+Package microtype Info: Applying patch `footnote' on input line 44.
+Package microtype Info: Applying patch `verbatim' on input line 44.
+LaTeX Info: Redefining \microtypesetup on input line 44.
+Package microtype Info: Generating PDF output.
+Package microtype Info: Character protrusion enabled (level 2).
+Package microtype Info: Using default protrusion set `alltext'.
+Package microtype Info: No font expansion.
+Package microtype Info: No adjustment of tracking.
+Package microtype Info: No adjustment of interword spacing.
+Package microtype Info: No adjustment of character kerning.
+
+(/usr/local/texlive/2025basic/texmf-dist/tex/latex/microtype/mt-cmr.cfg
+File: mt-cmr.cfg 2013/05/19 v2.2 microtype config. file: Computer Modern Roman 
+(RS)
+)
+Package caption Info: Begin \AtBeginDocument code.
+Package caption Info: float package is loaded.
+Package caption Info: End \AtBeginDocument code.
+LaTeX Font Info:    Trying to load font information for U+msa on input line 46.
 
 
 (/usr/local/texlive/2025basic/texmf-dist/tex/latex/amsfonts/umsa.fd
 File: umsa.fd 2013/01/14 v3.01 AMS symbols A
 )
-LaTeX Font Info:    Trying to load font information for U+msb on input line 27.
+(/usr/local/texlive/2025basic/texmf-dist/tex/latex/microtype/mt-msa.cfg
+File: mt-msa.cfg 2006/02/04 v1.1 microtype config. file: AMS symbols (a) (RS)
+)
+LaTeX Font Info:    Trying to load font information for U+msb on input line 46.
 
 
 (/usr/local/texlive/2025basic/texmf-dist/tex/latex/amsfonts/umsb.fd
 File: umsb.fd 2013/01/14 v3.01 AMS symbols B
 )
-Overfull \hbox (38.06091pt too wide) in paragraph at lines 60--64
-[] 
- []
-
+(/usr/local/texlive/2025basic/texmf-dist/tex/latex/microtype/mt-msb.cfg
+File: mt-msb.cfg 2005/06/01 v1.0 microtype config. file: AMS symbols (b) (RS)
+)
+Package microtype Info: Loading generic protrusion settings for font family
+(microtype)             `cmtt' (encoding: OT1).
+(microtype)             For optimal results, create family-specific settings.
+(microtype)             See the microtype manual for details.
 
 
 [1
@@ -398,9 +504,8 @@ pdfTeX warning (ext4): destination with the same identifier (name{page.1}) has
 been already used, duplicate ignored
 <to be read again> 
                    \relax 
-l.124 ...ublishes and equity research must infer.}
-                                                   Work on Chinese A-shares
-[1]
+l.158 
+       [1]
 
 [2]
 
@@ -409,6 +514,66 @@ l.124 ...ublishes and equity research must infer.}
 [4]
 
 [5]
+Underfull \hbox (badness 10000) in paragraph at lines 373--373
+[]|\OT1/cmr/m/n/10 abnormal turnover
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 374--374
+[]|\OT1/cmr/m/n/10 informed ac-cu-mu-
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 374--374
+\OT1/cmr/m/n/10 la-tion be-low the
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 375--375
+[]|\OT1/cmr/m/n/10 upside-jump-
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 375--375
+\OT1/cmr/m/n/10 dominated names
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 377--377
+[]|\OT1/cmr/m/n/10 price and vol-ume
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 377--377
+\OT1/cmr/m/n/10 mov-ing to-gether
+ []
+
+
+Overfull \hbox (3.7794pt too wide) in paragraph at lines 379--379
+[]|\OT1/cmr/m/n/10 WRspread| 
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 379--379
+[]|\OT1/cmr/m/n/10 large ac-counts
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 379--379
+\OT1/cmr/m/n/10 crowded rel-a-tive
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 380--380
+[]|\OT1/cmr/m/n/10 large ac-counts \OT1/cmr/m/it/10 in-
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 382--382
+\OT1/cmr/m/n/10 trade-size dis-tri-bu-
+ []
+
+
 
 [6]
 
@@ -417,61 +582,6 @@ l.124 ...ublishes and equity research must infer.}
 [8]
 
 [9]
-Underfull \hbox (badness 10000) in paragraph at lines 523--523
-[]|\OT1/cmr/m/n/10 Trade-size asym-me-try, stan-
- []
-
-
-Underfull \hbox (badness 1371) in paragraph at lines 524--524
-[]|\OT1/cmr/m/n/10 Trade-size asym-me-try, sub-pe-ri-
- []
-
-
-LaTeX Warning: `h' float specifier changed to `ht'.
-
-
-LaTeX Warning: `h' float specifier changed to `ht'.
-
-
-LaTeX Warning: `h' float specifier changed to `ht'.
-
-
-LaTeX Warning: `h' float specifier changed to `ht'.
-
-
-LaTeX Warning: `h' float specifier changed to `ht'.
-
-
-LaTeX Warning: `h' float specifier changed to `ht'.
-
-
-LaTeX Warning: `h' float specifier changed to `ht'.
-
-
-LaTeX Warning: `h' float specifier changed to `ht'.
-
-
-LaTeX Warning: `h' float specifier changed to `ht'.
-
-
-LaTeX Warning: `h' float specifier changed to `ht'.
-
-
-LaTeX Warning: `h' float specifier changed to `ht'.
-
-
-LaTeX Warning: `h' float specifier changed to `ht'.
-
-
-LaTeX Warning: `h' float specifier changed to `ht'.
-
-
-LaTeX Warning: `h' float specifier changed to `ht'.
-
-
-LaTeX Warning: `h' float specifier changed to `ht'.
-
-
 
 [10]
 
@@ -487,43 +597,114 @@ LaTeX Warning: `h' float specifier changed to `ht'.
 
 [16]
 
-[17] (./paper.aux)
+[17]
+
+[18]
+
+[19]
+Underfull \hbox (badness 10000) in paragraph at lines 1182--1182
+[]|\OT1/cmr/m/n/10 Trade-size asym-me-try, stan-
+ []
+
+
+Underfull \hbox (badness 2285) in paragraph at lines 1183--1183
+[]|\OT1/cmr/m/n/10 Trade-size asym-me-try, sub-pe-ri-
+ []
+
+
+
+[20]
+Underfull \hbox (badness 2277) in paragraph at lines 1217--1218
+[]|\OT1/cmr/m/n/10 measured IC $\OMS/cmsy/m/n/10 ^^@\OT1/cmr/m/n/10 0\OML/cmm/m
+/it/10 :\OT1/cmr/m/n/10 001$ (Pear-son),
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 1218--1219
+[]|\OT1/cmr/m/n/10 degraded ev-ery con-fig-u-ra-tion
+ []
+
+
+Underfull \hbox (badness 1320) in paragraph at lines 1221--1222
+[]|\OT1/cmr/m/n/10 subsumed by sim-pler order-flow
+ []
+
+
+
+[21]
+Underfull \hbox (badness 1430) in paragraph at lines 1243--1243
+[]|\OT1/cmr/m/n/10 latent-sector neu-tral-i-sa-tion via prin-ci-pal
+ []
+
+
+Underfull \hbox (badness 2253) in paragraph at lines 1243--1244
+[]|\OT1/cmr/m/n/10 removed sig-nal along with the
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 1248--1248
+[]|\OT1/cmr/m/n/10 MOD-correction
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 1249--1249
+[]|\OT1/cmr/m/n/10 orthogonalisation
+ []
+
+
+
+[22]
+
+[23]
+
+[24]
+
+[25] (./paper.aux)
  ***********
 LaTeX2e <2024-11-01> patch level 2
 L3 programming layer <2025-01-18>
  ***********
 Package rerunfilecheck Info: File `paper.out' has not changed.
-(rerunfilecheck)             Checksum: FA3B3BA282C78F3537F322436AC94B22;4361.
+(rerunfilecheck)             Checksum: C5B14195F7C2C0DBC7989C490085DBF5;5065.
  ) 
 Here is how much of TeX's memory you used:
- 10044 strings out of 474662
- 152184 string characters out of 5751109
- 593500 words of memory out of 5000000
- 32906 multiletter control sequences out of 15000+600000
- 571019 words of font info for 82 fonts, out of 8000000 for 9000
+ 13613 strings out of 474662
+ 216843 string characters out of 5751109
+ 665334 words of memory out of 5000000
+ 36408 multiletter control sequences out of 15000+600000
+ 574988 words of font info for 96 fonts, out of 8000000 for 9000
  319 hyphenation exceptions out of 8191
- 75i,12n,79p,363b,443s stack positions out of 10000i,1000n,20000p,200000b,200000s
+ 75i,16n,79p,1002b,608s stack positions out of 10000i,1000n,20000p,200000b,200000s
  </Users/dhanyamd/Library/texlive/2025basic/texmf-var/fonts/pk/ljfour/jknappe
-n/ec/tcbx1095.600pk> </Users/dhanyamd/Library/texlive/2025basic/texmf-var/fonts
-/pk/ljfour/jknappen/ec/tcrm1000.600pk> </Users/dhanyamd/Library/texlive/2025bas
-ic/texmf-var/fonts/pk/ljfour/jknappen/ec/tcrm1095.600pk></usr/local/texlive/202
-5basic/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx10.pfb></usr/local/texlive
-/2025basic/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx12.pfb></usr/local/tex
-live/2025basic/texmf-dist/fonts/type1/public/amsfonts/cm/cmex10.pfb></usr/local
-/texlive/2025basic/texmf-dist/fonts/type1/public/amsfonts/cm/cmmi10.pfb></usr/l
-ocal/texlive/2025basic/texmf-dist/fonts/type1/public/amsfonts/cm/cmmi8.pfb></us
-r/local/texlive/2025basic/texmf-dist/fonts/type1/public/amsfonts/cm/cmr10.pfb><
-/usr/local/texlive/2025basic/texmf-dist/fonts/type1/public/amsfonts/cm/cmr12.pf
-b></usr/local/texlive/2025basic/texmf-dist/fonts/type1/public/amsfonts/cm/cmr8.
-pfb></usr/local/texlive/2025basic/texmf-dist/fonts/type1/public/amsfonts/cm/cms
-y10.pfb></usr/local/texlive/2025basic/texmf-dist/fonts/type1/public/amsfonts/cm
-/cmsy8.pfb></usr/local/texlive/2025basic/texmf-dist/fonts/type1/public/amsfonts
-/cm/cmti10.pfb></usr/local/texlive/2025basic/texmf-dist/fonts/type1/public/amsf
-onts/cm/cmtt10.pfb>
-Output written on paper.pdf (18 pages, 213612 bytes).
+n/ec/tcrm0900.600pk> </Users/dhanyamd/Library/texlive/2025basic/texmf-var/fonts
+/pk/ljfour/jknappen/ec/tcbx1095.600pk> </Users/dhanyamd/Library/texlive/2025bas
+ic/texmf-var/fonts/pk/ljfour/jknappen/ec/tcrm1095.600pk> </Users/dhanyamd/Libra
+ry/texlive/2025basic/texmf-var/fonts/pk/ljfour/jknappen/ec/tcrm1000.600pk></usr
+/local/texlive/2025basic/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx10.pfb><
+/usr/local/texlive/2025basic/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx12.p
+fb></usr/local/texlive/2025basic/texmf-dist/fonts/type1/public/amsfonts/cm/cmcs
+c10.pfb></usr/local/texlive/2025basic/texmf-dist/fonts/type1/public/amsfonts/cm
+/cmex10.pfb></usr/local/texlive/2025basic/texmf-dist/fonts/type1/public/amsfont
+s/cm/cmmi10.pfb></usr/local/texlive/2025basic/texmf-dist/fonts/type1/public/ams
+fonts/cm/cmmi7.pfb></usr/local/texlive/2025basic/texmf-dist/fonts/type1/public/
+amsfonts/cm/cmmi8.pfb></usr/local/texlive/2025basic/texmf-dist/fonts/type1/publ
+ic/amsfonts/cm/cmmi9.pfb></usr/local/texlive/2025basic/texmf-dist/fonts/type1/p
+ublic/amsfonts/cm/cmr10.pfb></usr/local/texlive/2025basic/texmf-dist/fonts/type
+1/public/amsfonts/cm/cmr12.pfb></usr/local/texlive/2025basic/texmf-dist/fonts/t
+ype1/public/amsfonts/cm/cmr7.pfb></usr/local/texlive/2025basic/texmf-dist/fonts
+/type1/public/amsfonts/cm/cmr8.pfb></usr/local/texlive/2025basic/texmf-dist/fon
+ts/type1/public/amsfonts/cm/cmr9.pfb></usr/local/texlive/2025basic/texmf-dist/f
+onts/type1/public/amsfonts/cm/cmsy10.pfb></usr/local/texlive/2025basic/texmf-di
+st/fonts/type1/public/amsfonts/cm/cmsy6.pfb></usr/local/texlive/2025basic/texmf
+-dist/fonts/type1/public/amsfonts/cm/cmsy7.pfb></usr/local/texlive/2025basic/te
+xmf-dist/fonts/type1/public/amsfonts/cm/cmsy8.pfb></usr/local/texlive/2025basic
+/texmf-dist/fonts/type1/public/amsfonts/cm/cmti10.pfb></usr/local/texlive/2025b
+asic/texmf-dist/fonts/type1/public/amsfonts/cm/cmti9.pfb></usr/local/texlive/20
+25basic/texmf-dist/fonts/type1/public/amsfonts/cm/cmtt10.pfb>
+Output written on paper.pdf (26 pages, 326914 bytes).
 PDF statistics:
- 362 PDF objects out of 1000 (max. 8388607)
- 310 compressed objects within 4 object streams
- 75 named destinations out of 1000 (max. 500000)
- 217 words of extra memory for PDF output out of 10000 (max. 10000000)
+ 510 PDF objects out of 1000 (max. 8388607)
+ 432 compressed objects within 5 object streams
+ 99 named destinations out of 1000 (max. 500000)
+ 15609 words of extra memory for PDF output out of 17280 (max. 10000000)
 

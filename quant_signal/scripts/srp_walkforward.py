@@ -49,7 +49,6 @@ import argparse
 import itertools
 import math
 
-import numpy as np
 import pandas as pd
 
 from scripts.srp_backtest import SRPConfig, SRPData, run
@@ -61,9 +60,13 @@ from scripts.trial_registry import log_trial
 CANDIDATES: list[dict] = [
     {"rank_window": rw, "funding_tilt": ft, "turnover_cap": tc, "top": tp}
     for rw, ft, tc, tp in itertools.product(
-        [26, 52, 104], [0.0, 0.5], [None, 0.6], [0.20]
+        [26, 52, 104], [0.0, 0.5], [None, 0.6], [0.10, 0.20, 0.30]
     )
 ]
+# ``top`` is selected per training block like every other axis. Pinning it to the
+# full-sample winner would let the test inherit a choice made with knowledge of
+# the evaluation period, which is the exact leak this procedure exists to rule
+# out. Widening it costs out-of-sample Sharpe; that cost is the honest price.
 
 ANCHORS = ["W-MON", "W-TUE", "W-WED", "W-THU", "W-FRI", "W-SAT", "W-SUN"]
 
@@ -212,8 +215,11 @@ def main() -> None:
         print(f"\n  mean {s.mean():.3f}   sd {s.std(ddof=1):.3f}   "
               f"min {s.min():.3f}   max {s.max():.3f}   spread {s.max() - s.min():.3f}")
         print(f"  anchors profitable    : {int((s > 0).sum())}/{len(s)}")
+        robust = (s > 0).all() and s.std(ddof=1) < 0.5 * s.mean()
+        verdict = ("ANCHOR-ROBUST" if robust else
+                   "ANCHOR-SENSITIVE -- the Monday result is not the strategy")
         print(f"  verdict               : "
-              f"{'ANCHOR-ROBUST' if (s > 0).all() and s.std(ddof=1) < 0.5 * s.mean() else 'ANCHOR-SENSITIVE -- the Monday result is not the strategy'}")
+              f"{verdict}")
 
 
 if __name__ == "__main__":

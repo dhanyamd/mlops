@@ -13,20 +13,27 @@ from execution entirely -- the fastest way to answer "is the live signal
 actually computing the validated factor?".
 """
 from __future__ import annotations
-import os, json
+
+import json
+import os
+
 os.environ.setdefault("QUANT_CGO_DIR","1"); os.environ.setdefault("QUANT_CGO_L","7")
 os.environ.setdefault("QUANT_CGO_Q","0.3"); os.environ.setdefault("QUANT_REGIME_OFF","1")
 os.environ.setdefault("QUANT_SMB_OFF","0"); os.environ.setdefault("QUANT_FACC_OFF","1")
 os.environ.setdefault("QUANT_RCGO_W","1.0"); os.environ.setdefault("QUANT_RCGO_DIR","1")
 os.environ.setdefault("QUANT_RCGO_ORTHO","1")
 from collections import deque
-import numpy as np, pandas as pd
+
+import numpy as np
+import pandas as pd
+
+import stream.asym_signal as _m
 from config.settings import csv_list, get_settings
 from scripts.research_fas_clean import _liquidity_mask, _rank_z, fas_scores, load, smb_scores
 from scripts.research_fas_invent import rcgo_scores
 from stream.asym_signal import AsymSignal
 from stream.kv import FakeKV
-import stream.asym_signal as _m
+
 _m.logger.warning = lambda *a, **k: None
 _m.logger.info = lambda *a, **k: None
 

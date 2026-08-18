@@ -19,7 +19,6 @@ low, close, volume, provider, loaded_at``.
 from __future__ import annotations
 
 import datetime as dt
-import logging
 import time
 from collections.abc import Callable
 

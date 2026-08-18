@@ -1,4 +1,4 @@
- """FACC sharpening — first-principles refinement toward Sharpe 2+ (NO combo, NO hardcode).
+"""FACC sharpening — first-principles refinement toward Sharpe 2+ (NO combo, NO hardcode).
 
 WHY THIS IS STILL ONE MECHANISM, NOT A COMBO:
   FACC = -z(funding - trailing-mean funding) = leverage-crowding ONSET (our invention).
@@ -21,9 +21,7 @@ from __future__ import annotations
 import glob
 import os
 
-import numpy as np
 import pandas as pd
-
 from research_broad import backtest, load_btc_close, metrics, report, zs
 
 BROAD = "/tmp/broad_pull"

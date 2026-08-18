@@ -22,7 +22,7 @@ import sys
 
 from config.logging import configure_logging, get_logger
 from config.settings import csv_list, get_settings
-from stream.asym_signal import AsymSignal, _HOUR_MS
+from stream.asym_signal import _HOUR_MS, AsymSignal
 from stream.execution import PaperExecutionSimulator
 from stream.kv import FakeKV, RedisKV
 

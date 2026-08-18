@@ -14,10 +14,10 @@ Run: uv run python scripts/pull_defillama_fees.py
 
 from __future__ import annotations
 
-from pathlib import Path
-from urllib.request import urlopen
 import json
 import time
+from pathlib import Path
+from urllib.request import urlopen
 
 import pandas as pd
 
@@ -32,7 +32,6 @@ SLUG_MAP = {
     "ARBUSDT": ["arbitrum"],
     "GMXUSDT": ["gmx", "gmx-v2"],
     "COMPUSDT": ["compound", "compound-v3"],
-    "LDOUSDT": ["lido"],
     "CAKEUSDT": ["pancakeswap", "pancakeswap-amm"],
     "MKRUSDT": ["makerdao", "maker"],
     "SNXUSDT": ["synthetix", "synthix"],

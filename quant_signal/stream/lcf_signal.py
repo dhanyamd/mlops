@@ -32,9 +32,9 @@ Run: uv run python -m stream.lcf_signal   (service 'lcfsignal' swaps in for 'xss
 
 from __future__ import annotations
 
+import json
 import threading
 import urllib.request
-import json
 
 import numpy as np
 

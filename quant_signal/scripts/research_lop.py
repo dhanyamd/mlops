@@ -82,8 +82,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from scripts.research_fas_clean import _liquidity_mask, load
 import scripts.factor_core as fc
+from scripts.research_fas_clean import _liquidity_mask, load
 
 LONG_LIQ_ASYM = 3.51 / 1.89   # BitMEX: longs forced out ~1.86x as often as shorts
 

@@ -27,9 +27,7 @@ from __future__ import annotations
 import glob
 import os
 
-import numpy as np
 import pandas as pd
-
 from research_broad import (
     avg_rank_corr,
     backtest,

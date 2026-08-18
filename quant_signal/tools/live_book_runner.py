@@ -26,7 +26,7 @@ import time
 
 from config.logging import configure_logging, get_logger
 from config.settings import csv_list, get_settings
-from stream.asym_signal import AsymSignal, _HOUR_MS, prediction_key
+from stream.asym_signal import _HOUR_MS, AsymSignal, prediction_key
 from stream.execution import PaperExecutionSimulator, _build_venue
 from stream.kv import RedisKV
 

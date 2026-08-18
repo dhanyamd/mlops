@@ -17,10 +17,11 @@ Run: uv run python scripts/pull_defillama_tvl.py
 
 from __future__ import annotations
 
-from pathlib import Path
-from urllib.request import urlopen
 import json
 import time
+from pathlib import Path
+from urllib.request import urlopen
+
 import pandas as pd
 
 OUT = Path("/tmp/crypto_defillama_tvl.csv")

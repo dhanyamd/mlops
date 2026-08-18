@@ -10,7 +10,10 @@ the live system is running the strategy that was validated**: 0 direction
 mismatches across 4,480 checks, look-ahead leak of 0.00e+00 on every factor,
 and live feeds reconciled to the research caches at 0.000e+00.
 
-**Status:** full build, running locally and deployed to AWS via Terraform.
+**Status:** full build, running locally under Docker Compose. The AWS topology is
+defined in Terraform (MSK, Flink on Fargate, ElastiCache, ALB) and every module
+is `fmt`- and `validate`-checked in CI on each PR; it is not currently applied to
+a live account.
 
 ---
 
@@ -18,9 +21,11 @@ and live feeds reconciled to the research caches at 0.000e+00.
 
 1. [Build log](#build-log)
 2. [Architecture](#architecture)
+   - [Two clocks, two execution engines](#two-clocks-two-execution-engines)
+   - [Who actually produces each topic](#who-actually-produces-each-topic)
 3. [Key capabilities](#key-capabilities)
 4. [Data infrastructure: storage, transport, failure modes](#data-infrastructure-storage-transport-and-failure-modes)
-5. [Two strategies, one execution path](#two-strategies-one-execution-path)
+5. [Two strategies, two execution paths](#two-strategies-two-execution-paths)
 6. [Research ↔ production parity](#research--production-parity)
 7. [Technology stack](#technology-stack)
 8. [Repository layout](#repository-layout)
@@ -43,6 +48,7 @@ and live feeds reconciled to the research caches at 0.000e+00.
 | **#4** | Data lake (Iceberg) | The Snowflake mart is versioned to an Apache Iceberg table on S3-compatible storage (MinIO locally, real S3 on AWS) with snapshot history / time travel (`flows/lake_export.py`, `make lake-export` / `lake-query`) |
 | **#5** | Live strategy path + feed reconciliation | A market-neutral weekly book (SRP) trading real orders on a demo venue, fed by two new keyless feeds (`stream/intraday_feed.py`, `stream/positioning_feed.py`) that were **reconciled field-by-field against the research caches to 0.000e+00** before being trusted (`stream/srp_live.py`) |
 | **#6** | Research↔production parity gate + trial registry | A deploy gate that fails the **build** rather than the P&L when live and research disagree (`scripts/srp_parity.py`), plus an append-only experiment registry so multiple-testing corrections read a measured trial count instead of a remembered one (`scripts/trial_registry.py`) |
+| **#7** | SRP served and traded on its own clock | The paper strategy now reaches the online store and the venue: `stream/srp_publisher.py` scores the weekly book and publishes target weights (`srp:weights:*`, `srp:book`, served at `/api/srp/book`), and `stream/srp_execution.py` trades it through a second execution instance on a **weekly** clock — separate ledger, cost filter disabled, sharing the Bybit-demo venue adapter (`make stream-srp`, `make stream-srp-execute`) |
 
 Every credential and threshold comes from the environment — nothing hardcoded.
 
@@ -71,8 +77,10 @@ flowchart LR
 
     MART --> API[api/main · FastAPI]
     REDIS --> API
-    PRED[stream/predictor · conformal + MC] --> REDIS
-    QUAL[data_quality · SLA checks] --> REDIS
+    PRED[stream/predictor · River + conformal] --> REDIS
+    MC[stream/simulation · fat-tailed MC] --> REDIS
+    SRP[stream/srp_publisher · SRP target book] --> REDIS
+    REDIS --> QUAL[data_quality · SLA scoring]
     API --> UI[ui/ · Next.js Signal Terminal]
     UI --> ALB[ALB · ECS on AWS]
 ```
@@ -87,6 +95,38 @@ Binance producer → Redpanda (crypto.bars.raw) → Flink SQL 5m/1h TUMBLE windo
 The API reads from Redis (<500 ms, never touching Kafka or Snowflake); a stream
 watchdog auto-heals a stalled Flink pipeline and a pipeline-health strip keeps
 the dashboard honest about what is actually fresh.
+
+### Two clocks, two execution engines
+
+SRP and the online predictor are different strategies on different clocks, and
+conflating them was the one real blocker to getting SRP traded.
+
+The hourly engine matches a stored signal to a bar by `window_end_ms` and refuses
+to act when they differ. SRP scores on a **weekly** bar, so its records could
+never match an hourly window. Echoing the hourly stamp would have made it trade
+immediately — and would have asserted that SRP scored on a window it never saw,
+which is exactly the class of untruth the parity gate exists to catch.
+
+So each strategy runs its own execution instance, sharing one venue adapter:
+
+| | clock | signal | ledger | cost filter |
+|---|---|---|---|---|
+| River / asym | per feature window | `predicted_return` + direction | `execution:crypto:1h` | λ·fee band |
+| **SRP** | **weekly** | target weight + direction | `execution:srp` | **disabled** |
+
+The cost filter is disabled for SRP deliberately. It exists to stop a
+continuously-updating forecast from churning; SRP has no forecast to threshold,
+and its turnover is already bounded by the strategy's own cap. Applying a
+forecast band to a portfolio weight would compare quantities with different
+units. Two things had to change in the engine for a weight-driven strategy to
+work at all: the entry gate required a non-null `predicted_return` even when the
+filter was off, and a fresh process had no previous weekly bar to advance from,
+so it held forever without logging anything.
+
+**SRP is weekly by economics, not by limitation.** Its rank window is 52 weeks;
+recomputing hourly would shift that window by one part in 8,736 and produce the
+same book, then pay fees to trade it. There is no hourly information in a
+52-week trailing rank. The continuous slot is the predictor's job.
 
 ### Who actually produces each topic
 
@@ -230,11 +270,16 @@ each with its own environment and restart policy. On AWS the same processes run
 as **ECS Fargate** services against **MSK** and **ElastiCache**, defined in
 Terraform with remote state.
 
-### Two strategies, one execution path
+### Two strategies, two execution paths
 
-The platform started by trying to **predict returns** with an online learner, and
-now trades a **systematic factor strategy** instead. Both still run; only one
-places orders, and which one is a single environment variable:
+The platform started by trying to **predict returns** with an online learner and
+later added a **systematic factor strategy**. Both run, and both now trade — on
+different clocks, through separate execution engines that share one venue
+adapter (see [Two clocks, two execution engines](#two-clocks-two-execution-engines)).
+
+The hourly engine trades whichever forecast-driven signal `STREAM_STRATEGY`
+selects; SRP is driven independently by `stream/srp_execution.py` on its weekly
+rebalance:
 
 ```
 stream/predictor.py    River online learner  → prediction:crypto:1h:*        (102 keys)
@@ -363,6 +408,8 @@ quant_signal/
 │   ├── intraday_feed.py     #   1h/5m bars -> daily factor inputs (same reducer as research)
 │   ├── positioning_feed.py  #   keyless venue metrics REST (OI, long/short ratios)
 │   ├── srp_live.py          #   live book: data plumbing ONLY, strategy logic never duplicated
+│   ├── srp_publisher.py     #   scores the weekly book → srp:weights:* / srp:book
+│   ├── srp_execution.py     #   trades that book on a WEEKLY clock (own ledger, own engine)
 │   └── flink/               # Dockerfile + crypto_features.sql (5m/1h windows)
 ├── api/                     # FastAPI: /api/market/*, /pead, /fundamentals, /ws/market
 ├── ui/                      # Next.js Signal Terminal
@@ -469,6 +516,8 @@ Then, in two terminals:
 ```bash
 make stream-producer         # poll Binance → publish raw bars (real market data)
 make stream-materializer     # consume raw + features → Redis
+make stream-srp              # score the SRP weekly book → srp:weights:*
+make stream-srp-execute      # trade that book (paper; --venue bybit-demo for demo fills)
 ```
 
 For a fast end-to-end check without Binance, seed synthetic bars:
@@ -646,6 +695,12 @@ terraform apply
 `.github/workflows/quant-signal-ci.yml` runs on every PR/push:
 
 - **lint + test** — `uv sync --frozen` + `ruff check .` + `pytest`
+- **strategy gate** — `pytest tests/test_srp_parity.py`, run as its own step so a
+  failure is legible in the checks list rather than buried in a summary. It
+  asserts point-in-time integrity (a score recomputed with future rows deleted
+  must match exactly), determinism, dollar-neutrality and non-emptiness against
+  synthetic fixtures — the same properties `scripts/srp_parity.py` asserts
+  against the real 27 MB cache, which is too large to ship in the repo
 - **dbt contract checks** — `dbt parse` and (when Snowflake secrets exist) a
   full `dbt build --target ci` that only touches `CI_*` schemas
 - **IaC sanity** — `terraform fmt -check` + `terraform validate` on every

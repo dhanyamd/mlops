@@ -14,14 +14,14 @@ feature windows and emits `portfolio:targets:<prefix>` to KV.
 
 from __future__ import annotations
 
-import os
 import math
+
 import pandas as pd
-from config.logging import configure_logging, get_logger  # noqa: F401
-from stream.kv import KVStore
 
 # The REAL research backtester — we call its functions, we do not re-derive them.
 import scripts.research_novel as rn
+from config.logging import configure_logging, get_logger  # noqa: F401
+from stream.kv import KVStore
 
 logger = get_logger("research_signal")
 
@@ -175,7 +175,8 @@ class ResearchSignal:
                 dbeta.loc[d, c] = -float(((y - y.mean()) * xm).sum()) / vx
         dbeta_z = rn.zs(dbeta)
 
-        # research_novel line 519: ens_mcd = (mom_z - fund_z) + dbeta_z  (DataFrame: dates x symbols)
+        # research_novel line 519: ens_mcd = (mom_z - fund_z) + dbeta_z
+        # (DataFrame: dates x symbols)
         score = mom_z - fund_z + dbeta_z
         if score.empty or len(score.iloc[-1].dropna()) < 12:
             return {}

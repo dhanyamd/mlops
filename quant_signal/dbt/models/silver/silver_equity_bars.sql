@@ -1,7 +1,23 @@
-{{ config(materialized='table') }}
+{{ config(
+    materialized='incremental',
+    unique_key=['symbol', 'timeframe', 'ts'],
+    incremental_strategy='merge',
+    on_schema_change='fail'
+) }}
+
+-- Same reasoning as silver_crypto_bars: bars accumulate, so rebuild cost should
+-- track arrivals rather than total history. Merge on the natural grain so a
+-- re-sent bar corrects the existing row instead of duplicating it.
 
 with source as (
     select * from {{ source('bronze', 'equity_bars') }}
+
+    {% if is_incremental() %}
+    where loaded_at > (
+        select dateadd('minute', -30, coalesce(max(loaded_at), '1970-01-01'::timestamp_ntz))
+        from {{ this }}
+    )
+    {% endif %}
 ),
 
 deduped as (

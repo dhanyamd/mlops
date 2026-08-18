@@ -14,7 +14,6 @@ collection is guarded and cross-thread calls are marshalled through
 from __future__ import annotations
 
 import asyncio
-import os
 import threading
 from collections import deque
 from typing import Any
@@ -125,8 +124,11 @@ class MarketHub:
 class MarketStream:
     """Owns the Kafka consumer thread + hub. Started/stopped by the lifespan.
 
-    Uses a per-process consumer group (``api-live-<pid>``) with latest-offset
-    resets so every API restart only streams bars that arrive after it starts.
+    Uses one stable consumer group with offset commits disabled, so every API
+    restart resumes at the tail and streams only bars arriving after it starts.
+    A per-process group id would give the same behaviour but leave an orphaned
+    group holding offsets on the broker after every restart; fourteen had
+    accumulated before this was fixed.
     """
 
     def __init__(
@@ -145,7 +147,7 @@ class MarketStream:
         self._history_minutes = history_minutes
         self._bus = bus or KafkaBus(settings.stream_kafka_bootstrap_servers)
         self._raw_topic = raw_topic or settings.stream_kafka_topic_raw
-        self._group_id = f"api-live-{os.getpid()}"
+        self._group_id = "api-live"
         self.hub = hub or MarketHub(self._symbols, history_minutes)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -168,7 +170,9 @@ class MarketStream:
             self._thread = None
 
     def _run(self) -> None:
-        for _topic, msg in self._bus.iter_consume(self._raw_topic, self._group_id, stop=self._stop):
+        for _topic, msg in self._bus.iter_consume(
+            self._raw_topic, self._group_id, stop=self._stop, auto_commit=False
+        ):
             try:
                 deltas = self.hub.ingest([_hub_bar(msg)])
             except Exception:  # noqa: BLE001 - a stream must never kill the API

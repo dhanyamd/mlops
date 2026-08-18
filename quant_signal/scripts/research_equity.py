@@ -9,9 +9,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from scripts.replay_live_book import sparkline
-import scripts.research_novel as rn
 import numpy as np
+
+import scripts.research_novel as rn
 
 _BARS = " ▁▂▃▄▅▆▇█"
 

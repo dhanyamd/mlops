@@ -1,4 +1,3 @@
-import numpy as np, pandas as pd
 import scripts.research_fas_clean as m
 
 cw, vw, aw, dcl, dvl = m.load("/tmp/quant_cache/asym_warm_start.json.binance")

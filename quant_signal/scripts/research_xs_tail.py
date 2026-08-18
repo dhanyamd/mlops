@@ -16,7 +16,6 @@ Run: uv run python scripts/research_xs_tail.py
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
 
 import numpy as np

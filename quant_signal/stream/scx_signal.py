@@ -407,10 +407,9 @@ if __name__ == "__main__":
     # the single dispatcher and routes ``STREAM_STRATEGY=scx`` here. This block
     # lets ``python -m stream.scx_signal`` run standalone for local smoke tests.
     from config.logging import configure_logging, get_logger
-    from config.settings import get_settings
+    from config.settings import csv_list, get_settings
     from stream.bus import KafkaBus
     from stream.kv import RedisKV
-    from config.settings import csv_list
 
     configure_logging()
     settings = get_settings()

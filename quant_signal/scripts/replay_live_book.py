@@ -12,11 +12,11 @@ Run: python scripts/replay_live_book.py
 
 from __future__ import annotations
 
-import os
-import sys
+import argparse
 import json
 import math
-import argparse
+import os
+import sys
 from collections import deque
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -113,7 +113,6 @@ def main() -> None:
     from config.settings import csv_list, get_settings
     from stream.asym_signal import AsymSignal, prediction_key
     from stream.execution import PaperExecutionSimulator
-    from stream.kv import KVStore
 
     settings = get_settings()
     kv = MemKV()

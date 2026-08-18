@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import datetime as dt
 import pathlib
+import time
 
 import pandas as pd
 import pandas.testing as pdt
@@ -162,7 +163,10 @@ _BAR_COLUMNS = {
 
 
 def test_synthetic_provider_column_contract() -> None:
-    df = SyntheticBarProvider().fetch_bars(["AAPL"], days=2)
+    # days=7 so at least one weekday always falls in range: the synthetic
+    # provider skips weekends, so a short window can yield zero rows
+    # depending on which day the suite runs.
+    df = SyntheticBarProvider().fetch_bars(["AAPL"], days=7)
     assert set(df.columns) == _BAR_COLUMNS
     assert not df.empty
     assert df["ts"].dt.tz is None  # timestamp_ntz-compatible
@@ -479,7 +483,9 @@ def test_ingest_market_data_flow_end_to_end(monkeypatch: pytest.MonkeyPatch) -> 
 
     # .fn() runs the underlying function directly (no ephemeral Prefect server,
     # no network) — this is the maintainer-documented way to test flows.
-    result = flow_mod.ingest_market_data.fn(provider_name="synthetic", symbols=["AAPL"], days=2)
+    result = flow_mod.ingest_market_data.fn(
+        provider_name="synthetic", symbols=["AAPL"], days=7
+    )
     assert result["fetched"] > 0
     assert result["written"] == result["fetched"]
     assert result["quarantined"] == 0
@@ -831,7 +837,9 @@ def test_yahoo_provider_splits_windows_on_pre_ipo_400(
 def test_binance_provider_paginates_minute_bars(monkeypatch: pytest.MonkeyPatch) -> None:
     import json
 
-    now_ms = 1785900000000
+    # Anchored to the current clock: a literal timestamp drifts out of the
+    # days=1 lookback window as real time passes, silently emptying the frame.
+    now_ms = int(time.time() * 1000) - 60_000
     pages = [
         [
             [
@@ -876,7 +884,9 @@ def test_binance_provider_paginates_minute_bars(monkeypatch: pytest.MonkeyPatch)
 def test_bybit_provider_paginates_and_sorts_minute_bars(monkeypatch: pytest.MonkeyPatch) -> None:
     import json
 
-    now_ms = 1785900000000
+    # Anchored to the current clock: a literal timestamp drifts out of the
+    # days=1 lookback window as real time passes, silently emptying the frame.
+    now_ms = int(time.time() * 1000) - 60_000
     # Bybit returns newest-first: [startTime_ms, open, high, low, close, volume, turnover].
     pages = [
         {
@@ -927,7 +937,17 @@ def test_bybit_provider_paginates_and_sorts_minute_bars(monkeypatch: pytest.Monk
     assert requests_seen[0]["interval"] == "1"
 
 
-def test_bybit_provider_raises_on_error_code(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_bybit_provider_reports_error_code_via_on_skip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bad symbol is reported, not raised.
+
+    The provider deliberately does not propagate a per-symbol API error: one
+    dead or delisted pair must not wedge a poll covering a hundred others. The
+    failure surfaces through ``on_skip`` instead, which the producer records so
+    the symbol is visible rather than silently absent.
+    """
+
     def fake_get(url, params=None, headers=None, timeout=None):  # type: ignore[no-untyped-def]
         class _R:
             def raise_for_status(self) -> None:
@@ -939,8 +959,12 @@ def test_bybit_provider_raises_on_error_code(monkeypatch: pytest.MonkeyPatch) ->
         return _R()
 
     monkeypatch.setattr("ingest.providers.bybit.requests.get", fake_get)
-    with pytest.raises(RuntimeError, match="retCode=10001"):
-        BybitBarProvider().fetch_bars(["BTCUSDT"], days=1)
+    skipped: list[tuple[str, str]] = []
+    df = BybitBarProvider().fetch_bars(
+        ["BTCUSDT"], days=1, on_skip=lambda s, r: skipped.append((s, r))
+    )
+    assert df.empty
+    assert [s for s, _ in skipped] == ["BTCUSDT"]
 
 
 # ── Macro flow (write tasks mocked, offline) ────────────────────────────────

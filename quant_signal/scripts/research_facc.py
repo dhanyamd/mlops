@@ -26,11 +26,11 @@ Run: uv run python scripts/research_facc.py
 
 from __future__ import annotations
 
+import random
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import random
 
 # ── parameters (NOT hardened into the logic) ───────────────────────────────────
 CONFIG = {

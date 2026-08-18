@@ -1,4 +1,6 @@
-import time, threading
+import threading
+import time
+
 from config.settings import csv_list, get_settings
 from ingest.providers.bybit import BybitBarProvider
 

@@ -30,13 +30,13 @@ Run: uv run python scripts/pull_coinglass.py
 
 from __future__ import annotations
 
+import json
 import os
 import time
+import urllib.request
 from pathlib import Path
 
 import pandas as pd
-import urllib.request
-import json
 
 BASE = "https://open-api-v4.coinglass.com"
 UNIVERSE = [

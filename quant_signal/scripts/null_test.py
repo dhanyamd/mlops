@@ -4,11 +4,14 @@ If the backtest's profit survives randomised selections, the money is coming
 from a mechanical artefact (fill timing, cost model, mark-to-market) rather
 than from the factor. A real edge must collapse toward zero here.
 """
-import os, json, random, math, sys
+import json
+import os
+import random
+import sys
+
 os.environ.update({"QUANT_CGO_DIR":"1","QUANT_CGO_L":"7","QUANT_REGIME_OFF":"1","QUANT_SMB_OFF":"0",
   "QUANT_FACC_OFF":"1","QUANT_RCGO_W":"1.0","QUANT_RESEARCH_PARITY":"1","QUANT_CGO_GH":"1",
   "QUANT_TRAIL_OFF":"1"})
-from collections import deque
 from config.settings import csv_list, get_settings
 from stream.execution import PaperExecutionSimulator
 from stream.kv import FakeKV

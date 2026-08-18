@@ -8,7 +8,7 @@ our book) and close each at market so the live asym daemon can rebuild a clean
 book without duplicate exposure.
 
 Run with:
-  cd /Users/dhanyamd/Projects/mlops/quant_signal && /Users/dhanyamd/.local/bin/uv run python close_orphans.py
+  uv run python -m tools.close_orphans
 """
 
 from __future__ import annotations

@@ -21,10 +21,10 @@ from __future__ import annotations
 
 import json
 import time
+import urllib.request
 from pathlib import Path
 
 import pandas as pd
-import urllib.request
 
 SPOT = "https://api.binance.com/api/v3"
 PERP = "https://fapi.binance.com/fapi/v1"

@@ -73,7 +73,7 @@ def main() -> None:
     os.environ.setdefault("QUANT_TRAIL_OFF", "1")
 
     from config.settings import csv_list, get_settings
-    from stream.asym_signal import AsymSignal, prediction_key
+    from stream.asym_signal import AsymSignal
     from stream.execution import PaperExecutionSimulator
     from stream.kv import RedisKV
 

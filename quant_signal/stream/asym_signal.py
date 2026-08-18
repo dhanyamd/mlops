@@ -40,8 +40,8 @@ import os
 import statistics
 import threading
 import time
-import urllib.request
 import urllib.error
+import urllib.request
 from collections.abc import Sequence
 
 import numpy as np
@@ -966,9 +966,9 @@ class AsymSignal:
         directly on point-in-time frames.
         """
         try:
+            from scripts.research_fas_clean import _rank_z as _rz
             from scripts.research_fas_clean import fas_scores, smb_scores
             from scripts.research_fas_invent import rcgo_scores
-            from scripts.research_fas_clean import _rank_z as _rz
         except Exception:
             logger.exception("asym: research modules unavailable -> legacy scoring")
             return {}

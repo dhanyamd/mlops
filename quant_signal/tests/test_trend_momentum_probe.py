@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from scripts.trend_momentum_probe import (
+from scripts.probes.trend_momentum_probe import (
     _FADE_BAR_MS,
     _FADE_LOOKBACKS_BARS,
     _FADE_TAU,

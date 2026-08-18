@@ -8,17 +8,17 @@ slow-gate; needs ~200w history, so default off to trade on the 56w warm cache)
 
 from __future__ import annotations
 
-import os
-import sys
+import argparse
 import json
 import math
-import argparse
+import os
+import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from stream.research_signal import ResearchSignal
-from stream.research_executor import ResearchExecutor
 from stream.kv import KVStore
+from stream.research_executor import ResearchExecutor
+from stream.research_signal import ResearchSignal
 
 CACHE = "/tmp/quant_cache/asym_warm_start.json"
 _BARS = " ▁▂▃▄▅▆▇█"
@@ -96,7 +96,7 @@ def main() -> None:
             msg = {"symbol": s, "close": close, "volume": vol, "window_end_ms": w}
             sig.handle(msg)
             ex.handle(msg)
-        t = kv.get_json(f"portfolio:targets:research")
+        t = kv.get_json("portfolio:targets:research")
         if t:
             last_targets = len(t.get("targets", {}))
         equity.append(ex.equity())

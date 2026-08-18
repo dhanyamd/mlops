@@ -61,11 +61,17 @@ class MessageBus(Protocol):
         topics: str | Sequence[str],
         group_id: str,
         stop: threading.Event | None = None,
+        *,
+        auto_commit: bool = True,
     ) -> Iterator[tuple[str, dict]]:
         """Yield ``(topic, message)`` pairs forever; blocks when idle.
 
         ``stop`` is a cooperative exit: the loop wakes regularly (≤1s) and ends
         when the event is set, so consumer threads shut down cleanly.
+
+        ``auto_commit=False`` leaves the group without committed offsets, so a
+        restart resumes at the tail rather than where it left off. Tail
+        followers use it so they can share one stable group id.
         """
         ...
 
@@ -110,14 +116,23 @@ class KafkaBus:
         """
         return KafkaBus(self._bootstrap_servers, client_id=self._client_id)
 
-    def _new_consumer(self, group_id: str) -> Consumer:
+    def _new_consumer(self, group_id: str, *, auto_commit: bool = True) -> Consumer:
+        """Build a consumer for ``group_id``.
+
+        ``auto_commit=False`` makes the group stateless: nothing is committed,
+        so every start falls back to ``auto.offset.reset`` and begins at the
+        tail. Tail-followers (the API's live websocket feed) want that, and it
+        lets them reuse ONE stable group id instead of minting a new one per
+        process, which otherwise leaves an orphaned group holding offsets
+        forever on every restart.
+        """
         return Consumer(
             {
                 "bootstrap.servers": self._bootstrap_servers,
                 "group.id": group_id,
                 "client.id": f"{self._client_id}-{group_id}",
                 "auto.offset.reset": "latest",
-                "enable.auto.commit": True,
+                "enable.auto.commit": auto_commit,
                 "auto.commit.interval.ms": 2000,
                 "socket.keepalive.enable": True,
                 "socket.timeout.ms": _CONSUMER_SOCKET_TIMEOUT_MS,
@@ -163,12 +178,14 @@ class KafkaBus:
         topics: str | Sequence[str],
         group_id: str,
         stop: threading.Event | None = None,
+        *,
+        auto_commit: bool = True,
     ) -> Iterator[tuple[str, dict]]:
         topics_list = [topics] if isinstance(topics, str) else list(topics)
         while True:
             if stop is not None and stop.is_set():
                 return
-            consumer = self._new_consumer(group_id)
+            consumer = self._new_consumer(group_id, auto_commit=auto_commit)
             consumer.subscribe(topics_list)
             wedged = False
             last_message = time.monotonic()
@@ -239,7 +256,12 @@ class FakeBus:
         topics: str | Sequence[str],
         group_id: str,
         stop: threading.Event | None = None,
+        *,
+        auto_commit: bool = True,
     ) -> Iterator[tuple[str, dict]]:
+        # ``auto_commit`` is accepted for interface parity with KafkaBus; the
+        # fake keeps no offsets, so it has nothing to commit either way.
+        del auto_commit
         wanted = set([topics] if isinstance(topics, str) else list(topics))
         with self._condition:
             seen: dict[str, int] = {}

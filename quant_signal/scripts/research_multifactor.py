@@ -23,7 +23,6 @@ import os
 
 import numpy as np
 import pandas as pd
-
 from research_broad import backtest, load_btc_close, metrics, report, zs
 
 BROAD = "/tmp/broad_pull"

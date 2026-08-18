@@ -36,11 +36,9 @@ Run: python scripts/research_fas_invent.py [--cache PATH] [--funding binance|byb
 
 from __future__ import annotations
 
-import os
-
 import argparse
-import json
 import math
+import os
 import sys
 
 import numpy as np
@@ -51,8 +49,8 @@ from scripts.research_fas_clean import (  # reuse the proven reference pieces
     _liquidity_mask,
     _rank_z,
     fas_scores,
-    smb_scores,
     load,
+    smb_scores,
 )
 
 

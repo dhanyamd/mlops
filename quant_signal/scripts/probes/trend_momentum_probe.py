@@ -128,7 +128,7 @@ import pandas as pd
 from config.logging import configure_logging, get_logger
 from config.settings import csv_list, get_settings
 from scripts.backfill_feature_windows import fetch_bars
-from scripts.intraday_30m_probe import _aggregate
+from scripts.probes.intraday_30m_probe import _aggregate
 
 logger = get_logger(__name__)
 

@@ -24,6 +24,7 @@ from api.stream import MarketStream, start_stream, stop_stream
 from config.logging import configure_logging
 from config.settings import csv_list, get_settings
 from scripts.pead_backtest import compute_pead
+from stream import srp_publisher
 from stream.data_quality import quality_summary
 from stream.execution import execution_key
 from stream.kv import KVStore, RedisKV
@@ -382,6 +383,25 @@ def market_predict(symbol: str) -> dict:
     )
     prediction = kv.get_json(prediction_key(pfx, symbol.upper()))
     return {"symbol": symbol.upper(), "enabled": True, "prediction": prediction}
+
+
+@app.get("/api/srp/book")
+def srp_book() -> dict:
+    """The SRP target book from the online store (weights, not orders)."""
+    kv = _kv()
+    if kv is None:
+        return {"enabled": False, "book": None}
+    return {"enabled": True, "book": kv.get_json(srp_publisher.BOOK_KEY)}
+
+
+@app.get("/api/srp/weights/{symbol}")
+def srp_weight(symbol: str) -> dict:
+    """One symbol's SRP target weight and direction."""
+    kv = _kv()
+    if kv is None:
+        return {"symbol": symbol.upper(), "enabled": False, "weight": None}
+    record = kv.get_json(srp_publisher.weight_key(srp_publisher.WEIGHTS_PREFIX, symbol.upper()))
+    return {"symbol": symbol.upper(), "enabled": True, "weight": record}
 
 
 @app.get("/api/market/simulation/{symbol}")

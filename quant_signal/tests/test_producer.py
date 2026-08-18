@@ -50,7 +50,7 @@ def _producer(bus: FakeBus, *, persist=None, provider=None, **kwargs) -> Binance
         ["BTCUSDT"],
         bus=bus,
         topic="crypto.bars.raw",
-        provider=provider or (lambda s, days=0, minutes=0: _bar_df(s, n_minutes=2)),
+        provider=provider or (lambda s, days=0, minutes=0, on_skip=None: _bar_df(s, n_minutes=2)),
         persist=persist or (lambda df: len(df)),
         **kwargs,
     )
@@ -100,7 +100,7 @@ def test_producer_persist_failure_degrades_gracefully() -> None:
 
 def test_producer_empty_frame_publishes_nothing() -> None:
     bus = FakeBus()
-    producer = _producer(bus, provider=lambda s, days=0, minutes=0: pd.DataFrame())
+    producer = _producer(bus, provider=lambda s, days=0, minutes=0, on_skip=None: pd.DataFrame())
     assert producer._poll_once(minutes=5) == 0
     assert bus.drain("crypto.bars.raw") == []
 
@@ -109,7 +109,8 @@ def test_producer_run_forever_loops_until_stop() -> None:
     bus = FakeBus()
     polls: list[int] = []
 
-    def provider(symbols: list[str], days: int = 0, minutes: int = 0) -> pd.DataFrame:
+    def provider(symbols: list[str], days: int = 0, minutes: int = 0,
+                 on_skip=None) -> pd.DataFrame:
         polls.append(minutes)
         return _bar_df(symbols, n_minutes=1)
 
@@ -135,7 +136,8 @@ def test_producer_poll_deadline_abandons_hung_cycle() -> None:
     release = threading.Event()
     calls: list[int] = []
 
-    def stuck_provider(symbols: list[str], days: int = 0, minutes: int = 0) -> pd.DataFrame:
+    def stuck_provider(symbols: list[str], days: int = 0, minutes: int = 0,
+                       on_skip=None) -> pd.DataFrame:
         calls.append(minutes)
         release.wait(timeout=10.0)  # simulates a network call that never returns
         return _bar_df(symbols, n_minutes=1)

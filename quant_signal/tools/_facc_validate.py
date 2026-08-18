@@ -1,8 +1,9 @@
-import sys, math, random
+import random
+import sys
 
 sys.path.insert(0, ".")
+
 from stream.asym_signal import AsymSignal
-import numpy as np
 
 HOUR_MS = 3_600_000
 WEEK_MS = 7 * 24 * HOUR_MS

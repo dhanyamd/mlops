@@ -275,7 +275,7 @@ def main() -> None:
         r = backtest(sc, fwd, regime=None)
         m = metrics(r)
         print(f"  window={w:2d}d ", end="")
-        report(f"RAW_OI", m)
+        report("RAW_OI", m)
         if m["sharpe"] > best_sr:
             best_sr, best_w, best_ret = m["sharpe"], w, r
     print(f"  -> best OI window = {best_w}d (Sharpe {best_sr:.2f})")

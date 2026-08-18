@@ -1,4 +1,4 @@
- """CORRECTED order-flow factor (Anastasopoulos et al. 2026, J. Financial Markets) + VPIN tail overlay.
+"""CORRECTED order-flow factor (Anastasopoulos et al. 2026, J. Financial Markets) + VPIN tail overlay.
 
 WHY THE PRIOR FLOW TESTS FAILED:
   OFI_RESID regressed signed flow on the CONCURRENT weekly return -- that captures the
@@ -23,11 +23,11 @@ Run: uv run python scripts/research_flow2.py
 
 from __future__ import annotations
 
+import random
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import random
 
 CONFIG = {
     "formation_days": 14,

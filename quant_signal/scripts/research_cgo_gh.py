@@ -29,14 +29,13 @@ Run:  uv run python -m scripts.research_cgo_gh
 from __future__ import annotations
 
 import argparse
-import math
 
 import numpy as np
 import pandas as pd
 
+from scripts.parity_window import metrics, weekly_returns
 from scripts.research_fas_clean import _liquidity_mask, _rank_z, fas_scores, load, smb_scores
 from scripts.research_fas_invent import carry_scores
-from scripts.parity_window import metrics, weekly_returns
 
 
 def cgo_simplified(P: np.ndarray, V: np.ndarray, L: int) -> float | None:

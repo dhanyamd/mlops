@@ -241,8 +241,18 @@ def test_market_predict_endpoint_reads_redis(monkeypatch: pytest.MonkeyPatch) ->
     with TestClient(app) as client:
         kv = client.app.state.kv
         assert kv is not None
+        # Derive the prefix the way the endpoint does: it switches with
+        # ``stream_strategy``, so a hard-coded key silently misses whenever the
+        # active strategy changes.
+        from api.main import settings as _api_settings
+
+        prefix = (
+            _api_settings.stream_asym_prediction_prefix
+            if _api_settings.stream_strategy == "asym"
+            else _api_settings.stream_redis_prediction_prefix
+        )
         kv.set_json(
-            "prediction:crypto:1h:BTCUSDT",
+            f"{prefix}:BTCUSDT",
             {"symbol": "BTCUSDT", "predicted_return": 0.001, "direction": "LONG"},
         )
         resp = client.get("/api/market/predict/btcusdt")

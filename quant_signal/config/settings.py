@@ -92,7 +92,10 @@ class Settings(BaseSettings):
         "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT,TRXUSDT,LINKUSDT,NEARUSDT,"
         "ADAUSDT,SUIUSDT,UNIUSDT,AVAXUSDT,CRVUSDT,PEPEUSDT,LTCUSDT,ICPUSDT,AAVEUSDT,"
         "XLMUSDT,HBARUSDT,DOTUSDT,FILUSDT,ARBUSDT,LDOUSDT,BCHUSDT,OPUSDT,ATOMUSDT,"
-        "ETCUSDT,RUNEUSDT,GRTUSDT,ZECUSDT"
+        # ZECUSDT deliberately excluded: it has no Bybit *spot* pair, which is
+        # the category the producer queries, so every poll dead-lettered it.
+        # It accounted for 51% of the DLQ (3,914 of 7,743 messages).
+        "ETCUSDT,RUNEUSDT,GRTUSDT"
     )
     ingest_default_macro_series: str = "VIXCLS,CPIAUCSL,DGS10,DGS2,FEDFUNDS,UNRATE"
     ingest_default_tickers: str = "AAPL,MSFT"
@@ -463,6 +466,11 @@ class Settings(BaseSettings):
     # ledger. Deterministic by construction — fills are next-close + fixed bps,
     # so there is no PRNG to seed; ``window_end_ms`` is echoed for audit.
     stream_redis_execution_prefix: str = "execution:crypto:1h"
+
+    # SRP publishes target weights (not orders) to the online store. The weekly
+    # cache is the same file research reads, which is what lets the parity gate
+    # assert that live and research score identical frames.
+    srp_weekly_cache: str = "/tmp/quant_cache/fas_broad.json"
     # 1h window cadence in ms — the fill/exit rhythm of the paper book (must
     # mirror the Flink 1h feature windows; configurable so nothing is baked in).
     # 3 600 000 ms = one hour: the TRADING cadence after the 5m rebuild (the
@@ -578,7 +586,10 @@ class Settings(BaseSettings):
         "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT,TRXUSDT,LINKUSDT,NEARUSDT,"
         "ADAUSDT,SUIUSDT,UNIUSDT,AVAXUSDT,CRVUSDT,PEPEUSDT,LTCUSDT,ICPUSDT,AAVEUSDT,"
         "XLMUSDT,HBARUSDT,DOTUSDT,FILUSDT,ARBUSDT,LDOUSDT,BCHUSDT,OPUSDT,ATOMUSDT,"
-        "ETCUSDT,RUNEUSDT,GRTUSDT,ZECUSDT"
+        # ZECUSDT deliberately excluded: it has no Bybit *spot* pair, which is
+        # the category the producer queries, so every poll dead-lettered it.
+        # It accounted for 51% of the DLQ (3,914 of 7,743 messages).
+        "ETCUSDT,RUNEUSDT,GRTUSDT"
     )
     stream_xs_lookback_h: int = 336
     stream_xs_quintile: float = 0.2

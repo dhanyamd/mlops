@@ -24,6 +24,14 @@ jobs:
         run: uv run ruff check .
       - name: Test
         run: uv run pytest
+      # The strategy gate, run as its own step so a failure is legible in the
+      # checks list rather than buried in the pytest summary. Asserts
+      # point-in-time integrity, determinism, dollar-neutrality and bounded
+      # gross against synthetic fixtures — the same properties
+      # `scripts/srp_parity.py` asserts against the real cache, which is too
+      # large to ship in the repo.
+      - name: Strategy gate (point-in-time, determinism, neutrality)
+        run: uv run pytest tests/test_srp_parity.py -v
 
   # Compiles the dbt project WITHOUT a Snowflake connection — catches broken
   # models/contracts on every PR. Dummy env vars satisfy profiles.yml parsing.

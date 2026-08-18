@@ -82,7 +82,7 @@ def replay_selections_through_executor(sels, cw, symbols, notional, taker_bps):
     Uses the research weekly close grid as the price path so the ONLY thing
     under test is the executor: same symbols, same weeks, same prices.
     """
-    from stream.execution import PaperExecutionSimulator, execution_key
+    from stream.execution import PaperExecutionSimulator
     from stream.kv import FakeKV
     from stream.predictor import prediction_key
 

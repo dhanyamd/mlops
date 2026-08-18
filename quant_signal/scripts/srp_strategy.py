@@ -86,7 +86,7 @@ look-ahead. ``factor_core.leak_test`` is the guard for the inputs.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
@@ -176,7 +176,10 @@ def build_factors(
         "OFI": _sm(intraday["ofi"]).reindex(index=idx),
         "CPVm": -cpv_roll.mean(),
         "CPVv": -cpv_roll.std(),
-        "WRspread": -(top_ls.reindex(index=idx, columns=cols) - all_ls.reindex(index=idx, columns=cols)),
+        "WRspread": -(
+            top_ls.reindex(index=idx, columns=cols)
+            - all_ls.reindex(index=idx, columns=cols)
+        ),
         "TopChg": -top_ls.reindex(index=idx, columns=cols).diff(),
         "Quad": -(np.sign(ret) * d_oi),
     }
