@@ -14,7 +14,7 @@ jobs:
         working-directory: quant_signal
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v9
+      - uses: astral-sh/setup-uv@v10
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -47,7 +47,7 @@ jobs:
       DBT_SNOWFLAKE_DATABASE: QUANT
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v9
+      - uses: astral-sh/setup-uv@v10
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -93,7 +93,7 @@ jobs:
       DBT_SNOWFLAKE_WAREHOUSE: ${{ secrets.DBT_SNOWFLAKE_WAREHOUSE }}
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v9
+      - uses: astral-sh/setup-uv@v10
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
