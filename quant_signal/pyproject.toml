@@ -40,6 +40,13 @@ api = [
     "fastapi>=0.115.0",
     "uvicorn>=0.30.0",
 ]
+# Snowpark: run the SAME feature UDF INSIDE the warehouse instead of pulling
+# rows out to a local JVM. Removes the Java dependency, the spark-snowflake
+# connector JAR, and the egress -- the compute moves to the data rather than
+# the data to the compute.
+snowpark = [
+    "snowflake-snowpark-python[pandas]>=1.20.0",
+]
 # Spark feature-engineering batch over BRONZE (flows/feature_engineering.py).
 # Optional: the pandas fallback path runs without it (and without Java).
 spark = [

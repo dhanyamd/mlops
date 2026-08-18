@@ -5,7 +5,7 @@ GOLD analytics mart. Feature math lives in ``flows.features.compute_features``
 (the single source of truth, hermetic-unit-tested); this job only orchestrates
 it at scale.
 
-Two run modes with the *identical* output schema:
+Three run modes with the *identical* output schema:
 
   --source snowflake  Real PySpark batch: SparkSession reads BRONZE through the
                       spark-snowflake connector, applies ``compute_features``
@@ -13,6 +13,14 @@ Two run modes with the *identical* output schema:
                       GOLD.FEATURES. Needs Java + the connector JAR:
 
       uv run python flows/feature_engineering.py --source snowflake
+
+  --source snowpark   Same feature UDF, executed INSIDE the warehouse. Snowpark
+                      partitions by symbol and runs ``compute_features`` on
+                      Snowflake's compute, so the rows never leave storage --
+                      no JVM, no connector JAR, no egress. Preferred over the
+                      Spark path where the warehouse can do the work:
+
+      uv run python flows/feature_engineering.py --source snowpark
 
   --source pandas     No-Java fallback: reads BRONZE with the Snowflake
                       connector, computes the same features in pandas, and
@@ -103,6 +111,81 @@ def _pandas_run(schema: str, gold_schema: str, window: int) -> int:
         table=f"{gold_schema}.FEATURES",
     )
     return written
+
+
+def _snowpark_run(schema: str, gold_schema: str, window: int) -> int:
+    """Snowpark path: the feature UDF runs INSIDE the warehouse.
+
+    Spark reads BRONZE out of Snowflake, computes in a local JVM, and writes the
+    result back -- the data crosses the network twice to be transformed by a
+    process that owns none of it. Snowpark inverts that: the same
+    ``compute_features`` runs on Snowflake's compute, next to the storage, so
+    nothing leaves the warehouse and there is no JVM, no spark-snowflake
+    connector JAR, and no egress.
+
+    ``group_by(...).apply_in_pandas`` is deliberately the same shape as Spark's
+    ``groupBy(...).applyInPandas``: identical partitioning by symbol, identical
+    per-symbol pandas frame, identical function. That is what makes the three
+    paths comparable -- feature math lives in one place and only the executor
+    changes.
+    """
+    from snowflake.snowpark import Session
+    from snowflake.snowpark.functions import current_timestamp
+    from snowflake.snowpark.types import (
+        DoubleType,
+        StringType,
+        StructField,
+        StructType,
+        TimestampType,
+    )
+
+    from flows.features import compute_features
+
+    settings = get_settings()
+    session = Session.builder.configs({
+        "account": settings.snowflake_account,
+        "user": settings.snowflake_user,
+        "password": settings.snowflake_password,
+        "role": settings.snowflake_role,
+        "warehouse": settings.snowflake_warehouse,
+        "database": settings.snowflake_database,
+        "schema": schema,
+    }).create()
+
+    try:
+        field_types = {
+            "SYMBOL": StringType(),
+            "TS": TimestampType(),
+            "TIMEFRAME": StringType(),
+        }
+        out_schema = StructType([
+            StructField(c.upper(), field_types.get(c.upper(), DoubleType()))
+            for c in OUTPUT_COLUMNS if c != "loaded_at"
+        ])
+
+        def _features_udf(group: pd.DataFrame) -> pd.DataFrame:
+            # Snowflake returns identifiers upper-cased; compute_features is
+            # written against the lower-cased bronze contract, so normalise in
+            # and back out rather than forking the feature math.
+            g = group.rename(columns=str.lower)
+            out = compute_features(g, window=window)
+            keep = [c for c in OUTPUT_COLUMNS if c != "loaded_at"]
+            return out[keep].rename(columns=str.upper)
+
+        bars = session.table(f"{schema}.{BAR_TABLE}").union_all(
+            session.table(f"{schema}.{CRYPTO_TABLE}")
+        )
+        if bars.count() == 0:
+            log.info("feature_engineering_no_rows", table=f"{gold_schema}.FEATURES")
+            return 0
+
+        featured = bars.group_by("SYMBOL").apply_in_pandas(_features_udf, output_schema=out_schema)
+        featured = featured.with_column("LOADED_AT", current_timestamp())
+        featured.write.mode("overwrite").save_as_table(f"{gold_schema}.FEATURES")
+        log.info("feature_engineering_snowpark_done", table=f"{gold_schema}.FEATURES")
+        return 1
+    finally:
+        session.close()
 
 
 def _spark_run(schema: str, gold_schema: str, window: int) -> int:
@@ -212,6 +295,8 @@ def run(source: str, window: int) -> int:
     settings = get_settings()
     schema = settings.snowflake_schema
     gold = settings.snowflake_gold_schema
+    if source == "snowpark":
+        return _snowpark_run(schema, gold, window)
     if source == "pandas":
         return _pandas_run(schema, gold, window)
     if source == "snowflake":
@@ -225,7 +310,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--source",
-        choices=["pandas", "snowflake"],
+        choices=["pandas", "snowflake", "snowpark"],
         default="pandas",
         help="pandas = no-Java fallback; snowflake = PySpark batch (needs Java + connector)",
     )
