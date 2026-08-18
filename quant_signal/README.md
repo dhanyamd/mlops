@@ -4,13 +4,20 @@ A quant research platform that ends in a **live market-neutral book placing
 real orders on a venue** — and, the part most platforms cannot demonstrate, a
 **deploy gate proving the live system runs the strategy that was validated**.
 
+
+
+https://github.com/user-attachments/assets/535cd00a-7a00-4f86-90d3-b9a836c79244
+
+
+
+
 | | |
 |---|---|
-| Research ⇄ production agreement | **0 mismatches / 4,480 checks** |
-| Look-ahead leak, every factor | **0.00e+00** |
-| Strategy Sharpe (112 perps, 363 weeks) | **2.16** (t = 5.03) |
-| Alpha vs market/size/momentum | **27%/yr** (t = 4.42) |
-| 2022 drawdown | market **−82.5%**, book **+9.4%** |
+| Research ⇄ production agreement | 4,480 checks |
+| Look-ahead leak, every factor | 0.00e+00 |
+| Strategy Sharpe (112 perps, 363 weeks) | 2.16 (t = 5.03) |
+| Alpha vs market/size/momentum | 27%/yr (t = 4.42) |
+| 2022 drawdown | market −82.5%, book +9.4% |
 
 **Status:** running locally under Docker Compose; papers on SSRN and submitted to
 the *Journal of Portfolio Management*. The AWS topology is Terraform-defined and
