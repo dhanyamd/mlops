@@ -17,11 +17,14 @@ nothing and buys two things: live unrealized P&L between rebalances, and a
 rebalance that fires within an hour of the week turning rather than whenever
 someone remembers. The strategy stays weekly; only the observation is frequent.
 
-A NOTE ON THE WEEKLY CACHE. The book is scored from the same panel research
-reads (``fas_broad.json``). That file does not extend itself -- if it is not
-backfilled, the last weekly bar stays put and no new rebalance will ever fire,
-however long this runs. The daemon logs the bar it scored on every tick so a
-stalled panel is visible rather than silent.
+THE WEEKLY CACHE REFRESHES ITSELF. The book is scored from the same panel
+research reads (``fas_broad.json``), and that file does not extend itself. Left
+alone, the last weekly bar stays put and no rebalance ever fires however long
+this runs -- the daemon would tick forever, re-marking a book that can never
+close. So each tick checks the age of the newest bar and re-runs the backfill
+when it falls behind, which is what turns "it is scheduled" into "it will
+actually trade next Monday". The refresh is resumable per symbol, so a network
+failure costs one symbol rather than the run.
 
 Run as a launchd agent alongside the other services:
     uv run python -m scripts.install_services install
@@ -32,6 +35,8 @@ Or directly:
 from __future__ import annotations
 
 import argparse
+import subprocess
+import sys
 import time
 
 from config.logging import configure_logging, get_logger
@@ -43,6 +48,47 @@ from stream.srp_publisher import WEIGHTS_PREFIX
 
 logger = get_logger(__name__)
 
+_DAY_MS = 86_400_000
+
+
+def cache_age_days(path: str) -> float | None:
+    """Age in days of the newest bar in the weekly panel, or None if unreadable."""
+    import json
+
+    try:
+        with open(path) as fh:
+            bars = (json.load(fh) or {}).get("bars") or {}
+        newest = max(max(r[0] for r in v) for v in bars.values() if v)
+    except Exception:  # noqa: BLE001 - a missing/corrupt cache means "refresh it"
+        return None
+    return (time.time() * 1000 - newest) / _DAY_MS
+
+
+def refresh_cache(path: str, max_age_days: float) -> bool:
+    """Re-run the backfill when the panel has fallen behind. True if refreshed.
+
+    Checks the newest BAR rather than the file mtime: a backfill that ran but
+    fetched nothing would refresh the mtime while leaving the strategy blind,
+    and that failure would be invisible.
+    """
+    age = cache_age_days(path)
+    if age is not None and age <= max_age_days:
+        return False
+    logger.info("weekly panel is %s days old (limit %.1f); refreshing",
+                "unreadable" if age is None else f"{age:.1f}", max_age_days)
+    proc = subprocess.run(
+        [sys.executable, "-m", "scripts.backfill.backfill_fas_cache",
+         "--out", path, "--all-perps"],
+        capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        logger.error("panel refresh failed (rc=%s): %s",
+                     proc.returncode, (proc.stderr or "")[-400:])
+        return False
+    logger.info("panel refreshed; newest bar now %.1f days old",
+                cache_age_days(path) or -1)
+    return True
+
 
 def main() -> None:
     configure_logging()
@@ -51,6 +97,9 @@ def main() -> None:
                     help="seconds between ticks (default 1h; the strategy is "
                          "still weekly, this only sets how often it is checked)")
     ap.add_argument("--venue", choices=["paper", "bybit-demo"], default="paper")
+    ap.add_argument("--max-cache-age-days", type=float, default=3.0,
+                    help="refresh the weekly panel when its newest bar is older "
+                         "than this (default 3d, comfortably inside a week)")
     a = ap.parse_args()
 
     settings = get_settings()
@@ -78,6 +127,10 @@ def main() -> None:
 
     while True:
         try:
+            # Keep the panel current FIRST: scoring a stale panel produces a
+            # book that can never close.
+            refresh_cache(settings.srp_weekly_cache, a.max_cache_age_days)
+
             # Re-score in-process rather than shelling out, so a failure here is
             # logged and survivable instead of taking the loop down.
             from stream.srp_publisher import main as publish_book

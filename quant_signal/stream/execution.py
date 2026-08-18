@@ -99,6 +99,28 @@ def _round(value: float | None, digits: int = 6) -> float | None:
     return round(value, digits) if value is not None else None
 
 
+def _entry_window(position: Mapping, fallback: int) -> int:
+    """``entry_window_end_ms`` as milliseconds, tolerating a seconds-valued field.
+
+    Seven of 387 live fills recorded ``bars_held`` around 496,308 -- roughly the
+    current epoch divided by one hour, the signature of subtracting a SECONDS
+    timestamp from a MILLISECONDS one. The field is currently only reported, but
+    the same value drives the forecast-expiry close, so a unit slip would shut
+    positions the instant ``max_hold_h`` was enabled. Anything below the year
+    2001 in ms is not a plausible window and is treated as seconds.
+    """
+    raw = position.get("entry_window_end_ms")
+    if not isinstance(raw, (int, float)) or raw <= 0:
+        return fallback
+    raw = int(raw)
+    # Only rescale values that are plausibly a SECONDS epoch (2001-09 onward).
+    # A wider rule would also rescale the small synthetic windows the tests use,
+    # turning "window 1" into 1000 and inverting the arithmetic it checks.
+    if 1_000_000_000 <= raw < 1_000_000_000_000:
+        raw *= 1000
+    return raw
+
+
 def _mark_pnl(position: dict, mark: float) -> float:
     """Unrealized P&L ($) of the open position marked to ``mark`` (pre-fees)."""
     qty = position["qty"]
@@ -488,6 +510,7 @@ class PaperExecutionSimulator:
         # scripts/live_track_record.py, which already excludes orphans via the
         # explicit ``adopted_orphan`` flag emitted below.
         entry_w = position.get("entry_window_end_ms") or 0
+        entry_w = _entry_window(position, 0) if entry_w else 0
         bars_held = (
             max(1, round((window_end - entry_w) / self._window_ms)) if entry_w else 0
         )
@@ -611,7 +634,7 @@ class PaperExecutionSimulator:
             # past it -- past it, the book is holding on a forecast that no
             # longer exists rather than on conviction.
             if position is not None and self._max_hold_ms > 0:
-                held_ms = window_end - position.get("entry_window_end_ms", window_end)
+                held_ms = window_end - _entry_window(position, window_end)
                 if held_ms >= self._max_hold_ms:
                     if signal in ("LONG", "SHORT") and signal == position["side"]:
                         # ROLL, don't round-trip. The forecast expiring means
