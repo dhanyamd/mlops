@@ -29,3 +29,15 @@ htmlcov/
 
 # Ruff
 .ruff_cache/
+
+# Research probe outputs: regenerable from the scripts, and large. One of these
+# (trend_momentum_probe.json) was 63.7 MB and dominated clone/push time.
+quant_signal/docs/*probe*.json
+
+# LaTeX build artifacts. The .tex and .pdf are tracked; these are not.
+quant_signal/research/pdf/*.aux
+quant_signal/research/pdf/*.log
+quant_signal/research/pdf/*.out
+quant_signal/research/pdf/*.fls
+quant_signal/research/pdf/*.fdb_latexmk
+quant_signal/research/pdf/missfont.log
