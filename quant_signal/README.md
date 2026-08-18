@@ -1,6 +1,6 @@
-# quant signal
+# Signal
 
-Production-grade quant signal platform - **Snowflake-backed batch pipelines**,
+Production-grade quant signal platform - **Snowflake batch pipelines**,
 a **Kafka → Flink → Redis realtime layer**, research-driven model validation,
 and data quality enforced at every stage.
 
@@ -16,6 +16,15 @@ is `fmt`- and `validate`-checked in CI on each PR; it is not currently applied t
 a live account.
 
 ---
+
+
+
+
+https://github.com/user-attachments/assets/f6a80373-1965-4105-b3df-16ab1328eb36
+
+
+
+
 
 ## Table of contents
 
