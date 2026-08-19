@@ -184,3 +184,28 @@ def test_compare_rejects_a_hole_in_one_source() -> None:
     ok, message = compare(frame, holed, "frame")
     assert not ok
     assert "present in one panel but not the other" in message
+
+
+def test_empty_seed_caches_are_reported_as_a_fault(tmp_path, caplog) -> None:
+    """A wiped cache must log an ERROR, not degrade quietly to FLAT.
+
+    This is the regression from the night /tmp was cleaned: the seeds
+    disappeared, scoring fell through the ordinary "not enough data" branch, and
+    the book stopped trading with nothing in the logs above INFO. The absence of
+    a directory is an operational fault and has to read as one.
+    """
+    import logging
+
+    from stream.srp_live import SRPBook
+
+    empty = tmp_path / "gone"
+    empty.mkdir()
+    with caplog.at_level(logging.ERROR):
+        SRPBook(["BTCUSDT", "ETHUSDT"],
+                intraday_cache=str(empty),
+                ticket_cache=str(empty),
+                positioning_cache=str(empty))
+
+    errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+    assert any("intraday" in m and "EMPTY" in m for m in errors), errors
+    assert any("positioning" in m and "EMPTY" in m for m in errors), errors

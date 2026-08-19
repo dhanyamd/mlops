@@ -151,6 +151,33 @@ class SRPBook:
             {k: v.shape for k, v in self.intraday.items()},
             {k: v.shape for k, v in self.positioning.items()},
         )
+        self._warn_on_empty_seeds(intraday_cache, positioning_cache)
+
+    def _warn_on_empty_seeds(self, intraday_cache: str, positioning_cache: str) -> None:
+        """Say so loudly when a seed cache is missing or empty.
+
+        This is the whole reason the book went dark: /tmp was cleaned, the seeds
+        vanished, and scoring degraded to FLAT through the ordinary "not enough
+        data" path. Every layer behaved as designed and the net effect was a
+        strategy that had stopped trading with no error anywhere, because an
+        absent cache and a symbol with no history produce the same empty frame.
+        A missing directory is an operational fault, not a data condition, and
+        has to be named as one.
+        """
+        missing = [
+            (name, path)
+            for name, path, frames in (
+                ("intraday", intraday_cache, self.intraday),
+                ("positioning", positioning_cache, self.positioning),
+            )
+            if not frames or all(getattr(f, "empty", True) for f in frames.values())
+        ]
+        for name, path in missing:
+            logger.error(
+                "SRP seed cache %s is EMPTY (%s) — the book cannot score and will "
+                "publish FLAT until this is refilled; rerun the backfill",
+                name, path,
+            )
 
     # ---- live ingestion -------------------------------------------------
     def update_positioning(self, live: dict[str, dict[str, list[tuple[int, float]]]]) -> None:
