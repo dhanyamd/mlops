@@ -6,6 +6,7 @@ codebase. Secrets are masked from logs/repr via ``Field(repr=False)``.
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -470,7 +471,19 @@ class Settings(BaseSettings):
     # SRP publishes target weights (not orders) to the online store. The weekly
     # cache is the same file research reads, which is what lets the parity gate
     # assert that live and research score identical frames.
-    srp_weekly_cache: str = "/tmp/quant_cache/fas_broad.json"
+    #
+    # NOT /tmp. These caches used to live there, and macOS cleaned the directory
+    # overnight: the positioning and intraday seeds vanished, the scorer could no
+    # longer build its factors, and the book published FLAT with 27 positions
+    # just closed and nothing able to replace them. The strategy was blind and
+    # nothing alerted, because an empty cache is indistinguishable from a symbol
+    # that never had data. A durable path is the fix; the weekly panel
+    # additionally lives in Snowflake now (scripts/warehouse_panel.py).
+    srp_cache_dir: str = "~/.quant_signal/cache"
+    srp_weekly_cache: str = "~/.quant_signal/cache/fas_broad.json"
+    srp_intraday_cache: str = "~/.quant_signal/cache/intraday_1h"
+    srp_ticket_cache: str = "~/.quant_signal/cache/intraday3"
+    srp_positioning_cache: str = "~/.quant_signal/cache/positioning_daily"
     # 1h window cadence in ms — the fill/exit rhythm of the paper book (must
     # mirror the Flink 1h feature windows; configurable so nothing is baked in).
     # 3 600 000 ms = one hour: the TRADING cadence after the 5m rebuild (the
@@ -762,6 +775,24 @@ class Settings(BaseSettings):
         if not as_str or as_str == ".":
             return None
         return value
+
+    @field_validator(
+        "srp_cache_dir",
+        "srp_weekly_cache",
+        "srp_intraday_cache",
+        "srp_ticket_cache",
+        "srp_positioning_cache",
+        mode="before",
+    )
+    @classmethod
+    def _expand_cache_path(cls, value: object) -> object:
+        # ``~`` is not expanded by open() or Path(), so an unexpanded default
+        # would create a literal "~" directory next to wherever the process
+        # happened to start. Expanding here means every caller gets an absolute
+        # path and none of them has to remember to.
+        if value is None:
+            return None
+        return os.path.expanduser(str(value))
 
     @model_validator(mode="after")
     def _validate_auth(self) -> "Settings":

@@ -34,6 +34,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from config.settings import get_settings
 from scripts.srp_strategy import (
     SRPConfig,
     build_factors,
@@ -124,12 +125,20 @@ class SRPBook:
         self,
         universe: list[str],
         *,
-        intraday_cache: str = "/tmp/quant_cache/intraday_1h",
-        ticket_cache: str = "/tmp/quant_cache/intraday3",
-        positioning_cache: str = "/tmp/quant_cache/positioning_daily",
+        # Defaults come from settings rather than a literal path. They used to
+        # point at /tmp, which macOS cleaned overnight -- the seeds disappeared,
+        # scoring silently degraded to FLAT, and the book could not reopen after
+        # its weekly close. Settings put the durable location in one place.
+        intraday_cache: str | None = None,
+        ticket_cache: str | None = None,
+        positioning_cache: str | None = None,
         cfg: SRPConfig | None = None,
         min_symbols: int = 20,
     ) -> None:
+        settings = get_settings()
+        intraday_cache = intraday_cache or settings.srp_intraday_cache
+        ticket_cache = ticket_cache or settings.srp_ticket_cache
+        positioning_cache = positioning_cache or settings.srp_positioning_cache
         self.universe = [s.upper() for s in universe]
         self.cfg = cfg or SRPConfig()
         self.min_symbols = min_symbols
