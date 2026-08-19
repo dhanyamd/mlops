@@ -1,0 +1,51 @@
+version: 2
+
+models:
+  - name: silver_crypto_panel_bars
+    description: "Daily perpetual bars for the SRP research universe (202 symbols, 2019+). The dataset the backtest scores; kept apart from silver_crypto_bars, which is streaming minute spot data."
+    config:
+      contract:
+        enforced: true
+    columns:
+      - name: symbol
+        description: "Perpetual contract symbol (e.g. BTCUSDT)."
+        data_type: text
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+      - name: ts
+        description: "Bar close timestamp, UTC."
+        data_type: timestamp_ntz
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+      - name: close
+        description: "Daily close. Screened positive upstream — a non-positive close breaks log returns and cross-sectional ranks."
+        data_type: float
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+      - name: volume
+        description: "Daily base-asset volume. Drives the liquidity screen and the liquidity-scaled maker cost."
+        data_type: float
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+      - name: provider
+        description: "Source venue."
+        data_type: text
+      - name: loaded_at
+        description: "Landing time; drives the incremental watermark."
+        data_type: timestamp_ntz
+        constraints:
+          - type: not_null
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - symbol
+              - ts

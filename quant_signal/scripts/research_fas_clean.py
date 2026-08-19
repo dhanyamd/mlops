@@ -66,8 +66,18 @@ def load(cache_path: str, week_anchor: str = "W-MON"):
     the Monday grid every existing caller already uses.
     """
     c = json.load(open(cache_path))
-    bars = c["bars"]
-    fund = c.get("funding", {})
+    return build_frames(c["bars"], c.get("funding", {}), week_anchor)
+
+
+def build_frames(bars: dict, fund: dict, week_anchor: str = "W-MON"):
+    """Resample raw ``{symbol: [[ts_ms, close, vol], ...]}`` into the panel.
+
+    Split out of ``load`` so the warehouse-backed source
+    (``scripts.warehouse_panel``) reaches the same frames through the same
+    arithmetic. If each source did its own resampling, "the warehouse path
+    reproduces the file path" would be a coincidence maintained by hand; here
+    it is the same function, and only the fetch differs.
+    """
     hourly_close: dict[str, pd.Series] = {}
     hourly_vol: dict[str, pd.Series] = {}
     weekly_close: dict[str, pd.Series] = {}

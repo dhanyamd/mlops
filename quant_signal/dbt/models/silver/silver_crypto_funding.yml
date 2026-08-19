@@ -1,0 +1,44 @@
+version: 2
+
+models:
+  - name: silver_crypto_funding
+    description: "8-hourly perpetual funding rates for the SRP research universe. Charged explicitly in the backtest return, so completeness here is a correctness requirement, not a nicety."
+    config:
+      contract:
+        enforced: true
+    columns:
+      - name: symbol
+        description: "Perpetual contract symbol."
+        data_type: text
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+      - name: ts
+        description: "Funding settlement timestamp, UTC."
+        data_type: timestamp_ntz
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+      - name: rate
+        description: "Funding rate for the interval, as a decimal fraction. Signed: positive means longs pay shorts."
+        data_type: float
+        constraints:
+          - type: not_null
+        tests:
+          - not_null
+      - name: provider
+        description: "Source venue."
+        data_type: text
+      - name: loaded_at
+        description: "Landing time; drives the incremental watermark."
+        data_type: timestamp_ntz
+        constraints:
+          - type: not_null
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - symbol
+              - ts

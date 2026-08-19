@@ -72,6 +72,52 @@ sources:
             data_type: text
           - name: loaded_at
             data_type: timestamp_ntz
+      - name: crypto_panel_bars
+        description: "Daily perpetual-futures bars (close + volume only) for the SRP research universe, REST-backfilled from Binance. Distinct from crypto_bars: research grain, no OHLC."
+        config:
+          freshness:
+            warn_after:
+              count: 4
+              period: day
+            error_after:
+              count: 10
+              period: day
+          loaded_at_field: loaded_at
+        columns:
+          - name: symbol
+            data_type: text
+          - name: ts
+            data_type: timestamp_ntz
+          - name: close
+            data_type: float
+          - name: volume
+            data_type: float
+          - name: provider
+            data_type: text
+          - name: loaded_at
+            data_type: timestamp_ntz
+      - name: crypto_funding
+        description: "8-hourly perpetual funding rates. The SRP return construction charges funding explicitly, so this is a first-class input rather than a nicety."
+        config:
+          freshness:
+            warn_after:
+              count: 4
+              period: day
+            error_after:
+              count: 10
+              period: day
+          loaded_at_field: loaded_at
+        columns:
+          - name: symbol
+            data_type: text
+          - name: ts
+            data_type: timestamp_ntz
+          - name: rate
+            data_type: float
+          - name: provider
+            data_type: text
+          - name: loaded_at
+            data_type: timestamp_ntz
       - name: fred_macro
         description: "Real St. Louis Fed macro series (FRED), keyless public CSV download."
         config:

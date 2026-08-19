@@ -139,13 +139,30 @@ class SRPData:
         positioning: str = f"{CACHE}/positioning_daily",
         ticket: str = f"{CACHE}/intraday3",
         week_anchor: str = "W-MON",
+        source: str = "file",
+        as_of: str | None = None,
     ) -> "SRPData":
         # ``week_anchor`` rebuilds the whole panel on a different rebalance
         # weekday; the daily positioning/intraday sources are reindexed onto
         # whatever grid results, so the seven anchors are genuinely independent
         # schedules rather than a shifted view of one. Used by srp_walkforward's
         # timing-luck test.
-        cw, vw, aw, _dcl, _dvl = load(cache, week_anchor)
+        #
+        # ``source`` picks where the price/volume/funding panel comes from. The
+        # two are asserted identical by ``scripts.panel_parity``, so this is a
+        # choice of transport, not of data: "file" reads the local cache, and
+        # "snowflake" reads the warehouse, which is what makes a run reproducible
+        # by someone who does not have this laptop's /tmp. ``as_of`` truncates
+        # warehouse history so a historical study re-runs on the panel it was
+        # actually decided on rather than on everything landed since.
+        if source == "snowflake":
+            from scripts.warehouse_panel import load_from_snowflake
+
+            cw, vw, aw, _dcl, _dvl = load_from_snowflake(week_anchor, as_of=as_of)
+        elif source == "file":
+            cw, vw, aw, _dcl, _dvl = load(cache, week_anchor)
+        else:
+            raise ValueError(f"unknown panel source {source!r} (file|snowflake)")
         sym = _liquidity_mask(cw, vw)
         fr = load_intraday(intraday)
         P = _load_positioning(positioning)
@@ -436,10 +453,17 @@ def main() -> None:
     ap.add_argument("--no-costs", action="store_true")
     ap.add_argument("--factors", default=None,
                     help="comma-separated subset; default = all available")
+    ap.add_argument("--source", choices=["file", "snowflake"], default="file",
+                    help="where the price/volume/funding panel comes from; the "
+                         "two are asserted identical by scripts.panel_parity")
+    ap.add_argument("--as-of", default=None,
+                    help="ISO date; truncate warehouse history (snowflake only)")
     a = ap.parse_args()
 
-    data = SRPData.load(a.cache, a.intraday, a.positioning, a.ticket)
+    data = SRPData.load(a.cache, a.intraday, a.positioning, a.ticket,
+                        source=a.source, as_of=a.as_of)
     print(f"universe {len(data.cols)} symbols, {len(data.cw)} weeks, "
+          f"panel from {a.source}, "
           f"ticket factors {'present' if data.ticket else 'ABSENT'}")
     facs = tuple(a.factors.split(",")) if a.factors else None
     res = run(data, SRPConfig(), factors=facs, costs=not a.no_costs)
