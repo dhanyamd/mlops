@@ -80,7 +80,12 @@ SERVICES: dict[str, tuple[list[str], str]] = {
     ),
 }
 
-LOG_PATH = {name: Path(f"/tmp/stream_{name}.log") for name in SERVICES}
+# NOT /tmp. macOS cleans it, and these logs are the only record of what the
+# live book did overnight -- which is exactly when an unattended strategy needs
+# a record. The night the caches were wiped, the log proving why the book went
+# FLAT was deleted by the same sweep that caused it.
+LOG_DIR = Path.home() / ".quant_signal" / "logs"
+LOG_PATH = {name: LOG_DIR / f"stream_{name}.log" for name in SERVICES}
 
 
 def label(name: str) -> str:
@@ -106,6 +111,11 @@ def write_plist(name: str) -> Path:
         "StandardErrorPath": str(LOG_PATH[name]),
     }
     LAUNCH_AGENTS_DIR.mkdir(parents=True, exist_ok=True)
+    # launchd does not create the log directory, and a service whose
+    # StandardOutPath is unwritable starts anyway -- silently, with no output.
+    # That is the worst possible failure for the file you would go read to find
+    # out what went wrong.
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
     path = plist_path(name)
     with path.open("wb") as fh:
         plistlib.dump(plist, fh)
