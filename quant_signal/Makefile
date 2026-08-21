@@ -29,7 +29,7 @@ bootstrap: ## Create DB, warehouse, schemas, roles (idempotent, needs .env)
 	$(ENV) $(PYTHON) python -m db.bootstrap
 
 ping: ## Verify the Snowflake connection (SELECT 1)
-	$(ENV) $(PYTHON) python scripts/ping.py
+	$(ENV) $(PYTHON) python scripts/ops/ping.py
 
 ## Ingestion ─────────────────────────────────────────────────────────────────
 
@@ -73,7 +73,7 @@ dbt-parse: ## Compile the project without running (fast contract check)
 	$(ENV) $(DBT) parse --project-dir . --profiles-dir .
 
 dbt-run: ## Build + test all models (silver/gold, contracts enforced) with latency telemetry
-	$(ENV) $(PYTHON) python scripts/run_dbt.py build --project-dir . --profiles-dir .
+	$(ENV) $(PYTHON) python scripts/ops/run_dbt.py build --project-dir . --profiles-dir .
 
 ## Warehouse sink (Redis online store → ClickHouse BRONZE) ───────────────────
 
@@ -122,19 +122,19 @@ stream-execution: ## Run the paper-execution engine (fills, slippage, fees, ledg
 	$(ENV) $(PYTHON) python -m stream.execution
 
 stream-seed: ## Publish synthetic demo bars (fast E2E without waiting on Binance)
-	$(ENV) $(PYTHON) python -m scripts.seed_stream_demo
+	$(ENV) $(PYTHON) python -m scripts.ops.seed_stream_demo
 
 stream-watchdog: ## Detect a stalled Flink pipeline (features behind raw bars); --fix heals it
 	$(ENV) $(PYTHON) python -m scripts.stream_watchdog --interval 60 --fix
 
 stream-research: ## Sweep the predictor's config grid offline; persist per-symbol leaderboards
-	$(ENV) $(PYTHON) python -m scripts.run_research
+	$(ENV) $(PYTHON) python -m scripts.ops.run_research
 
 stream-backfill-windows: ## Seed the online store's 1h feature history from Snowflake BRONZE (idempotent)
 	$(ENV) $(PYTHON) python -m scripts.backfill_feature_windows
 
 stream-quality: ## Score every symbol's window history + lineage; persist quality summaries
-	$(ENV) $(PYTHON) python -m scripts.run_quality
+	$(ENV) $(PYTHON) python -m scripts.ops.run_quality
 
 ## Dashboard ─────────────────────────────────────────────────────────────────
 

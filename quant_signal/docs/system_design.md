@@ -95,7 +95,7 @@ MERGE, dbt) is already seconds-scale.
 ## 6. Infra-first roadmap
 
 1. **Latency telemetry — DONE (2026-08-06).** `ingest/metrics.py` + the
-   `scripts/run_dbt.py` wrapper persist per-stage `elapsed_ms` into
+   `scripts/ops/run_dbt.py` wrapper persist per-stage `elapsed_ms` into
    `BRONZE.PIPELINE_METRICS` (source → `silver_pipeline_metrics`); every ingest
    flow and `make dbt-run` records fetch/validate/write/quarantine/dbt-build.
    Live first run: ingest ≈ 85 s + dbt-build ≈ 30 s → E2E ≈ 2 min, inside the

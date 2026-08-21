@@ -140,7 +140,7 @@ is where subtle bugs creep in causing live performance to diverge from backteste
 expectations."* Parity is now structural, not chased. `QUANT_RESEARCH_PARITY=0`
 restores the legacy path for A/B.
 
-**Verification that the executor is sound** (`scripts/harness_verify.py`):
+**Verification that the executor is sound** (`scripts/ops/harness_verify.py`):
 research selections pushed through the LIVE execution engine reproduce
 **Sharpe 2.11, +$5,863 realized on $12,000** over 53 weeks. So the executor and
 the metric are fine; only the signal had diverged.
@@ -238,9 +238,9 @@ crash. Consider before any real capital.
     source .venv/bin/activate
     QUANT_CGO_GH=1 python -m scripts.research_fas_invent --funding binance   # 2.28
     python -m scripts.perm_test_research --n 500                             # p-value
-    python -m scripts.selection_diff --weeks 8                               # live↔research
-    python -m scripts.harness_verify                                         # executor sanity
-    python -m scripts.parity_ablation                                        # cost attribution
-    python -m scripts.research_cgo_gh --lookbacks 5,7,14                     # GH vs simplified
-    python -m scripts.live_track_record                                      # live ledger
-    python scripts/replay_live_book.py --rebalance-h 168 --rcgo-w 1.0 --rcgo-dir 1 --cgo-dir 1
+    python -m scripts.backtests.selection_diff --weeks 8                               # live↔research
+    python -m scripts.ops.harness_verify                                         # executor sanity
+    python -m scripts.backtests.parity_ablation                                        # cost attribution
+    python -m scripts.probes.research_cgo_gh --lookbacks 5,7,14                     # GH vs simplified
+    python -m scripts.ops.live_track_record                                      # live ledger
+    python scripts/ops/replay_live_book.py --rebalance-h 168 --rcgo-w 1.0 --rcgo-dir 1 --cgo-dir 1
